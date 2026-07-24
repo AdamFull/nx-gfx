@@ -75,11 +75,26 @@ constexpr FormatInfo FORMAT_TABLE[] = {
 static_assert(std::size(FORMAT_TABLE) == nx::cast<usize>(Format::Count),
               "FORMAT_TABLE is out of sync with Format");
 
-constexpr nx::string_view STATE_NAMES[] = {
-    "Undefined",    "General",        "RenderTarget",    "DepthWrite",
-    "DepthRead",    "ShaderResource", "UnorderedAccess", "IndirectArgument",
-    "VertexBuffer", "IndexBuffer",    "UniformBuffer",   "CopySrc",
-    "CopyDst",      "Present"};
+constexpr nx::string_view STATE_NAMES[] = {"Undefined",
+                                           "General",
+                                           "CopySrc",
+                                           "CopyDst",
+                                           "ShaderReadOnly",
+                                           "ShaderWriteOnly",
+                                           "ShaderReadWrite",
+                                           "ColorAttachment",
+                                           "ColorAttachmentRead",
+                                           "ColorAttachmentWrite",
+                                           "DepthStencilRead",
+                                           "DepthStencilWrite",
+                                           "DepthStencilReadWrite",
+                                           "VertexBuffer",
+                                           "IndexBuffer",
+                                           "IndirectBuffer",
+                                           "UniformBuffer",
+                                           "HostRead",
+                                           "HostWrite",
+                                           "Present"};
 static_assert(std::size(STATE_NAMES) == nx::cast<usize>(ResourceState::Count),
               "STATE_NAMES is out of sync with ResourceState");
 

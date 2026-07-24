@@ -79,18 +79,31 @@ enum class Format : u16 {
 
 enum class ResourceState : u16 {
   Undefined = 0, ///< Contents are garbage; only valid as a barrier source.
-  General,       ///< Read/write from shaders; the "I gave up" state.
-  RenderTarget,
-  DepthWrite,
-  DepthRead,
-  ShaderResource,  ///< Sampled or read-only in any shader stage.
-  UnorderedAccess, ///< Read/write storage image or buffer.
-  IndirectArgument,
-  VertexBuffer,
-  IndexBuffer,
-  UniformBuffer,
+  General,       ///< Any access; the catch-all when nothing tighter applies.
+
   CopySrc,
   CopyDst,
+
+  ShaderReadOnly,  ///< Sampled, or a read-only storage resource.
+  ShaderWriteOnly, ///< Write-only storage image / buffer.
+  ShaderReadWrite, ///< Read-write storage image / buffer (UAV).
+
+  ColorAttachment, ///< Read and write (blending).
+  ColorAttachmentRead,
+  ColorAttachmentWrite,
+
+  DepthStencilRead, ///< Depth test with writes disabled; sampleable.
+  DepthStencilWrite,
+  DepthStencilReadWrite,
+
+  VertexBuffer,
+  IndexBuffer,
+  IndirectBuffer,
+  UniformBuffer,
+
+  HostRead,
+  HostWrite,
+
   Present,
   Count
 };

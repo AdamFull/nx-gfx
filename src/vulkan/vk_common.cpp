@@ -305,6 +305,14 @@ VkPresentModeKHR to_vk_present_mode(const PresentMode mode) noexcept {
 }
 
 VkStateInfo to_vk_state(const ResourceState state) noexcept {
+  constexpr VkPipelineStageFlags2 ALL_SHADERS =
+      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+  constexpr VkPipelineStageFlags2 DEPTH_STAGES =
+      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+      VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+
   switch (state) {
   case ResourceState::Undefined:
     return {VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -314,42 +322,56 @@ VkStateInfo to_vk_state(const ResourceState state) noexcept {
     return {VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
             VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
 
-  case ResourceState::RenderTarget:
+  case ResourceState::CopySrc:
+    return {VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT};
+
+  case ResourceState::CopyDst:
+    return {VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT};
+
+  case ResourceState::ShaderReadOnly:
+    return {VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, ALL_SHADERS,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
+
+  case ResourceState::ShaderWriteOnly:
+    return {VK_IMAGE_LAYOUT_GENERAL, ALL_SHADERS,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+
+  case ResourceState::ShaderReadWrite:
+    return {VK_IMAGE_LAYOUT_GENERAL, ALL_SHADERS,
+            VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+
+  case ResourceState::ColorAttachment:
     return {VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT};
 
-  case ResourceState::DepthWrite:
-    return {VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
+  case ResourceState::ColorAttachmentRead:
+    return {VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT};
 
-  case ResourceState::DepthRead:
-    return {VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+  case ResourceState::ColorAttachmentWrite:
+    return {VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT};
+
+  case ResourceState::DepthStencilRead:
+    return {VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, DEPTH_STAGES,
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT};
 
-  case ResourceState::ShaderResource:
-    return {VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT};
+  case ResourceState::DepthStencilWrite:
+    return {VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, DEPTH_STAGES,
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
 
-  case ResourceState::UnorderedAccess:
-    return {VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
-
-  case ResourceState::IndirectArgument:
-    return {VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT};
+  case ResourceState::DepthStencilReadWrite:
+    return {VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, DEPTH_STAGES,
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
 
   case ResourceState::VertexBuffer:
     return {VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
@@ -359,21 +381,25 @@ VkStateInfo to_vk_state(const ResourceState state) noexcept {
     return {VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
             VK_ACCESS_2_INDEX_READ_BIT};
 
+  case ResourceState::IndirectBuffer:
+    return {VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT};
+
   case ResourceState::UniformBuffer:
-    return {VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+    return {VK_IMAGE_LAYOUT_UNDEFINED,
+            ALL_SHADERS | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
             VK_ACCESS_2_UNIFORM_READ_BIT};
 
-  case ResourceState::CopySrc:
-    return {VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-            VK_ACCESS_2_TRANSFER_READ_BIT};
+  case ResourceState::HostRead:
+    return {VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_HOST_BIT,
+            VK_ACCESS_2_HOST_READ_BIT};
 
-  case ResourceState::CopyDst:
-    return {VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT};
+  case ResourceState::HostWrite:
+    return {VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_HOST_BIT,
+            VK_ACCESS_2_HOST_WRITE_BIT};
 
   case ResourceState::Present:
-    // Presentation is synchronized by the semaphore, not by access flags, so
-    // this deliberately requests no access at bottom-of-pipe.
+    // Present is ordered by the release semaphore, not by memory access.
     return {VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, VK_ACCESS_2_NONE};
 
