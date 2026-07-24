@@ -31,6 +31,7 @@ else ()
             vulkan/vk_bindless.cpp
             vulkan/vk_common.cpp
             vulkan/vk_device.cpp
+            vulkan/vk_pipeline.cpp
             vulkan/vk_resources.cpp
             vulkan/vk_swapchain.cpp
             vulkan/vk_vma.cpp)
