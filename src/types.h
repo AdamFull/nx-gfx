@@ -74,6 +74,15 @@ enum class Format : u16 {
   ASTC_8x8_UNORM,
   ASTC_8x8_SRGB,
 
+  // Extra block-compressed formats DDS/KTX assets commonly carry. Appended
+  // rather than grouped so no existing enumerator changes value.
+  BC1_RGB_UNORM, ///< DXT1 without the 1-bit alpha.
+  BC1_RGB_SRGB,
+  BC2_RGBA_UNORM, ///< DXT3 (explicit alpha).
+  BC2_RGBA_SRGB,
+  BC6H_RGB_UFLOAT, ///< HDR, unsigned.
+  BC6H_RGB_SFLOAT, ///< HDR, signed.
+
   Count
 };
 

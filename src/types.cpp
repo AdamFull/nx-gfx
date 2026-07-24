@@ -71,6 +71,13 @@ constexpr FormatInfo FORMAT_TABLE[] = {
     {"ASTC_6x6_SRGB", 16, 6, 6, false, false, true},
     {"ASTC_8x8_UNORM", 16, 8, 8, false, false, false},
     {"ASTC_8x8_SRGB", 16, 8, 8, false, false, true},
+
+    {"BC1_RGB_UNORM", 8, 4, 4, false, false, false},
+    {"BC1_RGB_SRGB", 8, 4, 4, false, false, true},
+    {"BC2_RGBA_UNORM", 16, 4, 4, false, false, false},
+    {"BC2_RGBA_SRGB", 16, 4, 4, false, false, true},
+    {"BC6H_RGB_UFLOAT", 16, 4, 4, false, false, false},
+    {"BC6H_RGB_SFLOAT", 16, 4, 4, false, false, false},
 };
 static_assert(std::size(FORMAT_TABLE) == nx::cast<usize>(Format::Count),
               "FORMAT_TABLE is out of sync with Format");
