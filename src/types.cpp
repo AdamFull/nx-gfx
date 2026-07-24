@@ -153,4 +153,22 @@ bool format_is_srgb(const Format format) noexcept {
   return info_of(format).srgb;
 }
 
+bool format_is_compressed(const Format format) noexcept {
+  const FormatInfo &info = info_of(format);
+  return info.block_width > 1 || info.block_height > 1;
+}
+
+u64 format_row_pitch(const Format format, const u32 width) noexcept {
+  const FormatInfo &info = info_of(format);
+  const u32 blocks_x = (width + info.block_width - 1) / info.block_width;
+  return nx::cast<u64>(blocks_x) * info.texel_size;
+}
+
+u64 format_subresource_size(const Format format, const u32 width,
+                            const u32 height, const u32 depth) noexcept {
+  const FormatInfo &info = info_of(format);
+  const u32 blocks_y = (height + info.block_height - 1) / info.block_height;
+  return format_row_pitch(format, width) * blocks_y * (depth == 0 ? 1u : depth);
+}
+
 } // namespace nxe::rhi

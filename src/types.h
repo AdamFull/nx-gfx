@@ -255,7 +255,6 @@ enum class AcquireResult : u8 {
 [[nodiscard]] nx::string_view to_string(ResourceState state) noexcept;
 [[nodiscard]] nx::string_view to_string(QueueType queue) noexcept;
 
-// TODO: Needs to be updated from older projects
 /// Bytes per pixel for uncompressed formats, or bytes per block for compressed
 /// ones. Returns 0 for Format::Unknown.
 [[nodiscard]] u32 format_texel_size(Format format) noexcept;
@@ -264,5 +263,15 @@ void format_block_extent(Format format, u32 &width, u32 &height) noexcept;
 [[nodiscard]] bool format_is_depth(Format format) noexcept;
 [[nodiscard]] bool format_is_stencil(Format format) noexcept;
 [[nodiscard]] bool format_is_srgb(Format format) noexcept;
+/// True for block-compressed formats (BC*, ASTC*).
+[[nodiscard]] bool format_is_compressed(Format format) noexcept;
+
+/// Bytes in one row of blocks for a mip of the given width. Compressed rows are
+/// counted in whole blocks, so the width is rounded up to the block size.
+[[nodiscard]] u64 format_row_pitch(Format format, u32 width) noexcept;
+/// Tightly-packed byte size of one mip subresource (one array layer / one 3D
+/// slice stack). Rounds up to whole blocks on each axis.
+[[nodiscard]] u64 format_subresource_size(Format format, u32 width, u32 height,
+                                          u32 depth = 1) noexcept;
 
 } // namespace nxe::rhi
