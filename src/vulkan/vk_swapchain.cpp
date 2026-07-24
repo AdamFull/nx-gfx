@@ -370,6 +370,14 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   if (NX_VK_CHECK(vkBeginCommandBuffer(cmd, &begin)) != VK_SUCCESS)
     return AcquireResult::SurfaceLost;
 
+  // Bind the bindless set once for the whole frame, for both pipeline types.
+  // It is never rebound.
+  const VkDescriptorSet set = m_bindless.set;
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          m_pipeline_layout, BINDLESS_SET, 1, &set, 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          m_pipeline_layout, BINDLESS_SET, 1, &set, 0, nullptr);
+
   out_context.m_cmd = cmd;
   out_context.m_device = this;
   out_context.m_in_render_pass = false;

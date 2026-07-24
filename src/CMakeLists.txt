@@ -6,6 +6,7 @@
 # graphics API types. See docs/design.md section 5.
 
 set(NX_RHI_HEADERS
+        bindless.h
         descs.h
         device.h
         handles.h
@@ -27,6 +28,7 @@ else ()
             vulkan/vk_common.h
             vulkan/vk_device.h)
     list(APPEND NX_RHI_SOURCES
+            vulkan/vk_bindless.cpp
             vulkan/vk_common.cpp
             vulkan/vk_device.cpp
             vulkan/vk_resources.cpp

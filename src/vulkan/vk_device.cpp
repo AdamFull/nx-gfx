@@ -384,6 +384,10 @@ bool VulkanDevice::create_logical_device() {
   features.features.multiDrawIndirect = VK_TRUE;
   features.features.shaderInt16 = VK_TRUE;
   features.features.independentBlend = VK_TRUE;
+  // Lets one bindless rwTextures[] array hold images of differing formats: the
+  // shader declares the type, the descriptor carries no format.
+  features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+  features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
   const char *device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
@@ -501,6 +505,8 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
     return false;
   if (!create_allocator())
     return false;
+  if (!create_bindless_heap())
+    return false;
 
   return true;
 }
@@ -513,6 +519,29 @@ void VulkanDevice::shutdown() noexcept {
 
   // Everything is idle, so the deferred queue can be drained unconditionally.
   collect_garbage(~0ull);
+
+  // Retire whatever the caller left behind.
+  for (VulkanTexture &texture : m_textures)
+    destroy_texture_now(texture);
+  m_textures.clear();
+  for (VulkanBuffer &buf : m_buffers)
+    if (buf.buffer != VK_NULL_HANDLE)
+      vmaDestroyBuffer(m_allocator, buf.buffer, buf.allocation);
+  m_buffers.clear();
+  for (VulkanSampler &sampler : m_samplers)
+    if (sampler.sampler != VK_NULL_HANDLE)
+      vkDestroySampler(m_device, sampler.sampler, nullptr);
+  m_samplers.clear();
+
+  if (m_pipeline_layout != VK_NULL_HANDLE) {
+    vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
+    m_pipeline_layout = VK_NULL_HANDLE;
+  }
+  if (m_bindless.layout != VK_NULL_HANDLE)
+    vkDestroyDescriptorSetLayout(m_device, m_bindless.layout, nullptr);
+  if (m_bindless.pool != VK_NULL_HANDLE)
+    vkDestroyDescriptorPool(m_device, m_bindless.pool, nullptr);
+  m_bindless = {};
 
   for (auto &frame : m_frames) {
     if (frame.acquire_semaphore != VK_NULL_HANDLE)
@@ -564,6 +593,19 @@ void VulkanDevice::set_object_name(const u64 object, const VkObjectType type,
   NX_VK_CHECK(vkSetDebugUtilsObjectNameEXT(m_device, &info));
 }
 
+void VulkanDevice::destroy_texture_now(VulkanTexture &texture) noexcept {
+  for (const u32 slot : texture.uav_indices)
+    free_rw_slot(slot);
+  for (const VkImageView uav : texture.uavs)
+    vkDestroyImageView(m_device, uav, nullptr);
+  if (texture.srv != VK_NULL_HANDLE)
+    vkDestroyImageView(m_device, texture.srv, nullptr);
+  if (texture.rtv != VK_NULL_HANDLE)
+    vkDestroyImageView(m_device, texture.rtv, nullptr);
+  if (texture.owns_image && texture.image != VK_NULL_HANDLE)
+    vmaDestroyImage(m_allocator, texture.image, texture.allocation);
+}
+
 void VulkanDevice::collect_garbage(
     const u64 completed_timeline_value) noexcept {
   for (usize i = m_pending_deletes.size(); i > 0; --i) {
@@ -571,12 +613,18 @@ void VulkanDevice::collect_garbage(
     if (pending.timeline_value > completed_timeline_value)
       continue;
 
-    for (const VkImageView view : pending.views)
-      vkDestroyImageView(m_device, view, nullptr);
-    if (pending.image != VK_NULL_HANDLE && pending.allocation != VK_NULL_HANDLE)
-      vmaDestroyImage(m_allocator, pending.image, pending.allocation);
-    if (pending.buffer != VK_NULL_HANDLE)
-      vmaDestroyBuffer(m_allocator, pending.buffer, pending.allocation);
+    if (VulkanTexture *texture = m_textures.try_get(pending.texture)) {
+      destroy_texture_now(*texture);
+      m_textures.erase(pending.texture);
+    }
+    if (VulkanBuffer *buffer = m_buffers.try_get(pending.buffer)) {
+      vmaDestroyBuffer(m_allocator, buffer->buffer, buffer->allocation);
+      m_buffers.erase(pending.buffer);
+    }
+    if (VulkanSampler *sampler = m_samplers.try_get(pending.sampler)) {
+      vkDestroySampler(m_device, sampler->sampler, nullptr);
+      m_samplers.erase(pending.sampler);
+    }
 
     m_pending_deletes.erase(m_pending_deletes.begin() + nx::cast<isize>(i - 1));
   }

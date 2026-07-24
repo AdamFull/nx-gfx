@@ -48,12 +48,11 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
   // faces as an array instead.
   const VkImageViewType flat_type =
       texture.dimension == TextureDimension::Tex3D ? VK_IMAGE_VIEW_TYPE_3D
-      : texture.layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                           : VK_IMAGE_VIEW_TYPE_2D;
+      : texture.layers > 1                         ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                   : VK_IMAGE_VIEW_TYPE_2D;
 
   const auto make_view = [&](const VkImageViewType type, const u32 base_mip,
-                             const u32 mip_count,
-                             VkImageView &out) -> bool {
+                             const u32 mip_count, VkImageView &out) -> bool {
     VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     info.image = texture.image;
     info.viewType = type;
@@ -153,33 +152,29 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   }
 
   const TextureHandle handle = m_textures.insert(std::move(texture));
-  set_object_name(vk_handle_value(m_textures.try_get(handle)->image),
-                  VK_OBJECT_TYPE_IMAGE, desc.name);
+  VulkanTexture &stored = *m_textures.try_get(handle);
+  set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
+                  desc.name);
+
+  // Register in the bindless heap. The SRV slot is the handle index; each UAV
+  // (one per mip) takes a slot from the storage free list.
+  if (stored.srv != VK_NULL_HANDLE)
+    write_texture_descriptor(nx::cast<u32>(handle.index()), stored.srv);
+  for (const VkImageView uav : stored.uavs) {
+    const u32 slot = alloc_rw_slot();
+    stored.uav_indices.push_back(slot);
+    write_rw_texture_descriptor(slot, uav);
+  }
+
   return handle;
 }
 
 void VulkanDevice::destroy_texture(const TextureHandle handle) noexcept {
-  VulkanTexture *texture = m_textures.try_get(handle);
-  if (texture == nullptr)
+  if (!m_textures.contains(handle))
     return;
-
-  // Cannot free now: the GPU may still be reading it up to m_frames_in_flight
-  // frames behind. Queue it against the current timeline value instead.
-  if (texture->owns_image) {
-    PendingDelete pending;
-    pending.timeline_value = m_timeline_value;
-    pending.image = texture->image;
-    pending.allocation = texture->allocation;
-    if (texture->srv != VK_NULL_HANDLE)
-      pending.views.push_back(texture->srv);
-    if (texture->rtv != VK_NULL_HANDLE)
-      pending.views.push_back(texture->rtv);
-    for (const VkImageView uav : texture->uavs)
-      pending.views.push_back(uav);
-    m_pending_deletes.push_back(std::move(pending));
-  }
-
-  m_textures.erase(handle);
+  // The slot_map entry - and its descriptor slots - stay live until the GPU
+  // has passed this frame; collect_garbage does the actual teardown.
+  m_pending_deletes.push_back({m_timeline_value, handle, {}, {}});
 }
 
 const VulkanTexture *
@@ -237,22 +232,79 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
 }
 
 void VulkanDevice::destroy_buffer(const BufferHandle handle) noexcept {
-  const VulkanBuffer *buffer = m_buffers.try_get(handle);
-  if (buffer == nullptr)
+  if (!m_buffers.contains(handle))
     return;
-
-  PendingDelete pending;
-  pending.timeline_value = m_timeline_value;
-  pending.buffer = buffer->buffer;
-  pending.allocation = buffer->allocation;
-  m_pending_deletes.push_back(pending);
-
-  m_buffers.erase(handle);
+  m_pending_deletes.push_back({m_timeline_value, {}, handle, {}});
 }
 
 const VulkanBuffer *
 VulkanDevice::buffer(const BufferHandle handle) const noexcept {
   return m_buffers.try_get(handle);
+}
+
+// Samplers
+
+SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
+  VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  info.magFilter = to_vk_filter(desc.mag_filter);
+  info.minFilter = to_vk_filter(desc.min_filter);
+  info.mipmapMode = to_vk_mip_mode(desc.mip_filter);
+  info.addressModeU = to_vk_address_mode(desc.address_u);
+  info.addressModeV = to_vk_address_mode(desc.address_v);
+  info.addressModeW = to_vk_address_mode(desc.address_w);
+  info.mipLodBias = desc.mip_lod_bias;
+  info.anisotropyEnable = desc.max_anisotropy > 1.f ? VK_TRUE : VK_FALSE;
+  info.maxAnisotropy = desc.max_anisotropy;
+  info.compareEnable = desc.compare != CompareOp::Never ? VK_TRUE : VK_FALSE;
+  info.compareOp = to_vk_compare_op(desc.compare);
+  info.minLod = desc.min_lod;
+  info.maxLod = desc.max_lod;
+  info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+
+  VulkanSampler sampler;
+  if (NX_VK_CHECK(vkCreateSampler(m_device, &info, nullptr,
+                                  &sampler.sampler)) != VK_SUCCESS) {
+    nx::loge(log_rhi, "create_sampler('{}') failed", desc.name);
+    return {};
+  }
+
+  const SamplerHandle handle = m_samplers.insert(sampler);
+  set_object_name(vk_handle_value(sampler.sampler), VK_OBJECT_TYPE_SAMPLER,
+                  desc.name);
+  write_sampler_descriptor(nx::cast<u32>(handle.index()), sampler.sampler);
+  return handle;
+}
+
+void VulkanDevice::destroy_sampler(const SamplerHandle handle) noexcept {
+  if (!m_samplers.contains(handle))
+    return;
+  m_pending_deletes.push_back({m_timeline_value, {}, {}, handle});
+}
+
+u32 VulkanDevice::texture_index(const TextureHandle handle) const noexcept {
+  const VulkanTexture *texture = m_textures.try_get(handle);
+  if (texture == nullptr || texture->srv == VK_NULL_HANDLE)
+    return BINDLESS_INVALID_INDEX;
+  return nx::cast<u32>(handle.index());
+}
+
+u32 VulkanDevice::rw_texture_index(const TextureHandle handle,
+                                   const u32 mip) const noexcept {
+  const VulkanTexture *texture = m_textures.try_get(handle);
+  if (texture == nullptr || mip >= texture->uav_indices.size())
+    return BINDLESS_INVALID_INDEX;
+  return texture->uav_indices[mip];
+}
+
+u32 VulkanDevice::sampler_index(const SamplerHandle handle) const noexcept {
+  return m_samplers.contains(handle) ? nx::cast<u32>(handle.index())
+                                     : BINDLESS_INVALID_INDEX;
+}
+
+VkDeviceAddress
+VulkanDevice::buffer_address(const BufferHandle handle) const noexcept {
+  const VulkanBuffer *buffer = m_buffers.try_get(handle);
+  return buffer != nullptr ? buffer->device_address : 0;
 }
 
 // Command recording
