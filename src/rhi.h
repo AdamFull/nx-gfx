@@ -12,8 +12,8 @@
  * See docs/design.md section 5.
  */
 
-#include "rhi/bindless.h"
-#include "rhi/descs.h"
-#include "rhi/device.h"
-#include "rhi/handles.h"
-#include "rhi/types.h"
+#include "rendering/rhi/bindless.h"
+#include "rendering/rhi/descs.h"
+#include "rendering/rhi/device.h"
+#include "rendering/rhi/handles.h"
+#include "rendering/rhi/types.h"

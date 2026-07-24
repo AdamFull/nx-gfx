@@ -3,7 +3,7 @@
  * @brief Texture and buffer creation, and command recording.
  */
 
-#include "rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_device.h"
 
 #include "foundation/diagnostics/log.h"
 

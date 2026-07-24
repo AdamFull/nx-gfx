@@ -1,4 +1,4 @@
-#include "rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_device.h"
 
 #include "foundation/core/scope_guard.h"
 #include "foundation/diagnostics/diagnostic.h"

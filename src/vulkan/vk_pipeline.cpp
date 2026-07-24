@@ -3,7 +3,7 @@
  * @brief Shader modules, graphics/compute pipelines, and the disk cache.
  */
 
-#include "rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_device.h"
 
 #include "foundation/diagnostics/log.h"
 #include "foundation/platform/filesystem.h"

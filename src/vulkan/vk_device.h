@@ -9,11 +9,11 @@
 #include "foundation/containers/slot_map.h"
 #include "foundation/containers/small_vector.h"
 #include "foundation/strings/utf8_string.h"
-#include "rhi/bindless.h"
-#include "rhi/descs.h"
-#include "rhi/handles.h"
-#include "rhi/types.h"
-#include "rhi/vulkan/vk_common.h"
+#include "rendering/rhi/bindless.h"
+#include "rendering/rhi/descs.h"
+#include "rendering/rhi/handles.h"
+#include "rendering/rhi/types.h"
+#include "rendering/rhi/vulkan/vk_common.h"
 
 #include <vk_mem_alloc.h>
 

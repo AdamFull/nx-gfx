@@ -3,7 +3,7 @@
  * @brief The single bindless descriptor set and the global pipeline layout.
  */
 
-#include "rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_device.h"
 
 #include "foundation/diagnostics/log.h"
 

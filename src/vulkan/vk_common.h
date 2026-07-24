@@ -7,8 +7,8 @@
  */
 
 #include "foundation/core/foundation.h"
-#include "rhi/descs.h"
-#include "rhi/types.h"
+#include "rendering/rhi/descs.h"
+#include "rendering/rhi/types.h"
 
 #include <volk.h>
 

@@ -8,8 +8,8 @@
 
 #include "foundation/core/foundation.h"
 #include "foundation/strings/utf8_string_view.h"
-#include "rhi/handles.h"
-#include "rhi/types.h"
+#include "rendering/rhi/handles.h"
+#include "rendering/rhi/types.h"
 #include "runtime/window.h"
 
 namespace nxe::rhi {

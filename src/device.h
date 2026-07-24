@@ -6,12 +6,12 @@
  *
  */
 
-#include "rhi/descs.h"
-#include "rhi/handles.h"
-#include "rhi/types.h"
+#include "rendering/rhi/descs.h"
+#include "rendering/rhi/handles.h"
+#include "rendering/rhi/types.h"
 
 #if defined(NX_RHI_VULKAN)
-#include "rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_device.h"
 
 namespace nxe::rhi {
 using Device = VulkanDevice;

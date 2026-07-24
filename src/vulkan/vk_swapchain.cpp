@@ -3,7 +3,7 @@
  * @brief Surface, swapchain, and the per-frame acquire/submit/present cycle.
  */
 
-#include "rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_device.h"
 
 #include "foundation/diagnostics/log.h"
 
