@@ -10,10 +10,12 @@ set(NX_RHI_HEADERS
         descs.h
         device.h
         handles.h
+        image/image.h
         rhi.h
         types.h)
 
 set(NX_RHI_SOURCES
+        image/image.cpp
         image/stb_image_impl.cpp
         types.cpp)
 
