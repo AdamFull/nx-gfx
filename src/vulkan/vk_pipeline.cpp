@@ -191,12 +191,15 @@ void VulkanDevice::destroy_shader(const ShaderHandle handle) noexcept {
 PipelineHandle
 VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   const VulkanShader *vs = m_shaders.try_get(desc.vertex.shader);
-  const VulkanShader *fs = m_shaders.try_get(desc.fragment.shader);
-  if (vs == nullptr || fs == nullptr) {
-    nx::loge(log_rhi, "create_graphics_pipeline('{}'): missing shader",
+  if (vs == nullptr) {
+    nx::loge(log_rhi, "create_graphics_pipeline('{}'): missing vertex shader",
              desc.name);
     return {};
   }
+
+  // The fragment shader is optional: a depth-only pass (shadow map, depth
+  // prepass) runs the vertex stage and writes depth with no colour output.
+  const VulkanShader *fs = m_shaders.try_get(desc.fragment.shader);
 
   const nx::string vs_entry(desc.vertex.entry_point);
   const nx::string fs_entry(desc.fragment.entry_point);
@@ -206,10 +209,14 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
   stages[0].module = vs->module;
   stages[0].pName = vs_entry.c_str();
-  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  stages[1].module = fs->module;
-  stages[1].pName = fs_entry.c_str();
+  u32 stage_count = 1;
+  if (fs != nullptr) {
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs->module;
+    stages[1].pName = fs_entry.c_str();
+    stage_count = 2;
+  }
 
   // No vertex input: geometry is pulled from buffers by device address.
   VkPipelineVertexInputStateCreateInfo vertex_input{
@@ -278,7 +285,7 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   VkGraphicsPipelineCreateInfo info{
       VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
   info.pNext = &rendering;
-  info.stageCount = 2;
+  info.stageCount = stage_count;
   info.pStages = stages;
   info.pVertexInputState = &vertex_input;
   info.pInputAssemblyState = &input_assembly;
@@ -286,7 +293,8 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   info.pRasterizationState = &raster;
   info.pMultisampleState = &multisample;
   info.pDepthStencilState = &depth_stencil;
-  info.pColorBlendState = &color_blend;
+  // A depth-only pipeline has no colour attachments; the blend state is unused.
+  info.pColorBlendState = desc.color_count > 0 ? &color_blend : nullptr;
   info.pDynamicState = &dynamic;
   info.layout = m_pipeline_layout;
 
