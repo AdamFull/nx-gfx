@@ -14,6 +14,7 @@ set(NX_RHI_HEADERS
         types.h)
 
 set(NX_RHI_SOURCES
+        image/stb_image_impl.cpp
         types.cpp)
 
 # Vulkan everywhere except Apple platforms, which get Metal. Note this is not
@@ -54,7 +55,17 @@ add_library(nx::rhi ALIAS nx_rhi)
 # call.
 target_link_libraries(nx_rhi
         PUBLIC nx::foundation nx::runtime
-        PRIVATE nx::compile_options)
+        PRIVATE nx::compile_options nx::stb)
+
+# stb_image's implementation TU is third-party code; its warnings are not ours
+# to fix and it is noisy under /W4.
+if (MSVC)
+    set_source_files_properties(image/stb_image_impl.cpp PROPERTIES
+            COMPILE_OPTIONS "/w")
+else ()
+    set_source_files_properties(image/stb_image_impl.cpp PROPERTIES
+            COMPILE_OPTIONS "-w")
+endif ()
 
 if (NOT APPLE)
     target_compile_definitions(nx_rhi PUBLIC NX_RHI_VULKAN=1)
