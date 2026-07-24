@@ -250,7 +250,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     view_info.subresourceRange.levelCount = 1;
     view_info.subresourceRange.layerCount = 1;
-    NX_VK_TRY(vkCreateImageView(m_device, &view_info, nullptr, &texture.view));
+    NX_VK_TRY(vkCreateImageView(m_device, &view_info, nullptr, &texture.rtv));
 
     m_backbuffers.push_back(m_textures.insert(std::move(texture)));
 
@@ -277,8 +277,8 @@ bool VulkanDevice::resize_swapchain(const u32 width, const u32 height) {
 void VulkanDevice::destroy_backbuffer_views() noexcept {
   for (const TextureHandle handle : m_backbuffers) {
     if (const VulkanTexture *texture = m_textures.try_get(handle)) {
-      if (texture->view != VK_NULL_HANDLE)
-        vkDestroyImageView(m_device, texture->view, nullptr);
+      if (texture->rtv != VK_NULL_HANDLE)
+        vkDestroyImageView(m_device, texture->rtv, nullptr);
     }
     m_textures.erase(handle);
   }

@@ -42,11 +42,22 @@ struct DeviceDesc {
 
 /// A texture as the backend sees it. Swapchain images are also textures, but
 /// with `owns_image` false because the swapchain owns them.
+/// One VkImage needs several views because a single view cannot serve every
+/// use: a sampled view spans the whole mip chain, but an attachment or storage
+/// view must address exactly one mip level.
+///   - srv: sampling; all mips, all layers. This view's slot is the bindless
+///     descriptor index.
+///   - rtv: colour/depth attachment; mip 0.
+///   - uav[i]: storage access to mip i.
+/// Each is null unless the matching usage flag was requested.
 struct VulkanTexture {
   VkImage image = VK_NULL_HANDLE;
-  VkImageView view = VK_NULL_HANDLE;
+  VkImageView srv = VK_NULL_HANDLE;
+  VkImageView rtv = VK_NULL_HANDLE;
+  nx::small_vector<VkImageView, 12> uavs;
   VmaAllocation allocation = VK_NULL_HANDLE;
   Format format = Format::Unknown;
+  TextureDimension dimension = TextureDimension::Tex2D;
   u32 width = 0;
   u32 height = 0;
   u32 mip_levels = 1;
@@ -238,11 +249,14 @@ private:
   struct PendingDelete {
     u64 timeline_value = 0;
     VkImage image = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
+    nx::small_vector<VkImageView, 13> views;
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
   };
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
+
+  /// Builds the srv/rtv/uav set a texture's usage flags call for.
+  bool create_texture_views(VulkanTexture &texture, nx::string_view name);
 };
 
 } // namespace nxe::rhi

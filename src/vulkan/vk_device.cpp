@@ -571,8 +571,8 @@ void VulkanDevice::collect_garbage(
     if (pending.timeline_value > completed_timeline_value)
       continue;
 
-    if (pending.view != VK_NULL_HANDLE)
-      vkDestroyImageView(m_device, pending.view, nullptr);
+    for (const VkImageView view : pending.views)
+      vkDestroyImageView(m_device, view, nullptr);
     if (pending.image != VK_NULL_HANDLE && pending.allocation != VK_NULL_HANDLE)
       vmaDestroyImage(m_allocator, pending.image, pending.allocation);
     if (pending.buffer != VK_NULL_HANDLE)

@@ -39,6 +39,59 @@ VmaAllocationCreateFlags to_vma_flags(const MemoryUsage usage,
 
 // Textures
 
+bool VulkanDevice::create_texture_views(VulkanTexture &texture,
+                                        const nx::string_view name) {
+  const VkFormat format = to_vk_format(texture.format);
+  const VkImageAspectFlags aspect = to_vk_aspect(texture.format);
+
+  // Attachment and storage views cannot use a CUBE type; they address the
+  // faces as an array instead.
+  const VkImageViewType flat_type =
+      texture.dimension == TextureDimension::Tex3D ? VK_IMAGE_VIEW_TYPE_3D
+      : texture.layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                           : VK_IMAGE_VIEW_TYPE_2D;
+
+  const auto make_view = [&](const VkImageViewType type, const u32 base_mip,
+                             const u32 mip_count,
+                             VkImageView &out) -> bool {
+    VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    info.image = texture.image;
+    info.viewType = type;
+    info.format = format;
+    info.subresourceRange.aspectMask = aspect;
+    info.subresourceRange.baseMipLevel = base_mip;
+    info.subresourceRange.levelCount = mip_count;
+    info.subresourceRange.layerCount = texture.layers;
+    return NX_VK_CHECK(vkCreateImageView(m_device, &info, nullptr, &out)) ==
+           VK_SUCCESS;
+  };
+
+  if (texture.usage & TextureUsage::Sampled) {
+    if (!make_view(to_vk_view_type(texture.dimension), 0, texture.mip_levels,
+                   texture.srv))
+      return false;
+    set_object_name(vk_handle_value(texture.srv), VK_OBJECT_TYPE_IMAGE_VIEW,
+                    name);
+  }
+
+  if (texture.usage & (TextureUsage::RenderTarget | TextureUsage::DepthStencil |
+                       TextureUsage::Transient)) {
+    if (!make_view(flat_type, 0, 1, texture.rtv))
+      return false;
+  }
+
+  if (texture.usage & TextureUsage::Storage) {
+    for (u32 mip = 0; mip < texture.mip_levels; ++mip) {
+      VkImageView uav = VK_NULL_HANDLE;
+      if (!make_view(flat_type, mip, 1, uav))
+        return false;
+      texture.uavs.push_back(uav);
+    }
+  }
+
+  return true;
+}
+
 TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   if (desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
     nx::loge(log_rhi, "create_texture('{}'): invalid format or extent",
@@ -67,8 +120,6 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = to_vma_usage(desc.memory);
   alloc_info.flags = to_vma_flags(desc.memory, false);
-  // A transient attachment on a tiler should never get real memory; asking for
-  // lazy allocation is what makes that happen.
   if (desc.usage & TextureUsage::Transient)
     alloc_info.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
 
@@ -80,21 +131,8 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
     return {};
   }
 
-  VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-  view_info.image = texture.image;
-  view_info.viewType = to_vk_view_type(desc.dimension);
-  view_info.format = info.format;
-  view_info.subresourceRange.aspectMask = to_vk_aspect(desc.format);
-  view_info.subresourceRange.levelCount = desc.mip_levels;
-  view_info.subresourceRange.layerCount = info.arrayLayers;
-
-  if (NX_VK_CHECK(vkCreateImageView(m_device, &view_info, nullptr,
-                                    &texture.view)) != VK_SUCCESS) {
-    vmaDestroyImage(m_allocator, texture.image, texture.allocation);
-    return {};
-  }
-
   texture.format = desc.format;
+  texture.dimension = desc.dimension;
   texture.width = desc.width;
   texture.height = desc.height;
   texture.mip_levels = desc.mip_levels;
@@ -103,15 +141,25 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   texture.state = ResourceState::Undefined;
   texture.owns_image = true;
 
-  const TextureHandle handle = m_textures.insert(texture);
+  if (!create_texture_views(texture, desc.name)) {
+    for (const VkImageView view : texture.uavs)
+      vkDestroyImageView(m_device, view, nullptr);
+    if (texture.srv != VK_NULL_HANDLE)
+      vkDestroyImageView(m_device, texture.srv, nullptr);
+    if (texture.rtv != VK_NULL_HANDLE)
+      vkDestroyImageView(m_device, texture.rtv, nullptr);
+    vmaDestroyImage(m_allocator, texture.image, texture.allocation);
+    return {};
+  }
 
+  const TextureHandle handle = m_textures.insert(std::move(texture));
   set_object_name(vk_handle_value(m_textures.try_get(handle)->image),
                   VK_OBJECT_TYPE_IMAGE, desc.name);
   return handle;
 }
 
 void VulkanDevice::destroy_texture(const TextureHandle handle) noexcept {
-  const VulkanTexture *texture = m_textures.try_get(handle);
+  VulkanTexture *texture = m_textures.try_get(handle);
   if (texture == nullptr)
     return;
 
@@ -121,9 +169,14 @@ void VulkanDevice::destroy_texture(const TextureHandle handle) noexcept {
     PendingDelete pending;
     pending.timeline_value = m_timeline_value;
     pending.image = texture->image;
-    pending.view = texture->view;
     pending.allocation = texture->allocation;
-    m_pending_deletes.push_back(pending);
+    if (texture->srv != VK_NULL_HANDLE)
+      pending.views.push_back(texture->srv);
+    if (texture->rtv != VK_NULL_HANDLE)
+      pending.views.push_back(texture->rtv);
+    for (const VkImageView uav : texture->uavs)
+      pending.views.push_back(uav);
+    m_pending_deletes.push_back(std::move(pending));
   }
 
   m_textures.erase(handle);
@@ -309,7 +362,7 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     }
 
     VkRenderingAttachmentInfo info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    info.imageView = texture->view;
+    info.imageView = texture->rtv;
     info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     info.loadOp = to_vk_load_op(attachment.load);
     info.storeOp = to_vk_store_op(attachment.store);
@@ -323,7 +376,7 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
   if (desc.has_depth_stencil) {
     if (const VulkanTexture *texture =
             m_device->texture(desc.depth_stencil.texture)) {
-      depth.imageView = texture->view;
+      depth.imageView = texture->rtv;
       depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
       depth.loadOp = to_vk_load_op(desc.depth_stencil.load);
       depth.storeOp = to_vk_store_op(desc.depth_stencil.store);
