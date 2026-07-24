@@ -150,6 +150,56 @@ struct SwapchainDesc {
   u32 frames_in_flight = 2;
 };
 
+/// A compiled shader blob (SPIR-V on Vulkan, metallib on Metal). One blob may
+/// hold several entry points; a pipeline names the one it wants.
+struct ShaderDesc {
+  nx::string_view name = "shader";
+  const void *code = nullptr;
+  usize code_size = 0;
+};
+
+/// A shader stage in a pipeline: which blob, and which entry point in it.
+struct ShaderEntry {
+  ShaderHandle shader;
+  nx::string_view entry_point = "main";
+};
+
+/// Colour target blending, one per attachment.
+struct BlendState {
+  bool enabled = false;
+  BlendMode mode = BlendMode::Opaque;
+  /// Per-channel write mask, bit 0..3 = R,G,B,A.
+  u8 write_mask = 0xF;
+};
+
+struct GraphicsPipelineDesc {
+  nx::string_view name = "pipeline";
+  ShaderEntry vertex;
+  ShaderEntry fragment;
+
+  /// Attachment formats, for dynamic rendering. Must match the render pass the
+  /// pipeline is used in.
+  Format color_formats[MAX_COLOR_ATTACHMENTS] = {};
+  u32 color_count = 0;
+  Format depth_format = Format::Unknown;
+  BlendState blend[MAX_COLOR_ATTACHMENTS] = {};
+
+  PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+  CullMode cull = CullMode::None;
+  FrontFace front_face = FrontFace::CounterClockwise;
+
+  bool depth_test = false;
+  bool depth_write = false;
+  CompareOp depth_compare = CompareOp::LessOrEqual;
+
+  u32 sample_count = 1;
+};
+
+struct ComputePipelineDesc {
+  nx::string_view name = "pipeline";
+  ShaderEntry compute;
+};
+
 /// Barrier describing a texture's state transition. The render graph is the
 /// intended producer of these; hand-written barriers are expert-mode.
 struct TextureBarrier {

@@ -359,9 +359,15 @@ bool VulkanDevice::create_logical_device() {
   features13.synchronization2 = VK_TRUE;
   features13.maintenance4 = VK_TRUE;
 
+  VkPhysicalDeviceVulkan11Features features11{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+  features11.pNext = &features13;
+  // Slang emits the DrawParameters capability for SV_VertexID / SV_InstanceID.
+  features11.shaderDrawParameters = VK_TRUE;
+
   VkPhysicalDeviceVulkan12Features features12{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-  features12.pNext = &features13;
+  features12.pNext = &features11;
   features12.timelineSemaphore = VK_TRUE;
   features12.bufferDeviceAddress = VK_TRUE;
   features12.descriptorIndexing = VK_TRUE;
@@ -507,6 +513,8 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
     return false;
   if (!create_bindless_heap())
     return false;
+  if (!create_pipeline_cache(desc.pipeline_cache_path))
+    return false;
 
   return true;
 }
@@ -532,6 +540,20 @@ void VulkanDevice::shutdown() noexcept {
     if (sampler.sampler != VK_NULL_HANDLE)
       vkDestroySampler(m_device, sampler.sampler, nullptr);
   m_samplers.clear();
+  for (VulkanShader &shader : m_shaders)
+    if (shader.module != VK_NULL_HANDLE)
+      vkDestroyShaderModule(m_device, shader.module, nullptr);
+  m_shaders.clear();
+  for (VulkanPipeline &pipeline : m_pipelines)
+    if (pipeline.pipeline != VK_NULL_HANDLE)
+      vkDestroyPipeline(m_device, pipeline.pipeline, nullptr);
+  m_pipelines.clear();
+
+  save_pipeline_cache();
+  if (m_pipeline_cache != VK_NULL_HANDLE) {
+    vkDestroyPipelineCache(m_device, m_pipeline_cache, nullptr);
+    m_pipeline_cache = VK_NULL_HANDLE;
+  }
 
   if (m_pipeline_layout != VK_NULL_HANDLE) {
     vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
@@ -624,6 +646,10 @@ void VulkanDevice::collect_garbage(
     if (VulkanSampler *sampler = m_samplers.try_get(pending.sampler)) {
       vkDestroySampler(m_device, sampler->sampler, nullptr);
       m_samplers.erase(pending.sampler);
+    }
+    if (VulkanPipeline *pipeline = m_pipelines.try_get(pending.pipeline)) {
+      vkDestroyPipeline(m_device, pipeline->pipeline, nullptr);
+      m_pipelines.erase(pending.pipeline);
     }
 
     m_pending_deletes.erase(m_pending_deletes.begin() + nx::cast<isize>(i - 1));

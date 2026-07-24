@@ -184,6 +184,32 @@ enum class CompareOp : u8 {
   Count
 };
 
+enum class ShaderStage : u8 { Vertex, Fragment, Compute, Count };
+
+enum class PrimitiveTopology : u8 {
+  TriangleList,
+  TriangleStrip,
+  LineList,
+  LineStrip,
+  PointList,
+  Count
+};
+
+enum class CullMode : u8 { None, Front, Back, Count };
+
+enum class FrontFace : u8 { CounterClockwise, Clockwise, Count };
+
+/// Common blend presets, so the renderer names intent instead of spelling out
+/// src/dst factors. 2D wants little more than these.
+enum class BlendMode : u8 {
+  Opaque,        ///< No blending.
+  AlphaBlend,    ///< src.a over dst (straight alpha).
+  Premultiplied, ///< src over dst, src colour already alpha-weighted.
+  Additive,      ///< src + dst.
+  Multiply,      ///< src * dst.
+  Count
+};
+
 enum class QueueType : u8 {
   Graphics, ///< Also valid for compute and copy.
   Compute,  ///< Async compute where the device exposes it.

@@ -30,6 +30,9 @@ struct DeviceDesc {
   bool enable_validation = false;
 #endif
   bool break_on_validation_error = false;
+  /// File the pipeline cache is loaded from and saved to. Empty keeps the cache
+  /// in memory only (recompiled every run).
+  nx::string_view pipeline_cache_path;
 };
 
 /// One VkImage, several views: a sampled view spans the whole mip chain, but an
@@ -68,6 +71,15 @@ struct VulkanSampler {
   VkSampler sampler = VK_NULL_HANDLE;
 };
 
+struct VulkanShader {
+  VkShaderModule module = VK_NULL_HANDLE;
+};
+
+struct VulkanPipeline {
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+};
+
 /// The single bindless descriptor set: sampler[], texture[] (sampled) and
 /// rwTexture[] (storage). Sampler and texture slots are handle indices;
 /// rwTexture slots come from a free list because a texture owns one per mip.
@@ -94,6 +106,17 @@ public:
 
   void set_viewport(const Viewport &viewport);
   void set_scissor(const Rect2D &rect);
+
+  void bind_pipeline(PipelineHandle pipeline);
+  /// Sets the whole 128-byte push block. Offset/size in bytes.
+  void push_constants(const void *data, u32 size, u32 offset = 0);
+
+  void draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0,
+            u32 first_instance = 0);
+  void draw_indexed(u32 index_count, u32 instance_count = 1,
+                    u32 first_index = 0, i32 vertex_offset = 0,
+                    u32 first_instance = 0);
+  void dispatch(u32 groups_x, u32 groups_y = 1, u32 groups_z = 1);
 
   /// Explicit barriers. The render graph is the intended caller.
   void barrier(const TextureBarrier *textures, u32 texture_count,
@@ -172,6 +195,17 @@ public:
   [[nodiscard]] SamplerHandle create_sampler(const SamplerDesc &desc);
   void destroy_sampler(SamplerHandle handle) noexcept;
 
+  // Shaders and pipelines (vk_pipeline.cpp).
+
+  [[nodiscard]] ShaderHandle create_shader(const ShaderDesc &desc);
+  void destroy_shader(ShaderHandle handle) noexcept;
+
+  [[nodiscard]] PipelineHandle
+  create_graphics_pipeline(const GraphicsPipelineDesc &desc);
+  [[nodiscard]] PipelineHandle
+  create_compute_pipeline(const ComputePipelineDesc &desc);
+  void destroy_pipeline(PipelineHandle handle) noexcept;
+
   // Bindless indices, for the push block.
 
   /// Slot to sample this texture through textures[]; INVALID if not Sampled.
@@ -196,6 +230,8 @@ public:
   [[nodiscard]] VkDescriptorSet bindless_set() const noexcept {
     return m_bindless.set;
   }
+  [[nodiscard]] const VulkanPipeline *
+  pipeline(PipelineHandle handle) const noexcept;
 
 private:
   bool create_instance(const DeviceDesc &desc);
@@ -203,6 +239,8 @@ private:
   bool create_logical_device();
   bool create_allocator();
   bool create_bindless_heap();
+  bool create_pipeline_cache(nx::string_view path);
+  void save_pipeline_cache() noexcept;
   bool create_frame_contexts(u32 frames_in_flight);
   bool build_swapchain(u32 width, u32 height);
   bool create_texture_views(VulkanTexture &texture, nx::string_view name);
@@ -233,6 +271,8 @@ private:
 
   BindlessHeap m_bindless;
   VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
+  VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
+  nx::string m_pipeline_cache_path;
 
   VkSemaphore m_timeline = VK_NULL_HANDLE;
   u64 m_timeline_value = 0;
@@ -253,6 +293,8 @@ private:
   nx::slot_map<VulkanTexture, TextureHandle> m_textures;
   nx::slot_map<VulkanBuffer, BufferHandle> m_buffers;
   nx::slot_map<VulkanSampler, SamplerHandle> m_samplers;
+  nx::slot_map<VulkanShader, ShaderHandle> m_shaders;
+  nx::slot_map<VulkanPipeline, PipelineHandle> m_pipelines;
 
   /// A resource freed during frame N stays alive - handle and descriptor slot
   /// included - until the GPU has passed N, then its slot_map entry is retired.
@@ -263,6 +305,7 @@ private:
     TextureHandle texture;
     BufferHandle buffer;
     SamplerHandle sampler;
+    PipelineHandle pipeline;
   };
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
 };
