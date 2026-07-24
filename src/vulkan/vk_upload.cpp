@@ -1,6 +1,11 @@
 /**
  * @file vk_upload.cpp
- * @brief Transfer-queue staging, copies and queue-ownership transfer.
+ * @brief Batched transfer-queue staging, copies and queue-ownership transfer.
+ *
+ * Uploads accumulate into one command buffer and stage through a single ring
+ * buffer; the batch is submitted once per frame (flush_batch), on staging
+ * backpressure, or on an explicit flush/wait. An upload larger than the whole
+ * ring, and every readback, fall back to a dedicated buffer instead.
  */
 
 #include "rendering/rhi/vulkan/vk_upload.h"
@@ -16,7 +21,10 @@ namespace {
 
 const nx::log::Category log_up = nx::log::category("upload");
 
-constexpr u64 MIN_CHUNK = 256ull * 1024;
+/// Staging ring size. Sized to hold a busy frame of sprite loads plus a couple
+/// of frames in flight; larger uploads take a dedicated buffer, so this is a
+/// throughput knob, not a hard limit on texture size.
+constexpr u64 RING_CAPACITY = 32ull * 1024 * 1024;
 
 [[nodiscard]] u64 align_up(const u64 value, const u64 alignment) noexcept {
   return (value + alignment - 1) & ~(alignment - 1);
@@ -73,14 +81,42 @@ bool VulkanUploader::init(VulkanDevice *device) {
   m_device->set_object_name(vk_handle_value(m_timeline),
                             VK_OBJECT_TYPE_SEMAPHORE, "upload timeline");
 
-  nx::logi(log_up, "uploader: transfer queue family {} ({})", m_copy_family,
-           needs_ownership_transfer() ? "dedicated" : "shared with graphics");
+  VkBufferCreateInfo buf_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  buf_info.size = RING_CAPACITY;
+  buf_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  buf_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VmaAllocationCreateInfo ring_alloc_info{};
+  ring_alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+  ring_alloc_info.flags =
+      VMA_ALLOCATION_CREATE_MAPPED_BIT |
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+  VmaAllocationInfo ring_info{};
+  if (NX_VK_CHECK(vmaCreateBuffer(m_allocator, &buf_info, &ring_alloc_info,
+                                  &m_ring, &m_ring_alloc, &ring_info)) !=
+      VK_SUCCESS) {
+    nx::loge(log_up, "staging ring ({} MiB) allocation failed",
+             RING_CAPACITY / (1024 * 1024));
+    return false;
+  }
+  m_ring_mapped = nx::cast<u8 *>(ring_info.pMappedData);
+  m_ring_capacity = RING_CAPACITY;
+  m_device->set_object_name(vk_handle_value(m_ring), VK_OBJECT_TYPE_BUFFER,
+                            "upload ring");
+
+  nx::logi(log_up, "uploader: transfer queue family {} ({}), {} MiB ring",
+           m_copy_family,
+           needs_ownership_transfer() ? "dedicated" : "shared with graphics",
+           RING_CAPACITY / (1024 * 1024));
   return true;
 }
 
 void VulkanUploader::shutdown() noexcept {
   if (m_vk == VK_NULL_HANDLE)
     return;
+
+  if (m_ring != VK_NULL_HANDLE)
+    vmaDestroyBuffer(m_allocator, m_ring, m_ring_alloc);
+  m_ring = VK_NULL_HANDLE;
 
   for (Chunk &chunk : m_chunks)
     if (chunk.buffer != VK_NULL_HANDLE)
@@ -92,6 +128,7 @@ void VulkanUploader::shutdown() noexcept {
   m_pool = VK_NULL_HANDLE;
   m_free_cmds.clear();
   m_inflight.clear();
+  m_markers.clear();
 
   if (m_timeline != VK_NULL_HANDLE)
     vkDestroySemaphore(m_vk, m_timeline, nullptr);
@@ -107,46 +144,6 @@ u64 VulkanUploader::completed_value() const noexcept {
   if (m_timeline != VK_NULL_HANDLE)
     NX_VK_CHECK(vkGetSemaphoreCounterValue(m_vk, m_timeline, &value));
   return value;
-}
-
-VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
-                                                     const bool host_read) {
-  for (Chunk &chunk : m_chunks) {
-    if (chunk.value == 0 && chunk.host_read == host_read &&
-        chunk.capacity >= size)
-      return &chunk;
-  }
-
-  Chunk chunk;
-  chunk.capacity = host_read ? size : (size < MIN_CHUNK ? MIN_CHUNK : size);
-  chunk.host_read = host_read;
-
-  VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  info.size = chunk.capacity;
-  info.usage = host_read ? VK_BUFFER_USAGE_TRANSFER_DST_BIT
-                         : VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-  VmaAllocationCreateInfo alloc{};
-  alloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-  alloc.flags =
-      VMA_ALLOCATION_CREATE_MAPPED_BIT |
-      (host_read ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
-                 : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
-
-  VmaAllocationInfo alloc_info{};
-  if (NX_VK_CHECK(vmaCreateBuffer(m_allocator, &info, &alloc, &chunk.buffer,
-                                  &chunk.alloc, &alloc_info)) != VK_SUCCESS) {
-    nx::loge(log_up, "staging allocation of {} bytes failed", chunk.capacity);
-    return nullptr;
-  }
-  chunk.mapped = nx::cast<u8 *>(alloc_info.pMappedData);
-  m_device->set_object_name(vk_handle_value(chunk.buffer),
-                            VK_OBJECT_TYPE_BUFFER,
-                            host_read ? "readback staging" : "upload staging");
-
-  m_chunks.push_back(chunk);
-  return &m_chunks.back();
 }
 
 VkCommandBuffer VulkanUploader::begin_cmd() {
@@ -170,11 +167,16 @@ VkCommandBuffer VulkanUploader::begin_cmd() {
   return cmd;
 }
 
-UploadTicket VulkanUploader::submit_locked(const VkCommandBuffer cmd) {
-  vkEndCommandBuffer(cmd);
+VkCommandBuffer VulkanUploader::ensure_batch() {
+  if (m_batch_open)
+    return m_batch_cmd;
+  m_batch_value = m_value + 1;
+  m_batch_cmd = begin_cmd();
+  m_batch_open = m_batch_cmd != VK_NULL_HANDLE;
+  return m_batch_cmd;
+}
 
-  const u64 value = ++m_value;
-
+void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value) {
   VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
   signal.semaphore = m_timeline;
   signal.value = value;
@@ -192,7 +194,127 @@ UploadTicket VulkanUploader::submit_locked(const VkCommandBuffer cmd) {
   NX_VK_CHECK(vkQueueSubmit2(m_queue, 1, &submit, VK_NULL_HANDLE));
 
   m_inflight.push_back({cmd, value});
-  return {value};
+}
+
+void VulkanUploader::flush_locked() {
+  if (!m_batch_open)
+    return;
+  vkEndCommandBuffer(m_batch_cmd);
+  m_value = m_batch_value;
+  submit_signal(m_batch_cmd, m_batch_value);
+  m_markers.push_back({m_ring_head, m_batch_value});
+  m_batch_open = false;
+  m_batch_cmd = VK_NULL_HANDLE;
+}
+
+void VulkanUploader::reclaim_locked() {
+  const u64 completed = completed_value();
+
+  while (!m_markers.empty() && m_markers.front().value <= completed) {
+    m_ring_tail = m_markers.front().head;
+    m_markers.erase(m_markers.begin());
+  }
+
+  for (Chunk &chunk : m_chunks)
+    if (chunk.value != 0 && chunk.value <= completed)
+      chunk.value = 0;
+
+  for (usize i = m_inflight.size(); i > 0; --i) {
+    if (m_inflight[i - 1].value <= completed) {
+      m_free_cmds.push_back(m_inflight[i - 1].cmd);
+      m_inflight.erase(m_inflight.begin() + nx::cast<isize>(i - 1));
+    }
+  }
+}
+
+u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
+                               u64 *out_offset) {
+  if (size > m_ring_capacity)
+    return nullptr;
+
+  const auto try_alloc = [&](u64 &offset) -> bool {
+    u64 base = align_up(m_ring_head, alignment);
+    u64 off = base % m_ring_capacity;
+    // A request that would straddle the wrap point skips to the next start.
+    if (off + size > m_ring_capacity) {
+      base = (base - off) + m_ring_capacity;
+      off = 0;
+    }
+    if ((base + size) - m_ring_tail > m_ring_capacity)
+      return false;
+    m_ring_head = base + size;
+    offset = off;
+    return true;
+  };
+
+  u64 offset = 0;
+  for (;;) {
+    if (try_alloc(offset)) {
+      *out_offset = offset;
+      return m_ring_mapped + offset;
+    }
+
+    // Out of room: reclaim finished batches, then make the open batch waitable
+    // and block on the oldest in flight until the tail can advance.
+    reclaim_locked();
+    if (try_alloc(offset)) {
+      *out_offset = offset;
+      return m_ring_mapped + offset;
+    }
+
+    if (m_batch_open)
+      flush_locked();
+    if (m_markers.empty())
+      return nullptr; // Fits the ring, yet nothing is in flight: unreachable.
+
+    const u64 oldest = m_markers.front().value;
+    VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wait.semaphoreCount = 1;
+    wait.pSemaphores = &m_timeline;
+    wait.pValues = &oldest;
+    NX_VK_CHECK(vkWaitSemaphores(m_vk, &wait, UINT64_MAX));
+    reclaim_locked();
+  }
+}
+
+VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
+                                                     const bool host_read) {
+  for (Chunk &chunk : m_chunks) {
+    if (chunk.value == 0 && chunk.host_read == host_read &&
+        chunk.capacity >= size)
+      return &chunk;
+  }
+
+  Chunk chunk;
+  chunk.capacity = size;
+  chunk.host_read = host_read;
+
+  VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  info.size = chunk.capacity;
+  info.usage = host_read ? VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                         : VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+  alloc.flags =
+      VMA_ALLOCATION_CREATE_MAPPED_BIT |
+      (host_read ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                 : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+
+  VmaAllocationInfo alloc_info{};
+  if (NX_VK_CHECK(vmaCreateBuffer(m_allocator, &info, &alloc, &chunk.buffer,
+                                  &chunk.alloc, &alloc_info)) != VK_SUCCESS) {
+    nx::loge(log_up, "dedicated staging of {} bytes failed", chunk.capacity);
+    return nullptr;
+  }
+  chunk.mapped = nx::cast<u8 *>(alloc_info.pMappedData);
+  m_device->set_object_name(
+      vk_handle_value(chunk.buffer), VK_OBJECT_TYPE_BUFFER,
+      host_read ? "readback staging" : "oversized upload");
+
+  m_chunks.push_back(chunk);
+  return &m_chunks.back();
 }
 
 UploadTicket
@@ -213,32 +335,43 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   for (const ImageSubresource &sr : layout)
     staging_size = align_up(staging_size, align) + sr.size;
 
-  Chunk *chunk = acquire_chunk(staging_size, false);
-  if (chunk == nullptr)
+  VkBuffer staging_buf = VK_NULL_HANDLE;
+  u8 *staging = nullptr;
+  u64 base_offset = 0;
+  Chunk *oversized = nullptr;
+  if (staging_size <= m_ring_capacity) {
+    staging = ring_alloc(staging_size, align, &base_offset);
+    staging_buf = m_ring;
+  } else {
+    oversized = acquire_chunk(staging_size, false);
+    if (oversized != nullptr) {
+      staging = oversized->mapped;
+      staging_buf = oversized->buffer;
+    }
+  }
+  if (staging == nullptr)
+    return {};
+
+  const VkCommandBuffer cmd = ensure_batch();
+  if (cmd == VK_NULL_HANDLE)
     return {};
 
   nx::small_vector<VkBufferImageCopy, 16> copies;
   u64 offset = 0;
   for (const ImageSubresource &sr : layout) {
     offset = align_up(offset, align);
-    std::memcpy(chunk->mapped + offset, src.data() + sr.offset,
+    std::memcpy(staging + offset, src.data() + sr.offset,
                 nx::cast<usize>(sr.size));
 
     VkBufferImageCopy copy{};
-    copy.bufferOffset = offset;
+    copy.bufferOffset = base_offset + offset;
     copy.imageSubresource = {aspect, sr.mip, sr.layer, 1};
     copy.imageExtent = {sr.width, sr.height, sr.depth == 0 ? 1u : sr.depth};
     copies.push_back(copy);
     offset += sr.size;
   }
 
-  const VkCommandBuffer cmd = begin_cmd();
-  if (cmd == VK_NULL_HANDLE)
-    return {};
-
   const VkStateInfo from = to_vk_state(tex->state);
-
-  // Undefined -> transfer destination for the whole image.
   VkImageMemoryBarrier2 pre = whole_image_barrier(tex->image, aspect);
   pre.srcStageMask = from.stage;
   pre.srcAccessMask = VK_ACCESS_2_NONE;
@@ -246,21 +379,17 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   pre.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   pre.oldLayout = from.layout;
   pre.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-
   VkDependencyInfo pre_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   pre_dep.imageMemoryBarrierCount = 1;
   pre_dep.pImageMemoryBarriers = &pre;
   vkCmdPipelineBarrier2(cmd, &pre_dep);
 
-  vkCmdCopyBufferToImage(cmd, chunk->buffer, tex->image,
+  vkCmdCopyBufferToImage(cmd, staging_buf, tex->image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                          nx::cast<u32>(copies.size()), copies.data());
 
-  // Transfer destination -> final. Release to the graphics family when the
-  // transfer queue is distinct; the acquire is recorded on the next frame.
   const VkStateInfo fin = to_vk_state(final_state);
   const bool qfot = needs_ownership_transfer();
-
   VkImageMemoryBarrier2 post = whole_image_barrier(tex->image, aspect);
   post.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   post.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -272,24 +401,22 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     post.srcQueueFamilyIndex = m_copy_family;
     post.dstQueueFamilyIndex = m_graphics_family;
   }
-
   VkDependencyInfo post_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   post_dep.imageMemoryBarrierCount = 1;
   post_dep.pImageMemoryBarriers = &post;
   vkCmdPipelineBarrier2(cmd, &post_dep);
 
-  const UploadTicket ticket = submit_locked(cmd);
-  chunk->value = ticket.value;
+  if (oversized != nullptr)
+    oversized->value = m_batch_value;
+  if (m_batch_value > m_pending_wait)
+    m_pending_wait = m_batch_value;
   tex->state = final_state;
-
-  m_pending_wait =
-      ticket.value > m_pending_wait ? ticket.value : m_pending_wait;
   if (qfot)
     m_image_acquires.push_back({tex->image, aspect,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 final_state});
 
-  return ticket;
+  return {m_batch_value};
 }
 
 UploadTicket VulkanUploader::upload_texture(const TextureHandle handle,
@@ -312,24 +439,36 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE || src.empty())
     return {};
 
-  Chunk *chunk = acquire_chunk(src.size(), false);
-  if (chunk == nullptr)
+  VkBuffer staging_buf = VK_NULL_HANDLE;
+  u8 *staging = nullptr;
+  u64 base_offset = 0;
+  Chunk *oversized = nullptr;
+  if (src.size() <= m_ring_capacity) {
+    staging = ring_alloc(src.size(), 16, &base_offset);
+    staging_buf = m_ring;
+  } else {
+    oversized = acquire_chunk(src.size(), false);
+    if (oversized != nullptr) {
+      staging = oversized->mapped;
+      staging_buf = oversized->buffer;
+    }
+  }
+  if (staging == nullptr)
     return {};
-  std::memcpy(chunk->mapped, src.data(), src.size());
+  std::memcpy(staging, src.data(), src.size());
 
-  const VkCommandBuffer cmd = begin_cmd();
+  const VkCommandBuffer cmd = ensure_batch();
   if (cmd == VK_NULL_HANDLE)
     return {};
 
   VkBufferCopy region{};
-  region.srcOffset = 0;
+  region.srcOffset = base_offset;
   region.dstOffset = dst_offset;
   region.size = src.size();
-  vkCmdCopyBuffer(cmd, chunk->buffer, buf->buffer, 1, &region);
+  vkCmdCopyBuffer(cmd, staging_buf, buf->buffer, 1, &region);
 
   const VkStateInfo fin = to_vk_state(final_state);
   const bool qfot = needs_ownership_transfer();
-
   VkBufferMemoryBarrier2 bar{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   bar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   bar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -340,22 +479,20 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   bar.buffer = buf->buffer;
   bar.offset = dst_offset;
   bar.size = src.size();
-
   VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dep.bufferMemoryBarrierCount = 1;
   dep.pBufferMemoryBarriers = &bar;
   vkCmdPipelineBarrier2(cmd, &dep);
 
-  const UploadTicket ticket = submit_locked(cmd);
-  chunk->value = ticket.value;
-
-  m_pending_wait =
-      ticket.value > m_pending_wait ? ticket.value : m_pending_wait;
+  if (oversized != nullptr)
+    oversized->value = m_batch_value;
+  if (m_batch_value > m_pending_wait)
+    m_pending_wait = m_batch_value;
   if (qfot)
     m_buffer_acquires.push_back(
         {buf->buffer, dst_offset, src.size(), final_state});
 
-  return ticket;
+  return {m_batch_value};
 }
 
 ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
@@ -365,6 +502,8 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE || size == 0)
     return {};
+
+  flush_locked(); // Readback is its own submit; get pending uploads out first.
 
   Chunk *chunk = acquire_chunk(size, true);
   if (chunk == nullptr)
@@ -380,7 +519,6 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   region.size = size;
   vkCmdCopyBuffer(cmd, buf->buffer, chunk->buffer, 1, &region);
 
-  // Make the copy visible to a host read of the staging buffer.
   VkMemoryBarrier2 host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
   host.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -391,9 +529,11 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   dep.pMemoryBarriers = &host;
   vkCmdPipelineBarrier2(cmd, &dep);
 
-  const UploadTicket ticket = submit_locked(cmd);
-  chunk->value = ticket.value;
-  return {ticket, chunk->mapped, size};
+  vkEndCommandBuffer(cmd);
+  const u64 value = ++m_value;
+  submit_signal(cmd, value);
+  chunk->value = value;
+  return {{value}, chunk->mapped, size};
 }
 
 ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
@@ -408,6 +548,8 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   const u32 h = (tex->height >> mip) == 0 ? 1u : (tex->height >> mip);
   const u64 size = format_subresource_size(tex->format, w, h, 1);
   const VkImageAspectFlags aspect = to_vk_aspect(tex->format);
+
+  flush_locked();
 
   Chunk *chunk = acquire_chunk(size, true);
   if (chunk == nullptr)
@@ -447,9 +589,11 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   host_dep.pMemoryBarriers = &host;
   vkCmdPipelineBarrier2(cmd, &host_dep);
 
-  const UploadTicket ticket = submit_locked(cmd);
-  chunk->value = ticket.value;
-  return {ticket, chunk->mapped, size};
+  vkEndCommandBuffer(cmd);
+  const u64 value = ++m_value;
+  submit_signal(cmd, value);
+  chunk->value = value;
+  return {{value}, chunk->mapped, size};
 }
 
 bool VulkanUploader::is_complete(const UploadTicket ticket) const noexcept {
@@ -459,10 +603,16 @@ bool VulkanUploader::is_complete(const UploadTicket ticket) const noexcept {
 void VulkanUploader::wait(const UploadTicket ticket) noexcept {
   if (!ticket.valid())
     return;
+  {
+    nx::scoped_lock<nx::mutex> guard(m_mutex);
+    if (ticket.value > m_value)
+      flush_locked(); // The ticket names the still-open batch: submit it.
+  }
+  u64 value = ticket.value;
   VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
-  wait.pValues = &ticket.value;
+  wait.pValues = &value;
   NX_VK_CHECK(vkWaitSemaphores(m_vk, &wait, UINT64_MAX));
 }
 
@@ -470,10 +620,28 @@ void VulkanUploader::flush() noexcept {
   u64 target = 0;
   {
     nx::scoped_lock<nx::mutex> guard(m_mutex);
+    flush_locked();
     target = m_value;
   }
   wait({target});
   reclaim();
+}
+
+void VulkanUploader::flush_batch() noexcept {
+  nx::scoped_lock<nx::mutex> guard(m_mutex);
+  flush_locked();
+}
+
+UploaderStats VulkanUploader::stats() const noexcept {
+  nx::scoped_lock<nx::mutex> guard(m_mutex);
+  UploaderStats s;
+  s.total_submits = m_value;
+  s.completed_submits = completed_value();
+  s.ring_used = m_ring_head - m_ring_tail;
+  s.ring_capacity = m_ring_capacity;
+  s.extra_buffers = m_chunks.size();
+  s.inflight_submits = m_inflight.size();
+  return s;
 }
 
 u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
@@ -481,7 +649,7 @@ u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
   if (m_pending_wait == 0)
     return 0;
 
-  nx::small_vector<VkImageMemoryBarrier2, 16> images;
+  nx::small_vector<VkImageMemoryBarrier2, 32> images;
   for (const ImageAcquire &acq : m_image_acquires) {
     const VkStateInfo dst = to_vk_state(acq.new_state);
     VkImageMemoryBarrier2 barrier = whole_image_barrier(acq.image, acq.aspect);
@@ -530,18 +698,7 @@ u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
 
 void VulkanUploader::reclaim() noexcept {
   nx::scoped_lock<nx::mutex> guard(m_mutex);
-  const u64 completed = completed_value();
-
-  for (Chunk &chunk : m_chunks)
-    if (chunk.value != 0 && chunk.value <= completed)
-      chunk.value = 0;
-
-  for (usize i = m_inflight.size(); i > 0; --i) {
-    if (m_inflight[i - 1].value <= completed) {
-      m_free_cmds.push_back(m_inflight[i - 1].cmd);
-      m_inflight.erase(m_inflight.begin() + nx::cast<isize>(i - 1));
-    }
-  }
+  reclaim_locked();
 }
 
 } // namespace nxe::rhi

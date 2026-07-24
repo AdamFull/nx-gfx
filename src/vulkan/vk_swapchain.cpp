@@ -379,8 +379,10 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                           m_pipeline_layout, BINDLESS_SET, 1, &set, 0, nullptr);
 
-  // Take ownership of anything the transfer queue uploaded since the last
-  // frame, and note the copy-timeline value this frame's submit must wait on.
+  // Submit the batch of uploads accumulated since the last frame, then take
+  // ownership of everything it produced and note the copy-timeline value this
+  // frame's submit must wait on.
+  m_uploader.flush_batch();
   m_frame_upload_wait = m_uploader.record_acquires(cmd);
 
   out_context.m_cmd = cmd;

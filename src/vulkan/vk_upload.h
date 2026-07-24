@@ -5,19 +5,23 @@
  * @brief Asynchronous GPU upload and readback on the transfer queue.
  *
  * The uploader turns "put these bytes into this GPU resource" into copy-queue
- * work that overlaps rendering. Each call stages the data through a pooled
- * host-visible buffer, records a copy on the transfer queue, and returns an
- * UploadTicket naming the point on the uploader's own timeline semaphore where
- * the copy is done - it never blocks the caller.
+ * work that overlaps rendering. Uploads stage through a bounded ring buffer and
+ * are *batched*: each call records its copy into a shared command buffer and
+ * returns an UploadTicket, but nothing is submitted until the batch is flushed
+ * (once per frame by the device, on staging backpressure, or on an explicit
+ * flush()/wait()). One submit drains a whole frame's worth of loads instead of
+ * one submit per texture.
  *
- * When the transfer queue is a distinct hardware queue, the copy ends with a
+ * When the transfer queue is a distinct hardware queue, each copy ends with a
  * queue-family release barrier; the device injects the matching acquire barrier
  * into the next graphics frame (record_acquires) and makes that frame's submit
- * wait on the copy, so a freshly uploaded resource is safe to sample from the
+ * wait on the batch, so a freshly uploaded resource is safe to sample from the
  * frame its acquire is recorded onward.
  *
  * Every public method is thread-safe: decode on a job, then upload from that
- * job. The RHI owns no worker threads of its own.
+ * job. The batch command buffer and ring are guarded by one mutex, so recording
+ * is serialized while submission stays off the caller's critical path. The RHI
+ * owns no worker threads of its own.
  */
 
 #include "foundation/containers/small_vector.h"
@@ -50,6 +54,16 @@ struct ReadbackResult {
   }
 };
 
+/// A snapshot of the uploader's internal load, for profiling and stress tests.
+struct UploaderStats {
+  u64 total_submits = 0;     ///< Lifetime queue submissions (one per batch).
+  u64 completed_submits = 0; ///< Of those, finished on the GPU.
+  u64 ring_used = 0;         ///< Staging-ring bytes not yet reclaimed.
+  u64 ring_capacity = 0;
+  usize extra_buffers = 0; ///< Dedicated oversized-upload / readback buffers.
+  usize inflight_submits = 0; ///< Batches whose copy is not done yet.
+};
+
 class VulkanUploader {
 public:
   VulkanUploader() = default;
@@ -64,7 +78,9 @@ public:
   // Uploads
 
   /// Uploads @p layout's subresources (offsets into @p src) into @p handle and
-  /// leaves it in @p final_state, ready for the graphics queue.
+  /// leaves it in @p final_state, ready for the graphics queue. The copy joins
+  /// the current batch; the returned ticket completes when that batch is
+  /// flushed and its GPU work finishes.
   UploadTicket
   upload_texture(TextureHandle handle, std::span<const u8> src,
                  std::span<const ImageSubresource> layout,
@@ -81,7 +97,8 @@ public:
 
   // Readbacks
   // The source must not be in concurrent use on the graphics queue - read after
-  // wait_idle(), or from a resource only the copy queue touches.
+  // wait_idle(), or from a resource only the copy queue touches. Readbacks
+  // flush any open upload batch and submit on their own.
 
   ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
   ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
@@ -90,24 +107,30 @@ public:
 
   [[nodiscard]] bool is_complete(UploadTicket ticket) const noexcept;
   void wait(UploadTicket ticket) noexcept;
-  /// Blocks until every submitted upload and readback has completed.
+  /// Submits the open batch, then blocks until everything submitted has run.
   void flush() noexcept;
+
+  [[nodiscard]] UploaderStats stats() const noexcept;
 
   // Device frame integration (called by VulkanDevice)
 
+  /// Submits the batch accumulated since the last frame. Called at the start of
+  /// each graphics frame, before record_acquires.
+  void flush_batch() noexcept;
   /// Records queue-ownership acquire barriers for the copies finished since the
   /// last call into @p graphics_cmd, and returns the copy-timeline value the
   /// graphics submit must wait on (0 if nothing is pending).
   u64 record_acquires(VkCommandBuffer graphics_cmd);
   [[nodiscard]] VkSemaphore timeline() const noexcept { return m_timeline; }
-  /// Returns staging buffers and command buffers whose copy has completed to
-  /// their reuse pools.
+  /// Advances the staging ring and returns finished command buffers / dedicated
+  /// buffers to their reuse pools.
   void reclaim() noexcept;
 
 private:
-  /// A pooled staging buffer. Freed for reuse (value -> 0) once its copy
-  /// completes; the backing VkBuffer lives until shutdown, so a readback's
-  /// mapped data survives until the chunk is handed out again.
+  /// A dedicated staging buffer for the two cases the ring does not serve: an
+  /// upload larger than the whole ring, and readback (host-readable). Freed for
+  /// reuse (value -> 0) once its submit completes; the VkBuffer lives until
+  /// shutdown, so a readback's mapped data survives until the buffer is reused.
   struct Chunk {
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
@@ -115,6 +138,13 @@ private:
     u64 capacity = 0;
     u64 value = 0;
     bool host_read = false;
+  };
+
+  /// Marks how far the ring head had advanced when a batch was submitted; the
+  /// tail may pass this point once `value` completes on the GPU.
+  struct Marker {
+    u64 head = 0;
+    u64 value = 0;
   };
 
   struct ImageAcquire {
@@ -134,9 +164,21 @@ private:
   [[nodiscard]] bool needs_ownership_transfer() const noexcept {
     return m_copy_family != m_graphics_family;
   }
+
+  /// Opens the batch command buffer if it is not already recording, reserving
+  /// the timeline value the batch will signal. Returns the batch command
+  /// buffer.
+  VkCommandBuffer ensure_batch();
+  void flush_locked();
+  void reclaim_locked();
+
+  /// Reserves @p size ring bytes aligned to @p alignment, flushing and waiting
+  /// on in-flight batches for room if necessary. Returns the mapped pointer and
+  /// sets @p out_offset, or nullptr if the request cannot fit the ring at all.
+  u8 *ring_alloc(u64 size, u64 alignment, u64 *out_offset);
   Chunk *acquire_chunk(u64 size, bool host_read);
   VkCommandBuffer begin_cmd();
-  UploadTicket submit_locked(VkCommandBuffer cmd);
+  void submit_signal(VkCommandBuffer cmd, u64 value);
 
   VulkanDevice *m_device = nullptr;
   VkDevice m_vk = VK_NULL_HANDLE;
@@ -147,23 +189,39 @@ private:
 
   VkCommandPool m_pool = VK_NULL_HANDLE;
   VkSemaphore m_timeline = VK_NULL_HANDLE;
-  u64 m_value = 0;
+  u64 m_value = 0; ///< Last value submitted (signalled) on the timeline.
 
   mutable nx::mutex m_mutex;
-  nx::vector<Chunk> m_chunks;
-  nx::small_vector<VkCommandBuffer, 8> m_free_cmds;
 
+  // Staging ring (monotonic head/tail; offset = head % capacity).
+  VkBuffer m_ring = VK_NULL_HANDLE;
+  VmaAllocation m_ring_alloc = VK_NULL_HANDLE;
+  u8 *m_ring_mapped = nullptr;
+  u64 m_ring_capacity = 0;
+  u64 m_ring_head = 0;
+  u64 m_ring_tail = 0;
+  nx::small_vector<Marker, 32> m_markers;
+
+  // Open batch.
+  VkCommandBuffer m_batch_cmd = VK_NULL_HANDLE;
+  bool m_batch_open = false;
+  u64 m_batch_value = 0; ///< Value the open batch will signal once flushed.
+
+  nx::small_vector<VkCommandBuffer, 8> m_free_cmds;
   struct Inflight {
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     u64 value = 0;
   };
   nx::small_vector<Inflight, 8> m_inflight;
 
+  // Dedicated buffers for oversized uploads and readbacks.
+  nx::small_vector<Chunk, 8> m_chunks;
+
   /// Ownership acquires the next graphics frame must perform, and the timeline
   /// value it must wait on before it can. Only non-empty when the transfer
   /// queue is a distinct family.
-  nx::vector<ImageAcquire> m_image_acquires;
-  nx::vector<BufferAcquire> m_buffer_acquires;
+  nx::small_vector<ImageAcquire, 32> m_image_acquires;
+  nx::small_vector<BufferAcquire, 16> m_buffer_acquires;
   u64 m_pending_wait = 0;
 };
 
