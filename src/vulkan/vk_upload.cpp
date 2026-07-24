@@ -1,11 +1,10 @@
 /**
  * @file vk_upload.cpp
- * @brief Batched transfer-queue staging, copies and queue-ownership transfer.
+ * @brief Batched transfer-queue staging, plus the async decode worker.
  *
- * Uploads accumulate into one command buffer and stage through a single ring
- * buffer; the batch is submitted once per frame (flush_batch), on staging
- * backpressure, or on an explicit flush/wait. An upload larger than the whole
- * ring, and every readback, fall back to a dedicated buffer instead.
+ * All GPU work is single-owner (render thread), so the ring, batch and chunks
+ * take no lock. A dedicated worker thread only reads files and decodes images,
+ * communicating through lock-free queues and an atomic status table.
  */
 
 #include "rendering/rhi/vulkan/vk_upload.h"
@@ -14,6 +13,7 @@
 
 #include "foundation/diagnostics/log.h"
 
+#include <chrono>
 #include <cstring>
 
 namespace nxe::rhi {
@@ -52,6 +52,17 @@ whole_image_barrier(const VkImage image,
 
 } // namespace
 
+nx::string_view to_string(const LoadStatus status) noexcept {
+  switch (status) {
+  case LoadStatus::Pending: return "pending";
+  case LoadStatus::Decoding: return "decoding";
+  case LoadStatus::Uploading: return "uploading";
+  case LoadStatus::Ready: return "ready";
+  case LoadStatus::Failed: return "failed";
+  default: return "none";
+  }
+}
+
 VulkanUploader::~VulkanUploader() { shutdown(); }
 
 bool VulkanUploader::init(VulkanDevice *device) {
@@ -85,15 +96,13 @@ bool VulkanUploader::init(VulkanDevice *device) {
   buf_info.size = RING_CAPACITY;
   buf_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   buf_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  VmaAllocationCreateInfo ring_alloc_info{};
-  ring_alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-  ring_alloc_info.flags =
-      VMA_ALLOCATION_CREATE_MAPPED_BIT |
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+  VmaAllocationCreateInfo ring_ci{};
+  ring_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+  ring_ci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                  VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
   VmaAllocationInfo ring_info{};
-  if (NX_VK_CHECK(vmaCreateBuffer(m_allocator, &buf_info, &ring_alloc_info,
-                                  &m_ring, &m_ring_alloc, &ring_info)) !=
-      VK_SUCCESS) {
+  if (NX_VK_CHECK(vmaCreateBuffer(m_allocator, &buf_info, &ring_ci, &m_ring,
+                                  &m_ring_alloc, &ring_info)) != VK_SUCCESS) {
     nx::loge(log_up, "staging ring ({} MiB) allocation failed",
              RING_CAPACITY / (1024 * 1024));
     return false;
@@ -103,7 +112,21 @@ bool VulkanUploader::init(VulkanDevice *device) {
   m_device->set_object_name(vk_handle_value(m_ring), VK_OBJECT_TYPE_BUFFER,
                             "upload ring");
 
-  nx::logi(log_up, "uploader: transfer queue family {} ({}), {} MiB ring",
+  for (u32 s = 0; s < MAX_LOADS; ++s) {
+    m_load_state[s].store(LoadStatus::None, std::memory_order_relaxed);
+    m_load_gen[s].store(0, std::memory_order_relaxed);
+    m_free_slots.try_push(s);
+  }
+  m_worker_stop.store(false, std::memory_order_relaxed);
+  m_worker = nx::thread([this] { worker_main(); },
+                        nx::thread_options{.name = "nx-loader"});
+  if (!m_worker.joinable()) {
+    nx::loge(log_up, "failed to start the loader thread");
+    return false;
+  }
+
+  nx::logi(log_up, "uploader: transfer queue family {} ({}), {} MiB ring, "
+                   "loader thread up",
            m_copy_family,
            needs_ownership_transfer() ? "dedicated" : "shared with graphics",
            RING_CAPACITY / (1024 * 1024));
@@ -113,6 +136,19 @@ bool VulkanUploader::init(VulkanDevice *device) {
 void VulkanUploader::shutdown() noexcept {
   if (m_vk == VK_NULL_HANDLE)
     return;
+
+  // Stop the worker first; it only touches CPU data, but join before freeing.
+  m_worker_stop.store(true, std::memory_order_release);
+  m_worker_wake.release();
+  if (m_worker.joinable())
+    m_worker.join();
+
+  LoadCommand cmd;
+  while (m_load_requests.try_pop(cmd))
+    nx::release(cmd.payload);
+  DecodeResult res;
+  while (m_load_results.try_pop(res))
+    nx::release(res.image);
 
   if (m_ring != VK_NULL_HANDLE)
     vmaDestroyBuffer(m_allocator, m_ring, m_ring_alloc);
@@ -144,6 +180,17 @@ u64 VulkanUploader::completed_value() const noexcept {
   if (m_timeline != VK_NULL_HANDLE)
     NX_VK_CHECK(vkGetSemaphoreCounterValue(m_vk, m_timeline, &value));
   return value;
+}
+
+void VulkanUploader::wait_value(const u64 value) noexcept {
+  if (value == 0)
+    return;
+  u64 v = value;
+  VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+  wait.semaphoreCount = 1;
+  wait.pSemaphores = &m_timeline;
+  wait.pValues = &v;
+  NX_VK_CHECK(vkWaitSemaphores(m_vk, &wait, UINT64_MAX));
 }
 
 VkCommandBuffer VulkanUploader::begin_cmd() {
@@ -235,7 +282,6 @@ u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
   const auto try_alloc = [&](u64 &offset) -> bool {
     u64 base = align_up(m_ring_head, alignment);
     u64 off = base % m_ring_capacity;
-    // A request that would straddle the wrap point skips to the next start.
     if (off + size > m_ring_capacity) {
       base = (base - off) + m_ring_capacity;
       off = 0;
@@ -254,8 +300,6 @@ u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
       return m_ring_mapped + offset;
     }
 
-    // Out of room: reclaim finished batches, then make the open batch waitable
-    // and block on the oldest in flight until the tail can advance.
     reclaim_locked();
     if (try_alloc(offset)) {
       *out_offset = offset;
@@ -267,12 +311,7 @@ u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
     if (m_markers.empty())
       return nullptr; // Fits the ring, yet nothing is in flight: unreachable.
 
-    const u64 oldest = m_markers.front().value;
-    VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-    wait.semaphoreCount = 1;
-    wait.pSemaphores = &m_timeline;
-    wait.pValues = &oldest;
-    NX_VK_CHECK(vkWaitSemaphores(m_vk, &wait, UINT64_MAX));
+    wait_value(m_markers.front().value);
     reclaim_locked();
   }
 }
@@ -309,9 +348,9 @@ VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
     return nullptr;
   }
   chunk.mapped = nx::cast<u8 *>(alloc_info.pMappedData);
-  m_device->set_object_name(
-      vk_handle_value(chunk.buffer), VK_OBJECT_TYPE_BUFFER,
-      host_read ? "readback staging" : "oversized upload");
+  m_device->set_object_name(vk_handle_value(chunk.buffer),
+                            VK_OBJECT_TYPE_BUFFER,
+                            host_read ? "readback staging" : "oversized upload");
 
   m_chunks.push_back(chunk);
   return &m_chunks.back();
@@ -322,8 +361,6 @@ VulkanUploader::upload_texture(const TextureHandle handle,
                                const std::span<const u8> src,
                                const std::span<const ImageSubresource> layout,
                                const ResourceState final_state) {
-  nx::scoped_lock<nx::mutex> guard(m_mutex);
-
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
   if (tex == nullptr || tex->image == VK_NULL_HANDLE || layout.empty())
     return {};
@@ -412,9 +449,8 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     m_pending_wait = m_batch_value;
   tex->state = final_state;
   if (qfot)
-    m_image_acquires.push_back({tex->image, aspect,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                final_state});
+    m_image_acquires.push_back(
+        {tex->image, aspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, final_state});
 
   return {m_batch_value};
 }
@@ -433,8 +469,6 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
                                            const u64 dst_offset,
                                            const std::span<const u8> src,
                                            const ResourceState final_state) {
-  nx::scoped_lock<nx::mutex> guard(m_mutex);
-
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE || src.empty())
     return {};
@@ -495,10 +529,173 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   return {m_batch_value};
 }
 
+// Async loading -------------------------------------------------------------
+
+LoadRequest VulkanUploader::enqueue_load(LoadPayload *payload) {
+  u32 slot = 0;
+  if (!m_free_slots.try_pop(slot)) {
+    nx::loge(log_up, "loader: more than {} loads in flight", MAX_LOADS);
+    nx::release(payload);
+    return {};
+  }
+  const u32 gen = m_load_gen[slot].load(std::memory_order_relaxed);
+  m_load_handle[slot] = {};
+  m_load_ticket[slot] = {};
+  m_load_state[slot].store(LoadStatus::Pending, std::memory_order_release);
+
+  LoadCommand cmd{slot + 1, gen, payload};
+  while (!m_load_requests.try_push(cmd))
+    nx::this_thread::yield();
+  m_worker_wake.release();
+  return {slot + 1, gen};
+}
+
+LoadRequest VulkanUploader::load_texture(const nx::string_view path,
+                                         const TextureUsageFlags usage) {
+  auto *payload = nx::allocate<LoadPayload>();
+  if (payload == nullptr)
+    return {};
+  payload->path = nx::string(path);
+  payload->usage = usage;
+  return enqueue_load(payload);
+}
+
+LoadRequest
+VulkanUploader::load_texture_from_memory(const std::span<const u8> bytes,
+                                         const TextureUsageFlags usage) {
+  auto *payload = nx::allocate<LoadPayload>();
+  if (payload == nullptr)
+    return {};
+  payload->bytes = nx::blob<u8>(bytes);
+  payload->usage = usage;
+  return enqueue_load(payload);
+}
+
+LoadStatus VulkanUploader::load_status(const LoadRequest req) const noexcept {
+  if (!req.valid() || req.id > MAX_LOADS)
+    return LoadStatus::None;
+  const u32 s = req.id - 1;
+  if (m_load_gen[s].load(std::memory_order_acquire) != req.generation)
+    return LoadStatus::None;
+  return m_load_state[s].load(std::memory_order_acquire);
+}
+
+TextureHandle VulkanUploader::loaded_texture(const LoadRequest req) const
+    noexcept {
+  if (!req.valid() || req.id > MAX_LOADS)
+    return {};
+  const u32 s = req.id - 1;
+  if (m_load_gen[s].load(std::memory_order_acquire) != req.generation)
+    return {};
+  if (m_load_state[s].load(std::memory_order_acquire) != LoadStatus::Ready)
+    return {};
+  return m_load_handle[s];
+}
+
+void VulkanUploader::release(const LoadRequest req) noexcept {
+  if (!req.valid() || req.id > MAX_LOADS)
+    return;
+  const u32 s = req.id - 1;
+  if (m_load_gen[s].load(std::memory_order_acquire) != req.generation)
+    return;
+  m_load_state[s].store(LoadStatus::None, std::memory_order_release);
+  m_load_handle[s] = {};
+  m_load_gen[s].fetch_add(1, std::memory_order_acq_rel);
+  while (!m_free_slots.try_push(s))
+    nx::this_thread::yield();
+}
+
+void VulkanUploader::worker_main() {
+  while (!m_worker_stop.load(std::memory_order_acquire)) {
+    LoadCommand cmd;
+    if (!m_load_requests.try_pop(cmd)) {
+      m_worker_wake.try_acquire_for(std::chrono::milliseconds(100));
+      continue;
+    }
+
+    const u32 s = cmd.id - 1;
+    LoadPayload *pl = cmd.payload;
+    if (m_load_gen[s].load(std::memory_order_acquire) == cmd.generation)
+      m_load_state[s].store(LoadStatus::Decoding, std::memory_order_release);
+
+    auto decoded =
+        pl->path.empty()
+            ? load_image_from_memory(
+                  std::span<const u8>(pl->bytes.data(), pl->bytes.size()))
+            : load_image(pl->path);
+    const TextureUsageFlags usage = pl->usage;
+    nx::release(pl);
+
+    if (!decoded) {
+      nx::loge(log_up, "loader: decode failed: {}", to_string(decoded.error()));
+      if (m_load_gen[s].load(std::memory_order_acquire) == cmd.generation)
+        m_load_state[s].store(LoadStatus::Failed, std::memory_order_release);
+      m_loads_failed.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
+
+    ImageData *image = nx::allocate<ImageData>(std::move(*decoded));
+    if (image == nullptr) {
+      if (m_load_gen[s].load(std::memory_order_acquire) == cmd.generation)
+        m_load_state[s].store(LoadStatus::Failed, std::memory_order_release);
+      m_loads_failed.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
+
+    DecodeResult res{cmd.id, cmd.generation, image, usage};
+    while (!m_load_results.try_push(res)) {
+      if (m_worker_stop.load(std::memory_order_acquire)) {
+        nx::release(res.image);
+        break;
+      }
+      nx::this_thread::yield();
+    }
+  }
+}
+
+void VulkanUploader::pump() {
+  m_load_results.consume_all([this](DecodeResult res) {
+    const u32 s = res.id - 1;
+    if (m_load_gen[s].load(std::memory_order_acquire) != res.generation) {
+      nx::release(res.image); // Released since it decoded; drop it.
+      return;
+    }
+
+    const TextureHandle handle =
+        m_device->create_texture(res.image->texture_desc("loaded", res.usage));
+    if (!handle.valid()) {
+      nx::release(res.image);
+      m_load_state[s].store(LoadStatus::Failed, std::memory_order_release);
+      m_loads_failed.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    const UploadTicket ticket = upload_texture(handle, *res.image);
+    nx::release(res.image);
+
+    m_load_handle[s] = handle;
+    m_load_ticket[s] = ticket;
+    m_load_state[s].store(LoadStatus::Uploading, std::memory_order_release);
+    m_load_uploading.push_back({res.id, res.generation});
+  });
+
+  for (usize i = m_load_uploading.size(); i > 0; --i) {
+    const LoadRequest u = m_load_uploading[i - 1];
+    const u32 s = u.id - 1;
+    const bool stale =
+        m_load_gen[s].load(std::memory_order_acquire) != u.generation;
+    if (!stale && !is_complete(m_load_ticket[s]))
+      continue;
+
+    if (!stale) {
+      m_load_state[s].store(LoadStatus::Ready, std::memory_order_release);
+      m_loads_ready.fetch_add(1, std::memory_order_relaxed);
+    }
+    m_load_uploading.erase(m_load_uploading.begin() + nx::cast<isize>(i - 1));
+  }
+}
+
 ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
                                            const u64 offset, const u64 size) {
-  nx::scoped_lock<nx::mutex> guard(m_mutex);
-
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE || size == 0)
     return {};
@@ -538,8 +735,6 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
 
 ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
                                             const u32 mip, const u32 layer) {
-  nx::scoped_lock<nx::mutex> guard(m_mutex);
-
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
   if (tex == nullptr || tex->image == VK_NULL_HANDLE || mip >= tex->mip_levels)
     return {};
@@ -603,37 +798,20 @@ bool VulkanUploader::is_complete(const UploadTicket ticket) const noexcept {
 void VulkanUploader::wait(const UploadTicket ticket) noexcept {
   if (!ticket.valid())
     return;
-  {
-    nx::scoped_lock<nx::mutex> guard(m_mutex);
-    if (ticket.value > m_value)
-      flush_locked(); // The ticket names the still-open batch: submit it.
-  }
-  u64 value = ticket.value;
-  VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-  wait.semaphoreCount = 1;
-  wait.pSemaphores = &m_timeline;
-  wait.pValues = &value;
-  NX_VK_CHECK(vkWaitSemaphores(m_vk, &wait, UINT64_MAX));
+  if (ticket.value > m_value)
+    flush_locked(); // The ticket names the still-open batch: submit it.
+  wait_value(ticket.value);
 }
 
 void VulkanUploader::flush() noexcept {
-  u64 target = 0;
-  {
-    nx::scoped_lock<nx::mutex> guard(m_mutex);
-    flush_locked();
-    target = m_value;
-  }
-  wait({target});
-  reclaim();
+  flush_locked();
+  wait_value(m_value);
+  reclaim_locked();
 }
 
-void VulkanUploader::flush_batch() noexcept {
-  nx::scoped_lock<nx::mutex> guard(m_mutex);
-  flush_locked();
-}
+void VulkanUploader::flush_batch() noexcept { flush_locked(); }
 
 UploaderStats VulkanUploader::stats() const noexcept {
-  nx::scoped_lock<nx::mutex> guard(m_mutex);
   UploaderStats s;
   s.total_submits = m_value;
   s.completed_submits = completed_value();
@@ -641,11 +819,12 @@ UploaderStats VulkanUploader::stats() const noexcept {
   s.ring_capacity = m_ring_capacity;
   s.extra_buffers = m_chunks.size();
   s.inflight_submits = m_inflight.size();
+  s.loads_ready = m_loads_ready.load(std::memory_order_relaxed);
+  s.loads_failed = m_loads_failed.load(std::memory_order_relaxed);
   return s;
 }
 
 u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
-  nx::scoped_lock<nx::mutex> guard(m_mutex);
   if (m_pending_wait == 0)
     return 0;
 
@@ -696,9 +875,6 @@ u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
   return wait;
 }
 
-void VulkanUploader::reclaim() noexcept {
-  nx::scoped_lock<nx::mutex> guard(m_mutex);
-  reclaim_locked();
-}
+void VulkanUploader::reclaim() noexcept { reclaim_locked(); }
 
 } // namespace nxe::rhi
