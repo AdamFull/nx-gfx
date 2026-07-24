@@ -73,8 +73,7 @@ constexpr VkFormat VK_FORMATS[] = {
     VK_FORMAT_BC6H_UFLOAT_BLOCK,
     VK_FORMAT_BC6H_SFLOAT_BLOCK,
 };
-static_assert(std::size(VK_FORMATS) ==
-                  nx::cast<usize>(Format::Count),
+static_assert(std::size(VK_FORMATS) == nx::cast<usize>(Format::Count),
               "VK_FORMATS is out of sync with Format");
 
 } // namespace
