@@ -36,6 +36,13 @@ else ()
             vulkan/vk_vma.cpp)
 endif ()
 
+# Compile the Slang shaders to SPIR-V next to the executable, under bin/shaders.
+include(NxShaders)
+nx_compile_slang(nx_shaders
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.slang")
+
 message(STATUS "nx_rhi backend: ${NX_RHI_BACKEND}")
 
 add_library(nx_rhi STATIC ${NX_RHI_SOURCES} ${NX_RHI_HEADERS})
@@ -72,6 +79,11 @@ if (NOT APPLE)
         set_source_files_properties(vulkan/vk_vma.cpp PROPERTIES
                 COMPILE_OPTIONS "-w")
     endif ()
+endif ()
+
+if (TARGET nx_shaders)
+    add_dependencies(nx_rhi nx_shaders)
+    set_target_properties(nx_shaders PROPERTIES FOLDER "engine")
 endif ()
 
 set_target_properties(nx_rhi PROPERTIES FOLDER "engine")
