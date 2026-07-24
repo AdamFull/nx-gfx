@@ -331,6 +331,7 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   u64 completed = 0;
   NX_VK_CHECK(vkGetSemaphoreCounterValue(m_device, m_timeline, &completed));
   collect_garbage(completed);
+  m_uploader.reclaim();
 
   const VkResult acquired = vkAcquireNextImageKHR(
       m_device, m_swapchain, UINT64_MAX, frame.acquire_semaphore,
@@ -377,6 +378,10 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
                           m_pipeline_layout, BINDLESS_SET, 1, &set, 0, nullptr);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                           m_pipeline_layout, BINDLESS_SET, 1, &set, 0, nullptr);
+
+  // Take ownership of anything the transfer queue uploaded since the last
+  // frame, and note the copy-timeline value this frame's submit must wait on.
+  m_frame_upload_wait = m_uploader.record_acquires(cmd);
 
   out_context.m_cmd = cmd;
   out_context.m_device = this;
@@ -430,9 +435,21 @@ bool VulkanDevice::end_frame() {
   ++m_timeline_value;
   frame.timeline_value = m_timeline_value;
 
-  VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-  wait_info.semaphore = frame.acquire_semaphore;
-  wait_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  // Wait on the swapchain acquire, and - when the transfer queue uploaded
+  // resources this frame consumes - on the upload timeline as well, so the
+  // ownership acquire barriers recorded above see the copies completed.
+  VkSemaphoreSubmitInfo wait_infos[2] = {};
+  wait_infos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+  wait_infos[0].semaphore = frame.acquire_semaphore;
+  wait_infos[0].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  u32 wait_count = 1;
+  if (m_frame_upload_wait > 0) {
+    wait_infos[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    wait_infos[1].semaphore = m_uploader.timeline();
+    wait_infos[1].value = m_frame_upload_wait;
+    wait_infos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    wait_count = 2;
+  }
 
   VkSemaphoreSubmitInfo signal_infos[2] = {};
   signal_infos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -448,8 +465,8 @@ bool VulkanDevice::end_frame() {
   cmd_info.commandBuffer = cmd;
 
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-  submit.waitSemaphoreInfoCount = 1;
-  submit.pWaitSemaphoreInfos = &wait_info;
+  submit.waitSemaphoreInfoCount = wait_count;
+  submit.pWaitSemaphoreInfos = wait_infos;
   submit.commandBufferInfoCount = 1;
   submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 2;

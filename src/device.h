@@ -16,6 +16,7 @@
 namespace nxe::rhi {
 using Device = VulkanDevice;
 using CommandContext = VulkanCommandContext;
+using Uploader = VulkanUploader;
 } // namespace nxe::rhi
 
 #elif defined(NX_RHI_METAL)

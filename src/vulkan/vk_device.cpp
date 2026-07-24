@@ -515,6 +515,8 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
     return false;
   if (!create_pipeline_cache(desc.pipeline_cache_path))
     return false;
+  if (!m_uploader.init(this))
+    return false;
 
   return true;
 }
@@ -522,6 +524,9 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
 void VulkanDevice::shutdown() noexcept {
   if (m_device != VK_NULL_HANDLE)
     wait_idle();
+
+  // Before the allocator and device it borrows go away.
+  m_uploader.shutdown();
 
   destroy_swapchain();
 

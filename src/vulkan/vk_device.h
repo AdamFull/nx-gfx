@@ -14,6 +14,7 @@
 #include "rendering/rhi/handles.h"
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/vulkan/vk_common.h"
+#include "rendering/rhi/vulkan/vk_upload.h"
 
 #include <vk_mem_alloc.h>
 
@@ -156,6 +157,10 @@ public:
 
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
 
+  /// The async upload / readback service. Its copies run on the transfer queue
+  /// and are handed off to the graphics queue at frame boundaries.
+  [[nodiscard]] VulkanUploader &uploader() noexcept { return m_uploader; }
+
   // Swapchain
 
   [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
@@ -234,6 +239,10 @@ public:
   pipeline(PipelineHandle handle) const noexcept;
 
 private:
+  // The uploader reaches straight into the device's queues, allocator and
+  // resource maps to stage and hand off copies.
+  friend class VulkanUploader;
+
   bool create_instance(const DeviceDesc &desc);
   bool select_physical_device();
   bool create_logical_device();
@@ -295,6 +304,11 @@ private:
   nx::slot_map<VulkanSampler, SamplerHandle> m_samplers;
   nx::slot_map<VulkanShader, ShaderHandle> m_shaders;
   nx::slot_map<VulkanPipeline, PipelineHandle> m_pipelines;
+
+  VulkanUploader m_uploader;
+  /// Copy-timeline value the current frame's graphics submit must wait on so
+  /// that resources uploaded before the frame are ready; 0 when none pending.
+  u64 m_frame_upload_wait = 0;
 
   /// A resource freed during frame N stays alive - handle and descriptor slot
   /// included - until the GPU has passed N, then its slot_map entry is retired.

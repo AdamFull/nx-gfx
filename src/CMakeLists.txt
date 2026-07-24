@@ -12,7 +12,8 @@ set(NX_RHI_HEADERS
         handles.h
         image/image.h
         rhi.h
-        types.h)
+        types.h
+        upload.h)
 
 set(NX_RHI_SOURCES
         image/image.cpp
@@ -29,7 +30,8 @@ else ()
     set(NX_RHI_BACKEND "Vulkan")
     list(APPEND NX_RHI_HEADERS
             vulkan/vk_common.h
-            vulkan/vk_device.h)
+            vulkan/vk_device.h
+            vulkan/vk_upload.h)
     list(APPEND NX_RHI_SOURCES
             vulkan/vk_bindless.cpp
             vulkan/vk_common.cpp
@@ -37,6 +39,7 @@ else ()
             vulkan/vk_pipeline.cpp
             vulkan/vk_resources.cpp
             vulkan/vk_swapchain.cpp
+            vulkan/vk_upload.cpp
             vulkan/vk_vma.cpp)
 endif ()
 
