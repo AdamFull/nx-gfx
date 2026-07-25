@@ -25,7 +25,14 @@ set(NX_RHI_SOURCES
 # rendering.
 if (APPLE)
     set(NX_RHI_BACKEND "Metal")
-    message(FATAL_ERROR "nx_rhi: the Metal backend is not implemented yet")
+    list(APPEND NX_RHI_HEADERS
+            metal/mtl_device.h
+            metal/mtl_internal.h)
+    list(APPEND NX_RHI_SOURCES
+            metal/mtl_common.mm
+            metal/mtl_device.mm
+            metal/mtl_swapchain.mm
+            metal/mtl_upload.mm)
 else ()
     set(NX_RHI_BACKEND "Vulkan")
     list(APPEND NX_RHI_HEADERS
@@ -72,7 +79,31 @@ else ()
             COMPILE_OPTIONS "-w")
 endif ()
 
-if (NOT APPLE)
+if (APPLE)
+    target_compile_definitions(nx_rhi PUBLIC NX_RHI_METAL=1)
+
+    # ARC is required: the backend holds Objective-C objects (MTLDevice,
+    # CAMetalLayer, drawables) in C++ structs and relies on the compiler to
+    # retain/release them. Same arrangement as the iOS platform backend.
+    set_source_files_properties(
+            metal/mtl_common.mm
+            metal/mtl_device.mm
+            metal/mtl_swapchain.mm
+            metal/mtl_upload.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+
+    target_link_libraries(nx_rhi PUBLIC
+            "-framework Metal"
+            "-framework QuartzCore"  # CAMetalLayer
+            "-framework Foundation")
+
+    if (IOS)
+        target_link_libraries(nx_rhi PUBLIC "-framework UIKit")
+    else ()
+        # AppKit only for attaching the layer to the GLFW window's NSView.
+        target_link_libraries(nx_rhi PUBLIC "-framework AppKit")
+    endif ()
+else ()
     target_compile_definitions(nx_rhi PUBLIC NX_RHI_VULKAN=1)
 
     # volk owns entry-point loading, so VMA must not link Vulkan statically

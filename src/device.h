@@ -20,7 +20,14 @@ using Uploader = VulkanUploader;
 } // namespace nxe::rhi
 
 #elif defined(NX_RHI_METAL)
-#error "Metal backend is not implemented yet"
+#include "rendering/rhi/metal/mtl_device.h"
+
+namespace nxe::rhi {
+using Device = MetalDevice;
+using CommandContext = MetalCommandContext;
+using Uploader = MetalUploader;
+} // namespace nxe::rhi
+
 #else
 #error "No RHI backend selected; rhi/CMakeLists.txt should define one"
 #endif
