@@ -74,6 +74,11 @@ struct VulkanSampler {
 
 struct VulkanShader {
   VkShaderModule module = VK_NULL_HANDLE;
+  struct ComputeEntry {
+    nx::string name;
+    u32 local_size[3] = {};
+  };
+  nx::small_vector<ComputeEntry, 4> compute_entries;
 };
 
 struct VulkanPipeline {

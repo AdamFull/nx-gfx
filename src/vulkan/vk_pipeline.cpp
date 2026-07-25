@@ -7,8 +7,10 @@
 
 #include "foundation/diagnostics/log.h"
 #include "foundation/platform/filesystem.h"
+#include "rendering/rhi/spirv_reflect.h"
 
 #include <cstring>
+#include <span>
 
 namespace nxe::rhi {
 namespace {
@@ -171,7 +173,23 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   if (shader.module == VK_NULL_HANDLE)
     return {};
 
-  const ShaderHandle handle = m_shaders.insert(shader);
+  {
+    SpirvComputeEntry entries[8];
+    const usize count = spirv_compute_entries(
+        std::span<const u8>(static_cast<const u8 *>(desc.code),
+                            desc.code_size),
+        entries);
+    for (usize i = 0; i < count; ++i) {
+      VulkanShader::ComputeEntry entry;
+      entry.name = nx::string(entries[i].name);
+      entry.local_size[0] = entries[i].local_size[0];
+      entry.local_size[1] = entries[i].local_size[1];
+      entry.local_size[2] = entries[i].local_size[2];
+      shader.compute_entries.push_back(std::move(entry));
+    }
+  }
+
+  const ShaderHandle handle = m_shaders.insert(std::move(shader));
   set_object_name(vk_handle_value(shader.module), VK_OBJECT_TYPE_SHADER_MODULE,
                   desc.name);
   return handle;
@@ -323,6 +341,27 @@ VulkanDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
   }
 
   const nx::string entry(desc.compute.entry_point);
+
+  for (const VulkanShader::ComputeEntry &declared : cs->compute_entries) {
+    if (declared.name.view() != desc.compute.entry_point)
+      continue;
+    // A zero means the shader states its size through a specialisation
+    // constant, so there is nothing to compare against.
+    if (declared.local_size[0] == 0)
+      break;
+    if (desc.group_size[0] != declared.local_size[0] ||
+        desc.group_size[1] != declared.local_size[1] ||
+        desc.group_size[2] != declared.local_size[2]) {
+      nx::logw(log_rhi,
+               "create_compute_pipeline('{}'): group_size {}x{}x{} does not "
+               "match the shader's [numthreads({}, {}, {})]. Vulkan ignores "
+               "the field, but Metal dispatches with it and will be wrong",
+               desc.name, desc.group_size[0], desc.group_size[1],
+               desc.group_size[2], declared.local_size[0],
+               declared.local_size[1], declared.local_size[2]);
+    }
+    break;
+  }
 
   VkComputePipelineCreateInfo info{
       VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
