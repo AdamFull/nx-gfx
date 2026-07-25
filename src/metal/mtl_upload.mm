@@ -43,7 +43,8 @@ u64 round_staging_size(const u64 bytes) noexcept {
   return size;
 }
 
-Staging acquire_staging(MetalDeviceState &state, const u64 bytes) {
+Staging acquire_staging(MetalDeviceState &state, const u64 bytes,
+                        const bool host_read = false) {
   MetalUploadState &up = state.upload;
 
   // Best fit from the pool: the smallest buffer that still holds the request,
@@ -51,7 +52,8 @@ Staging acquire_staging(MetalDeviceState &state, const u64 bytes) {
   // small one that follows.
   usize best = up.free_staging.size();
   for (usize i = 0; i < up.free_staging.size(); ++i) {
-    if (up.free_staging[i].capacity < bytes)
+    if (up.free_staging[i].capacity < bytes ||
+        up.free_staging[i].host_read != host_read)
       continue;
     if (best == up.free_staging.size() ||
         up.free_staging[i].capacity < up.free_staging[best].capacity)
@@ -67,18 +69,24 @@ Staging acquire_staging(MetalDeviceState &state, const u64 bytes) {
 
   Staging staging;
   staging.capacity = round_staging_size(bytes);
+  staging.host_read = host_read;
   @autoreleasepool {
-    staging.buffer =
-        [state.device newBufferWithLength:staging.capacity
-                                  options:MTLResourceStorageModeShared |
-                                          MTLResourceCPUCacheModeWriteCombined];
+    // Shared either way, so the copy is coherent with no explicit
+    // synchronizeResource; only the cache mode differs.
+    const MTLResourceOptions options =
+        MTLResourceStorageModeShared |
+        (host_read ? MTLResourceCPUCacheModeDefaultCache
+                   : MTLResourceCPUCacheModeWriteCombined);
+
+    staging.buffer = [state.device newBufferWithLength:staging.capacity
+                                               options:options];
     if (staging.buffer == nil) {
       nx::loge(log_rhi, "uploader: could not allocate {} bytes of staging",
                staging.capacity);
       staging.capacity = 0;
       return staging;
     }
-    staging.buffer.label = @"nx2d staging";
+    staging.buffer.label = host_read ? @"nx2d readback" : @"nx2d staging";
   }
   return staging;
 }
@@ -601,6 +609,137 @@ bool MetalUploader::is_complete(const UploadTicket ticket) const noexcept {
     return true;
   return m_state->upload.completed.load(std::memory_order_acquire) >=
          ticket.value;
+}
+
+// Readbacks
+
+ReadbackResult MetalUploader::read_buffer(const BufferHandle handle,
+                                          const u64 offset, const u64 size) {
+  if (m_state == nullptr || size == 0)
+    return {};
+
+  const MetalBuffer *buffer = m_state->buffers.try_get(handle);
+  if (buffer == nullptr || buffer->buffer == nil) {
+    nx::loge(log_rhi, "read_buffer: handle is not live");
+    return {};
+  }
+  if (offset + size > buffer->size) {
+    nx::loge(log_rhi, "read_buffer: {} bytes at offset {} overruns a {} byte "
+                      "buffer",
+             size, offset, buffer->size);
+    return {};
+  }
+
+  MetalUploadState &up = m_state->upload;
+  Staging staging = acquire_staging(*m_state, size, /*host_read=*/true);
+  if (staging.buffer == nil)
+    return {};
+
+  if (!ensure_batch(*m_state)) {
+    up.free_staging.push_back(staging);
+    return {};
+  }
+
+  [up.blit copyFromBuffer:buffer->buffer
+             sourceOffset:offset
+                 toBuffer:staging.buffer
+        destinationOffset:0
+                     size:size];
+
+  // The caller reads through the returned pointer, so the buffer must not go
+  // back to the pool when the batch completes - it is handed over instead, and
+  // reclaimed by the next readback that finds it free.
+  up.batch_staging.push_back(staging);
+
+  ReadbackResult result;
+  result.data = static_cast<const u8 *>([staging.buffer contents]);
+  result.size = size;
+  // Readbacks submit on their own: a caller that polls the ticket would
+  // otherwise wait on a batch nothing ever commits.
+  result.ticket = UploadTicket{submit_batch(*m_state)};
+  return result;
+}
+
+ReadbackResult MetalUploader::read_texture(const TextureHandle handle,
+                                           const u32 mip, const u32 layer) {
+  if (m_state == nullptr)
+    return {};
+
+  const MetalTexture *texture = m_state->textures.try_get(handle);
+  if (texture == nullptr || texture->texture == nil) {
+    nx::loge(log_rhi, "read_texture: handle is not live");
+    return {};
+  }
+  if (mip >= texture->mip_levels || layer >= texture->layers) {
+    nx::loge(log_rhi, "read_texture: mip {} layer {} is out of range for a "
+                      "{} mip / {} layer texture",
+             mip, layer, texture->mip_levels, texture->layers);
+    return {};
+  }
+
+  const u32 width = nx::max<u32>(1, texture->width >> mip);
+  const u32 height = nx::max<u32>(1, texture->height >> mip);
+  const u64 row_pitch = format_row_pitch(texture->format, width);
+  const u64 size = format_subresource_size(texture->format, width, height);
+  if (size == 0)
+    return {};
+
+  MetalUploadState &up = m_state->upload;
+  Staging staging = acquire_staging(*m_state, size, /*host_read=*/true);
+  if (staging.buffer == nil)
+    return {};
+
+  if (!ensure_batch(*m_state)) {
+    up.free_staging.push_back(staging);
+    return {};
+  }
+
+  u32 block_w = 1, block_h = 1;
+  format_block_extent(texture->format, block_w, block_h);
+  const u64 rows = (nx::cast<u64>(height) + block_h - 1) / block_h;
+
+  [up.blit copyFromTexture:texture->texture
+                     sourceSlice:layer
+                     sourceLevel:mip
+                    sourceOrigin:MTLOriginMake(0, 0, 0)
+                      sourceSize:MTLSizeMake(width, height, 1)
+                        toBuffer:staging.buffer
+               destinationOffset:0
+          destinationBytesPerRow:row_pitch
+        destinationBytesPerImage:row_pitch * rows];
+
+  up.batch_staging.push_back(staging);
+
+  ReadbackResult result;
+  result.data = static_cast<const u8 *>([staging.buffer contents]);
+  result.size = size;
+  result.ticket = UploadTicket{submit_batch(*m_state)};
+  return result;
+}
+
+void MetalUploader::pump() {
+  if (m_state != nullptr)
+    uploader_pump(*m_state);
+}
+
+UploaderStats MetalUploader::stats() const noexcept {
+  if (m_state == nullptr)
+    return {};
+
+  const MetalUploadState &up = m_state->upload;
+  UploaderStats out;
+  out.total_submits = up.submitted;
+  out.completed_submits = up.completed.load(std::memory_order_acquire);
+  out.ring_used = up.bytes_staged;
+  for (const Staging &staging : up.free_staging)
+    out.ring_capacity += staging.capacity;
+  for (const Staging &staging : up.batch_staging)
+    out.ring_capacity += staging.capacity;
+  out.extra_buffers = up.free_staging.size();
+  out.inflight_submits = up.in_flight.size();
+  out.loads_ready = up.loads_ready;
+  out.loads_failed = up.loads_failed;
+  return out;
 }
 
 namespace {

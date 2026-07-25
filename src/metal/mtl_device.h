@@ -44,12 +44,38 @@ struct DeviceDesc {
   nx::string_view pipeline_cache_path;
 };
 
+/// Handle to an in-flight readback. `data` is valid once is_complete(ticket)
+/// (or after wait(ticket)) and stays valid until a later read_* call reuses the
+/// same staging - copy it out promptly.
+struct ReadbackResult {
+  UploadTicket ticket;
+  const u8 *data = nullptr;
+  u64 size = 0;
+
+  [[nodiscard]] std::span<const u8> bytes() const noexcept {
+    return {data, nx::cast<usize>(size)};
+  }
+};
+
+/// A snapshot of the uploader's internal load, for profiling and stress tests.
+struct UploaderStats {
+  u64 total_submits = 0;     ///< Lifetime batch submissions.
+  u64 completed_submits = 0; ///< Of those, finished on the GPU.
+  u64 ring_used = 0;         ///< Bytes staged into the batch still open.
+  u64 ring_capacity = 0;     ///< Total capacity of every pooled staging buffer.
+  usize extra_buffers = 0;   ///< Staging buffers sitting idle in the pool.
+  usize inflight_submits = 0; ///< Batches whose GPU work is not done yet.
+  u64 loads_ready = 0;        ///< Async loads that reached Ready.
+  u64 loads_failed = 0;
+};
+
 /**
- * @brief Asynchronous GPU upload and streaming service.
+ * @brief Asynchronous GPU upload, readback and file/decode streaming.
  *
- * NOT IMPLEMENTED YET - every entry point here is a stub that fails cleanly, so
- * that code written against the Vulkan backend compiles and runs (drawing
- * nothing) on Metal. See docs: the uploader lands with the resource pass.
+ * Uploads stage through pooled shared-memory buffers and are batched: each call
+ * records a blit and returns an UploadTicket, but nothing is committed until
+ * the batch is flushed - once per frame by the device, or on an explicit
+ * flush() / wait().
  */
 class MetalUploader {
 public:
@@ -82,9 +108,27 @@ public:
   [[nodiscard]] TextureHandle loaded_texture(LoadRequest req) const noexcept;
   void release(LoadRequest req) noexcept;
 
+  // Readbacks (render thread)
+  // The source must not be in concurrent use on the GPU - read after
+  // wait_idle(), or from a resource nothing else touches this frame. A readback
+  // flushes any open upload batch and submits on its own.
+
+  ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
+  ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
+
   [[nodiscard]] bool is_complete(UploadTicket ticket) const noexcept;
   void wait(UploadTicket ticket) noexcept;
   void flush() noexcept;
+
+  [[nodiscard]] UploaderStats stats() const noexcept;
+
+  /// Turns finished async decodes into GPU textures and advances them to
+  /// Ready, then submits the batch their uploads joined.
+  ///
+  /// The device calls this once per frame, so a normal render loop never needs
+  /// to. Anything driving the uploader without frames - a loading screen, a
+  /// tool, a test - does: nothing else moves a load off Uploading.
+  void pump();
 
 private:
   friend class MetalDevice;

@@ -154,6 +154,11 @@ struct MetalUploadState {
   struct Staging {
     id<MTLBuffer> buffer = nil;
     u64 capacity = 0;
+    /// Readback staging is allocated with the default CPU cache mode so the
+    /// CPU can actually read it; upload staging is write-combined, where a
+    /// read costs an uncached fetch per byte. The pools are therefore kept
+    /// apart - an upload must never be handed a readback buffer or vice versa.
+    bool host_read = false;
   };
 
   /// One committed batch and the staging it borrowed, held until the GPU is
