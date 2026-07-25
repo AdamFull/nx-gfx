@@ -108,12 +108,17 @@ public:
   void begin_render_pass(const RenderPassDesc &desc);
   void end_render_pass();
 
+  void begin_compute_pass(nx::string_view name = "compute");
+  void end_compute_pass();
+
   void set_viewport(const Viewport &viewport);
   void set_scissor(const Rect2D &rect);
 
   void bind_pipeline(PipelineHandle pipeline);
   /// Sets the whole 128-byte push block. Offset/size in bytes.
   void push_constants(const void *data, u32 size, u32 offset = 0);
+
+  void bind_index_buffer(BufferHandle buffer, IndexType type, u64 offset = 0);
 
   void draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0,
             u32 first_instance = 0);

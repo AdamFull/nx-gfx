@@ -10,8 +10,16 @@
 
 #include "rendering/rhi/metal/mtl_internal.h"
 
+#include "foundation/platform/filesystem.h"
+
 namespace nxe::rhi {
 namespace {
+
+NSURL *archive_url(const nx::string_view path) noexcept {
+  if (path.empty())
+    return nil;
+  return [NSURL fileURLWithPath:to_ns_string(path)];
+}
 
 MTLPrimitiveType to_mtl_topology(const PrimitiveTopology topology) noexcept {
   switch (topology) {
@@ -144,6 +152,79 @@ id<MTLFunction> lookup_function(const MetalDeviceState &state,
 
 } // namespace
 
+// Binary archive
+
+void create_pipeline_archive(MetalDeviceState &state,
+                             const nx::string_view path) {
+  state.pipeline_archive_path = nx::string(path);
+  if (path.empty())
+    return; // In-memory only: every run recompiles.
+
+  @autoreleasepool {
+    MTLBinaryArchiveDescriptor *info =
+        [[MTLBinaryArchiveDescriptor alloc] init];
+
+    const bool have_existing = nx::fs::exists(path);
+    if (have_existing)
+      info.url = archive_url(path);
+
+    NSError *error = nil;
+    state.pipeline_archive =
+        [state.device newBinaryArchiveWithDescriptor:info error:&error];
+
+    // An archive is tied to the exact GPU and driver build, so one written by
+    // a previous OS version simply will not load. That is a cold cache, not a
+    // failure - drop the url and start over.
+    if (state.pipeline_archive == nil && have_existing) {
+      nx::logi(log_rhi, "pipeline archive is stale or unreadable, starting a "
+                        "fresh one");
+      info.url = nil;
+      error = nil;
+      state.pipeline_archive =
+          [state.device newBinaryArchiveWithDescriptor:info error:&error];
+    }
+
+    if (state.pipeline_archive == nil) {
+      nx::logw(log_rhi, "pipeline archive unavailable: {}",
+               error != nil ? [[error localizedDescription] UTF8String]
+                            : "unknown error");
+      return;
+    }
+    state.pipeline_archive.label = @"nx2d pipelines";
+
+    if (have_existing && info.url != nil)
+      nx::logi(log_rhi, "pipeline archive: loaded {}", path);
+  }
+}
+
+void save_pipeline_archive(MetalDeviceState &state) noexcept {
+  if (state.pipeline_archive == nil || state.pipeline_archive_path.empty())
+    return;
+
+  // The path usually lives under the app's data directory, which may not exist
+  // on a first run.
+  const nx::string_view parent =
+      nx::fs::path::parent_path(state.pipeline_archive_path.view());
+  if (!parent.empty() && !nx::fs::exists(parent))
+    (void)nx::fs::create_directories(parent);
+
+  @autoreleasepool {
+    NSError *error = nil;
+    if (![state.pipeline_archive
+            serializeToURL:archive_url(state.pipeline_archive_path.view())
+                     error:&error]) {
+      // Serialising an archive nothing was ever added to is an error rather
+      // than a no-op, so a run that built no pipelines lands here. Not worth
+      // more than a debug line.
+      nx::logd(log_rhi, "pipeline archive not written: {}",
+               error != nil ? [[error localizedDescription] UTF8String]
+                            : "unknown error");
+      return;
+    }
+  }
+  nx::logi(log_rhi, "pipeline archive: saved {}", state.pipeline_archive_path);
+}
+
 // Shaders
 
 ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {
@@ -239,6 +320,12 @@ MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
     // Vertices are pulled from SV_VertexID or from bindless buffers, never
     // from a vertex buffer, so there is deliberately no vertexDescriptor.
 
+    // Offering the archive lets Metal reuse a previously compiled binary
+    // instead of running the shader compiler. A miss is not an error - without
+    // MTLPipelineOptionFailOnBinaryArchiveMiss it just compiles as usual.
+    if (m_state->pipeline_archive != nil)
+      info.binaryArchives = @[ m_state->pipeline_archive ];
+
     NSError *error = nil;
     pipeline.render =
         [m_state->device newRenderPipelineStateWithDescriptor:info
@@ -248,6 +335,20 @@ MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
                error != nil ? [[error localizedDescription] UTF8String]
                             : "newRenderPipelineState failed");
       return {};
+    }
+
+    // Feed the compiled result back so the next run gets a hit. Failure only
+    // costs a recompile next time, so it is not worth failing creation over.
+    if (m_state->pipeline_archive != nil) {
+      NSError *add_error = nil;
+      if (![m_state->pipeline_archive
+              addRenderPipelineFunctionsWithDescriptor:info
+                                                 error:&add_error]) {
+        nx::logd(log_rhi, "pipeline archive: '{}' not cached: {}", desc.name,
+                 add_error != nil
+                     ? [[add_error localizedDescription] UTF8String]
+                     : "unknown error");
+      }
     }
 
     // Depth state is a separate object in Metal, and only exists when the
@@ -278,6 +379,15 @@ MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
   if (m_state == nullptr)
     return {};
 
+  if (desc.group_size[0] == 0 || desc.group_size[1] == 0 ||
+      desc.group_size[2] == 0) {
+    nx::loge(log_rhi, "create_compute_pipeline('{}'): group_size must be set "
+                      "to the shader's [numthreads]; Metal takes it at "
+                      "dispatch and cannot read it from the metallib",
+             desc.name);
+    return {};
+  }
+
   MetalPipeline pipeline;
   @autoreleasepool {
     id<MTLFunction> function =
@@ -285,10 +395,21 @@ MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
     if (function == nil)
       return {};
 
+    // The descriptor form rather than newComputePipelineStateWithFunction:,
+    // because only a descriptor can carry binaryArchives.
+    MTLComputePipelineDescriptor *info =
+        [[MTLComputePipelineDescriptor alloc] init];
+    info.label = to_ns_string(desc.name);
+    info.computeFunction = function;
+    if (m_state->pipeline_archive != nil)
+      info.binaryArchives = @[ m_state->pipeline_archive ];
+
     NSError *error = nil;
     pipeline.compute =
-        [m_state->device newComputePipelineStateWithFunction:function
-                                                       error:&error];
+        [m_state->device newComputePipelineStateWithDescriptor:info
+                                                       options:MTLPipelineOptionNone
+                                                    reflection:nullptr
+                                                         error:&error];
     if (pipeline.compute == nil) {
       nx::loge(log_rhi, "create_compute_pipeline('{}'): {}", desc.name,
                error != nil ? [[error localizedDescription] UTF8String]
@@ -296,11 +417,30 @@ MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
       return {};
     }
 
-    // Metal dispatches threads, not groups, so the group size has to travel
-    // with the pipeline for dispatch() to multiply it back out.
-    const NSUInteger width = pipeline.compute.threadExecutionWidth;
-    const NSUInteger total = pipeline.compute.maxTotalThreadsPerThreadgroup;
-    pipeline.threads_per_group = MTLSizeMake(width, total / width, 1);
+    if (m_state->pipeline_archive != nil) {
+      NSError *add_error = nil;
+      if (![m_state->pipeline_archive
+              addComputePipelineFunctionsWithDescriptor:info
+                                                  error:&add_error]) {
+        nx::logd(log_rhi, "pipeline archive: '{}' not cached: {}", desc.name,
+                 add_error != nil
+                     ? [[add_error localizedDescription] UTF8String]
+                     : "unknown error");
+      }
+    }
+
+    pipeline.threads_per_group = MTLSizeMake(
+        desc.group_size[0], desc.group_size[1], desc.group_size[2]);
+
+    const NSUInteger declared = nx::cast<NSUInteger>(desc.group_size[0]) *
+                                desc.group_size[1] * desc.group_size[2];
+    if (declared > pipeline.compute.maxTotalThreadsPerThreadgroup) {
+      nx::loge(log_rhi, "create_compute_pipeline('{}'): {} threads per group "
+                        "exceeds this device's limit of {}",
+               desc.name, declared,
+               pipeline.compute.maxTotalThreadsPerThreadgroup);
+      return {};
+    }
   }
 
   pipeline.is_compute = true;
@@ -328,9 +468,14 @@ void MetalCommandContext::bind_pipeline(const PipelineHandle handle) {
   }
 
   if (pipeline->is_compute) {
-    // Compute needs its own encoder, which cannot coexist with a render pass.
-    nx::loge(log_rhi, "bind_pipeline: compute pipelines are not supported "
-                      "inside a render pass");
+    if (m_state->compute_encoder == nil) {
+      nx::loge(log_rhi, "bind_pipeline: a compute pipeline needs a compute "
+                        "pass (begin_compute_pass)");
+      return;
+    }
+    [m_state->compute_encoder setComputePipelineState:pipeline->compute];
+    m_state->bound_threads_per_group = pipeline->threads_per_group;
+    m_state->has_bound_pipeline = true;
     return;
   }
 
@@ -352,9 +497,12 @@ void MetalCommandContext::bind_pipeline(const PipelineHandle handle) {
 
 void MetalCommandContext::push_constants(const void *data, const u32 size,
                                          const u32 offset) {
-  if (m_state == nullptr || m_state->encoder == nil || data == nullptr ||
-      size == 0)
+  if (m_state == nullptr || data == nullptr || size == 0)
     return;
+  if (m_state->encoder == nil && m_state->compute_encoder == nil) {
+    nx::loge(log_rhi, "push_constants outside a pass");
+    return;
+  }
 
   if (offset + size > PUSH_CONSTANT_SIZE) {
     nx::loge(log_rhi, "push_constants: {} bytes at offset {} exceeds the {} "
@@ -367,6 +515,13 @@ void MetalCommandContext::push_constants(const void *data, const u32 size,
   // binding is replaced each time. Shadow the block so a partial write keeps
   // whatever the previous writes put there.
   std::memcpy(m_state->push_constants + offset, data, size);
+
+  if (m_state->compute_encoder != nil) {
+    [m_state->compute_encoder setBytes:m_state->push_constants
+                                length:PUSH_CONSTANT_SIZE
+                               atIndex:PUSH_CONSTANT_BUFFER_INDEX];
+    return;
+  }
 
   [m_state->encoder setVertexBytes:m_state->push_constants
                             length:PUSH_CONSTANT_SIZE
@@ -393,32 +548,75 @@ void MetalCommandContext::draw(const u32 vertex_count, const u32 instance_count,
                       baseInstance:first_instance];
 }
 
+void MetalCommandContext::bind_index_buffer(const BufferHandle handle,
+                                            const IndexType type,
+                                            const u64 offset) {
+  if (m_state == nullptr)
+    return;
+
+  const MetalBuffer *buffer = m_state->buffers.try_get(handle);
+  if (buffer == nullptr || buffer->buffer == nil) {
+    nx::loge(log_rhi, "bind_index_buffer: handle is not live");
+    return;
+  }
+
+  // Nothing is recorded here. Metal names the index buffer on the draw call,
+  // so this only remembers what the next draw_indexed should pass along.
+  m_state->index_buffer = buffer->buffer;
+  m_state->index_type =
+      type == IndexType::U32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+  m_state->index_stride = type == IndexType::U32 ? 4u : 2u;
+  m_state->index_buffer_offset = offset;
+}
+
 void MetalCommandContext::draw_indexed(const u32 index_count,
                                        const u32 instance_count,
                                        const u32 first_index,
                                        const i32 vertex_offset,
                                        const u32 first_instance) {
-  // Metal takes the index buffer on the draw call itself rather than from a
-  // bind, and the RHI has no bind_index_buffer yet - it arrives with the 2D
-  // renderer, which is the first thing that needs one.
-  (void)index_count;
-  (void)instance_count;
-  (void)first_index;
-  (void)vertex_offset;
-  (void)first_instance;
-  nx::loge(log_rhi, "draw_indexed: not supported until the RHI has index "
-                    "buffer binding");
+  if (m_state == nullptr || m_state->encoder == nil || index_count == 0)
+    return;
+  if (!m_state->has_bound_pipeline) {
+    nx::loge(log_rhi, "draw_indexed without a bound pipeline");
+    return;
+  }
+  if (m_state->index_buffer == nil) {
+    nx::loge(log_rhi, "draw_indexed without a bound index buffer");
+    return;
+  }
+
+  // Vulkan takes first_index as an element count; Metal wants a byte offset
+  // into the buffer, so it folds into the base offset here.
+  const u64 offset = m_state->index_buffer_offset +
+                     nx::cast<u64>(first_index) * m_state->index_stride;
+
+  [m_state->encoder drawIndexedPrimitives:m_state->bound_topology
+                               indexCount:index_count
+                                indexType:m_state->index_type
+                              indexBuffer:m_state->index_buffer
+                        indexBufferOffset:offset
+                            instanceCount:instance_count
+                               baseVertex:vertex_offset
+                             baseInstance:first_instance];
 }
 
 void MetalCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
                                    const u32 groups_z) {
-  (void)groups_x;
-  (void)groups_y;
-  (void)groups_z;
-  // A compute dispatch needs its own encoder, so it cannot be recorded between
-  // begin_render_pass and end_render_pass. The render graph will own that
-  // split; until then there is nothing sane to do here.
-  nx::loge(log_rhi, "dispatch: compute passes are not implemented on Metal yet");
+  if (m_state == nullptr || groups_x == 0 || groups_y == 0 || groups_z == 0)
+    return;
+
+  id<MTLComputeCommandEncoder> encoder = m_state->compute_encoder;
+  if (encoder == nil) {
+    nx::loge(log_rhi, "dispatch outside a compute pass");
+    return;
+  }
+  if (!m_state->has_bound_pipeline) {
+    nx::loge(log_rhi, "dispatch without a bound pipeline");
+    return;
+  }
+
+  [encoder dispatchThreadgroups:MTLSizeMake(groups_x, groups_y, groups_z)
+          threadsPerThreadgroup:m_state->bound_threads_per_group];
 }
 
 } // namespace nxe::rhi

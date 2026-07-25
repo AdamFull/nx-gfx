@@ -258,12 +258,24 @@ struct MetalDeviceState {
   // objects alive past the pool, across the begin_frame / end_frame boundary.
   id<MTLCommandBuffer> cmd = nil;
   id<MTLRenderCommandEncoder> encoder = nil;
+  /// Open only between begin_compute_pass and end_compute_pass; Metal permits
+  /// exactly one encoder at a time, so this and `encoder` are never both set.
+  id<MTLComputeCommandEncoder> compute_encoder = nil;
   bool frame_active = false;
+
+  /// Metal takes the index buffer on the draw call rather than from a bind, so
+  /// bind_index_buffer only records what the next draw_indexed should use.
+  id<MTLBuffer> index_buffer = nil;
+  MTLIndexType index_type = MTLIndexTypeUInt16;
+  u64 index_buffer_offset = 0;
+  /// Size of one index in bytes, for turning first_index into a byte offset.
+  u32 index_stride = 2;
 
   /// Shadow copy of the push block. Metal's setBytes replaces the whole
   /// binding, so a partial push_constants() call has to re-send the rest.
   alignas(16) u8 push_constants[PUSH_CONSTANT_SIZE] = {};
   MTLPrimitiveType bound_topology = MTLPrimitiveTypeTriangle;
+  MTLSize bound_threads_per_group = {1, 1, 1};
   bool has_bound_pipeline = false;
 
   /// Bound at buffer index 1 on every encoder, matching where Slang puts the
@@ -322,6 +334,14 @@ void bind_bindless(MetalDeviceState &state,
                    id<MTLRenderCommandEncoder> encoder) noexcept;
 void bind_bindless_compute(MetalDeviceState &state,
                            id<MTLComputeCommandEncoder> encoder) noexcept;
+
+// Pipeline binary archive (mtl_pipeline.mm), Metal's answer to
+// VkPipelineCache. Both are best-effort: a miss just means a compile.
+
+/// Loads the archive at @p path, or starts an empty one. Never fails the
+/// device: an unreadable or stale archive is only a cold cache.
+void create_pipeline_archive(MetalDeviceState &state, nx::string_view path);
+void save_pipeline_archive(MetalDeviceState &state) noexcept;
 
 /// Queues a resource for destruction once the GPU has passed the frame being
 /// recorded (mtl_device.mm). Exactly one handle field should be set.

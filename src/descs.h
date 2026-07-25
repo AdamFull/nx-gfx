@@ -204,6 +204,7 @@ struct GraphicsPipelineDesc {
 struct ComputePipelineDesc {
   nx::string_view name = "pipeline";
   ShaderEntry compute;
+  u32 group_size[3] = {0, 0, 0};
 };
 
 /// Barrier describing a texture's state transition. The render graph is the

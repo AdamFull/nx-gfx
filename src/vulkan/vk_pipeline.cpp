@@ -377,6 +377,21 @@ void VulkanCommandContext::push_constants(const void *data, const u32 size,
                      offset, size, data);
 }
 
+void VulkanCommandContext::bind_index_buffer(const BufferHandle handle,
+                                             const IndexType type,
+                                             const u64 offset) {
+  if (m_device == nullptr)
+    return;
+  const VulkanBuffer *buffer = m_device->buffer(handle);
+  if (buffer == nullptr || buffer->buffer == VK_NULL_HANDLE) {
+    nx::loge(log_rhi, "bind_index_buffer: handle is not live");
+    return;
+  }
+  vkCmdBindIndexBuffer(m_cmd, buffer->buffer, offset,
+                       type == IndexType::U32 ? VK_INDEX_TYPE_UINT32
+                                              : VK_INDEX_TYPE_UINT16);
+}
+
 void VulkanCommandContext::draw(const u32 vertex_count,
                                 const u32 instance_count,
                                 const u32 first_vertex,
@@ -397,5 +412,16 @@ void VulkanCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
                                     const u32 groups_z) {
   vkCmdDispatch(m_cmd, groups_x, groups_y, groups_z);
 }
+
+
+void VulkanCommandContext::begin_compute_pass(const nx::string_view name) {
+  if (m_in_render_pass) {
+    nx::loge(log_rhi, "begin_compute_pass('{}') inside a render pass", name);
+    return;
+  }
+  push_debug_group(name);
+}
+
+void VulkanCommandContext::end_compute_pass() { pop_debug_group(); }
 
 } // namespace nxe::rhi

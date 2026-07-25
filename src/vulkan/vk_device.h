@@ -105,12 +105,24 @@ public:
   void begin_render_pass(const RenderPassDesc &desc);
   void end_render_pass();
 
+  /// Compute is recorded outside a render pass, never inside one. Vulkan has
+  /// no such rule - these are only a debug label here - but Metal does, so the
+  /// RHI makes the requirement explicit on both rather than letting valid
+  /// Vulkan code fail on Metal.
+  void begin_compute_pass(nx::string_view name = "compute");
+  void end_compute_pass();
+
   void set_viewport(const Viewport &viewport);
   void set_scissor(const Rect2D &rect);
 
   void bind_pipeline(PipelineHandle pipeline);
   /// Sets the whole 128-byte push block. Offset/size in bytes.
   void push_constants(const void *data, u32 size, u32 offset = 0);
+
+  /// The only buffer binding in the API: everything else a shader reads is
+  /// reached bindlessly by device address. An index buffer cannot be, because
+  /// the index fetch is fixed-function on both backends.
+  void bind_index_buffer(BufferHandle buffer, IndexType type, u64 offset = 0);
 
   void draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0,
             u32 first_instance = 0);

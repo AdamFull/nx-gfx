@@ -204,6 +204,10 @@ enum class PrimitiveTopology : u8 {
   Count
 };
 
+/// Index buffer element width. 16-bit halves the bandwidth and is enough for
+/// any single 2D batch, so it is the default everywhere it can be.
+enum class IndexType : u8 { U16, U32, Count };
+
 enum class CullMode : u8 { None, Front, Back, Count };
 
 enum class FrontFace : u8 { CounterClockwise, Clockwise, Count };

@@ -212,6 +212,8 @@ bool MetalDevice::init(const DeviceDesc &desc) {
       return false;
     }
 
+    create_pipeline_archive(*state, desc.pipeline_cache_path);
+
     state->owner = this;
     m_state = state;
     m_uploader.m_state = state;
@@ -235,6 +237,10 @@ bool MetalDevice::init(const DeviceDesc &desc) {
 void MetalDevice::shutdown() noexcept {
   if (m_state == nullptr)
     return;
+
+  // Written before teardown, while the archive still holds this run's
+  // pipelines.
+  save_pipeline_archive(*m_state);
 
   // Drain the decode worker and any batch still in flight before anything it
   // could be touching is destroyed.
@@ -351,12 +357,17 @@ bool MetalDevice::end_frame() {
     return false;
 
   @autoreleasepool {
+    // A caller that forgot to end a pass would otherwise hit an assertion
+    // inside Metal on commit; close it and say so.
     if (s->encoder != nil) {
-      // A caller that forgot end_render_pass would otherwise hit an assertion
-      // inside Metal on commit; close it and say so.
       nx::logw(log_rhi, "end_frame with a render pass still open");
       [s->encoder endEncoding];
       s->encoder = nil;
+    }
+    if (s->compute_encoder != nil) {
+      nx::logw(log_rhi, "end_frame with a compute pass still open");
+      [s->compute_encoder endEncoding];
+      s->compute_encoder = nil;
     }
 
     // Captured by the block rather than reaching through `s`, so the handler
@@ -782,6 +793,46 @@ void MetalCommandContext::end_render_pass() {
   }
   m_state->has_bound_pipeline = false;
   m_in_render_pass = false;
+}
+
+void MetalCommandContext::begin_compute_pass(const nx::string_view name) {
+  if (m_state == nullptr || m_state->cmd == nil)
+    return;
+  if (m_in_render_pass || m_state->encoder != nil) {
+    nx::loge(log_rhi, "begin_compute_pass('{}') inside a render pass", name);
+    return;
+  }
+  if (m_state->compute_encoder != nil) {
+    nx::loge(log_rhi, "begin_compute_pass('{}') inside another compute pass",
+             name);
+    return;
+  }
+
+  @autoreleasepool {
+    // Concurrent dispatch would let independent dispatches overlap, but it
+    // also drops the automatic ordering between them. Serial matches what a
+    // caller coming from vkCmdDispatch expects.
+    m_state->compute_encoder = [m_state->cmd
+        computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+    if (m_state->compute_encoder == nil) {
+      nx::loge(log_rhi, "begin_compute_pass('{}'): encoder creation failed",
+               name);
+      return;
+    }
+    m_state->compute_encoder.label = to_ns_string(name);
+
+    bind_bindless_compute(*m_state, m_state->compute_encoder);
+  }
+  m_state->has_bound_pipeline = false;
+}
+
+void MetalCommandContext::end_compute_pass() {
+  if (m_state == nullptr || m_state->compute_encoder == nil)
+    return;
+
+  [m_state->compute_encoder endEncoding];
+  m_state->compute_encoder = nil;
+  m_state->has_bound_pipeline = false;
 }
 
 void MetalCommandContext::set_viewport(const Viewport &viewport) {
