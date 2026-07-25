@@ -217,6 +217,20 @@ bool MetalDevice::init(const DeviceDesc &desc) {
       return false;
     }
 
+    // Synchronisation for the untracked bindless heaps.
+    state->pass_fence = [device newFence];
+    state->upload_event = [device newEvent];
+    if (state->pass_fence == nil || state->upload_event == nil) {
+      nx::loge(log_rhi, "init: could not create the heap synchronisation "
+                        "primitives");
+      delete state;
+      m_caps = {};
+      m_device_name.clear();
+      return false;
+    }
+    state->pass_fence.label = @"nx2d pass";
+    state->upload_event.label = @"nx2d uploads";
+
     create_pipeline_archive(*state, desc.pipeline_cache_path);
 
     state->owner = this;
@@ -328,6 +342,13 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
       return AcquireResult::SurfaceLost;
     }
     s->cmd.label = @"nx2d frame";
+
+    // A fence carries nothing across command buffers, so this one starts
+    // un-updated; the uploader's writes are ordered by the event instead.
+    begin_command_buffer(*s);
+    if (s->upload.submitted > 0) {
+      [s->cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
+    }
   }
 
   // Re-point the backbuffer handle at this frame's drawable. The handle is
@@ -366,11 +387,13 @@ bool MetalDevice::end_frame() {
     // inside Metal on commit; close it and say so.
     if (s->encoder != nil) {
       nx::logw(log_rhi, "end_frame with a render pass still open");
+      encoder_update_fence(*s, s->encoder);
       [s->encoder endEncoding];
       s->encoder = nil;
     }
     if (s->compute_encoder != nil) {
       nx::logw(log_rhi, "end_frame with a compute pass still open");
+      encoder_update_fence(*s, s->compute_encoder);
       [s->compute_encoder endEncoding];
       s->compute_encoder = nil;
     }
@@ -796,6 +819,10 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     }
     m_state->encoder.label = to_ns_string(desc.name);
 
+    // Anything this pass samples may have been written by an earlier encoder
+    // in this command buffer, and heap resources carry no automatic tracking.
+    encoder_wait_fence(*m_state, m_state->encoder);
+
     // The bindless argument buffer is bound once per encoder and never
     // rebound, matching how the Vulkan backend binds its descriptor set once
     // per frame. Encoder state does not survive endEncoding, so "once per
@@ -824,6 +851,7 @@ void MetalCommandContext::end_render_pass() {
     return;
 
   if (m_state->encoder != nil) {
+    encoder_update_fence(*m_state, m_state->encoder);
     [m_state->encoder endEncoding];
     m_state->encoder = nil;
   }
@@ -857,6 +885,7 @@ void MetalCommandContext::begin_compute_pass(const nx::string_view name) {
     }
     m_state->compute_encoder.label = to_ns_string(name);
 
+    encoder_wait_fence(*m_state, m_state->compute_encoder);
     bind_bindless_compute(*m_state, m_state->compute_encoder);
   }
   m_state->has_bound_pipeline = false;
@@ -866,6 +895,7 @@ void MetalCommandContext::end_compute_pass() {
   if (m_state == nullptr || m_state->compute_encoder == nil)
     return;
 
+  encoder_update_fence(*m_state, m_state->compute_encoder);
   [m_state->compute_encoder endEncoding];
   m_state->compute_encoder = nil;
   m_state->has_bound_pipeline = false;

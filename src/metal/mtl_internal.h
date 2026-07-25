@@ -129,7 +129,8 @@ struct MetalPipeline {
 /// from a free list because one texture owns a slot per mip.
 struct BindlessHeap {
   id<MTLBuffer> argument_buffer = nil;
-  /// Byte offsets of each table within the buffer.
+  /// Byte offsets of each table within the buffer, in the declaration order of
+  /// BindlessTables in shaders/bindless.slang.
   u64 textures_offset = 0;
   u64 rw_textures_offset = 0;
   u64 samplers_offset = 0;
@@ -302,6 +303,19 @@ struct MetalDeviceState {
   /// Bound at buffer index 1 on every encoder, matching where Slang puts the
   /// ParameterBlock. Index 0 is the push block.
   BindlessHeap bindless;
+  // Synchronisation for untracked heap resources. Only heap-backed resources
+  // are untracked; everything else (the backbuffer, staging, shared buffers)
+  // keeps Metal's automatic tracking, so these cover exactly the bindless set.
+  //
+  //  - `pass_fence` orders encoders inside one command buffer. A fence may only
+  //    be waited on after it has been updated in that same command buffer,
+  //    hence `fence_written`, which resets with each new command buffer.
+  //  - `upload_event` orders the uploader's command buffer against the frame's,
+  //    which a fence cannot span.
+  id<MTLFence> pass_fence = nil;
+  bool fence_written = false;
+  id<MTLEvent> upload_event = nil;
+
   id<MTLBinaryArchive> pipeline_archive = nil;
   nx::string pipeline_archive_path;
 
@@ -374,6 +388,36 @@ void bind_bindless_compute(MetalDeviceState &state,
 /// device: an unreadable or stale archive is only a cold cache.
 void create_pipeline_archive(MetalDeviceState &state, nx::string_view path);
 void save_pipeline_archive(MetalDeviceState &state) noexcept;
+
+// Hand-placed synchronisation for untracked heap resources (mtl_bindless.mm).
+//
+// Placement is at pass granularity: any encoder that could have written a heap
+// resource updates the fence, and any encoder that could read one waits on it.
+// That is coarser than necessary - it orders passes that share nothing - but
+// the RHI has no dependency information to be more precise with until the
+// render graph exists. It is correct, and it is where the precise version will
+// slot in.
+
+/// Waits on the fence if an earlier encoder in this command buffer updated it.
+void encoder_wait_fence(MetalDeviceState &state,
+                        id<MTLRenderCommandEncoder> encoder) noexcept;
+void encoder_wait_fence(MetalDeviceState &state,
+                        id<MTLComputeCommandEncoder> encoder) noexcept;
+void encoder_wait_fence(MetalDeviceState &state,
+                        id<MTLBlitCommandEncoder> encoder) noexcept;
+
+/// Updates the fence so later encoders in this command buffer can order
+/// against this one's writes.
+void encoder_update_fence(MetalDeviceState &state,
+                          id<MTLRenderCommandEncoder> encoder) noexcept;
+void encoder_update_fence(MetalDeviceState &state,
+                          id<MTLComputeCommandEncoder> encoder) noexcept;
+void encoder_update_fence(MetalDeviceState &state,
+                          id<MTLBlitCommandEncoder> encoder) noexcept;
+
+/// Called when a command buffer is created: a fence carries no state across
+/// command buffers, so the "has been updated" flag has to start clear.
+void begin_command_buffer(MetalDeviceState &state) noexcept;
 
 /// Queues a resource for destruction once the GPU has passed the frame being
 /// recorded (mtl_device.mm). Exactly one handle field should be set.

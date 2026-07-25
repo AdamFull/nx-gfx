@@ -105,12 +105,15 @@ bool ensure_batch(MetalDeviceState &state) {
     if (up.batch == nil)
       return false;
     up.batch.label = @"nx2d uploads";
+    begin_command_buffer(state);
+
     up.blit = [up.batch blitCommandEncoder];
     if (up.blit == nil) {
       up.batch = nil;
       return false;
     }
     up.blit.label = @"nx2d uploads";
+    encoder_wait_fence(state, up.blit);
   }
   return true;
 }
@@ -125,7 +128,13 @@ u64 submit_batch(MetalDeviceState &state) {
   const u64 value = ++up.submitted;
 
   @autoreleasepool {
+    encoder_update_fence(state, up.blit);
     [up.blit endEncoding];
+
+    // Heap resources are untracked, and a fence does not reach across command
+    // buffers. The frame's command buffer waits on this event before recording
+    // anything that could read what was just staged.
+    [up.batch encodeSignalEvent:state.upload_event value:value];
 
     // Captured by value: the handler runs on an arbitrary thread at an
     // arbitrary time, so it must not reach into anything that can be destroyed

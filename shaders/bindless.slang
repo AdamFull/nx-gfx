@@ -20,8 +20,10 @@ public static const uint kInvalidIndex = 0xFFFFFFFF;
 
 #if defined(NX_TARGET_METAL)
 
+// Declaration order fixes the byte offsets the C++ side writes slots at, so it
+// must not change without updating create_bindless_heap().
 public struct BindlessTables {
-    public Texture2D textures[65536];            // MAX_BINDLESS_TEXTURES
+    public Texture2D textures[65536];             // MAX_BINDLESS_TEXTURES
     public RWTexture2D<float4> rw_textures[8192]; // MAX_BINDLESS_RW_TEXTURES
     public SamplerState samplers[1024];           // MAX_BINDLESS_SAMPLERS
 };

@@ -50,13 +50,16 @@ id<MTLHeap> grow_heaps(MetalDeviceState &state, const u64 required) noexcept {
   info.size = nx::max<u64>(DEFAULT_HEAP_BYTES, required);
   info.storageMode = MTLStorageModePrivate;
   info.type = MTLHeapTypeAutomatic;
-  // Heaps default to MTLHazardTrackingModeDefault, which for a heap means
-  // *untracked*: Metal would insert no dependency between the compute pass
-  // that writes a texture and the render pass that samples it. The RHI has no
-  // fence plumbing yet - barrier() is bookkeeping only - so tracking has to
-  // stay on, or every cross-encoder read becomes a race. Revisit when the
-  // render graph can place MTLFences properly.
-  info.hazardTrackingMode = MTLHazardTrackingModeTracked;
+  // Untracked: Metal inserts no dependency between an encoder that writes a
+  // resource in this heap and one that later reads it. The backend places that
+  // synchronisation itself - see pass_fence and upload_event in
+  // MetalDeviceState - which is what lets the driver stop tracking every
+  // bindless resource individually at each encoder boundary.
+  //
+  // Only heap resources are untracked. Everything else keeps Metal's automatic
+  // tracking, so the hand-placed synchronisation covers exactly the bindless
+  // set and nothing more.
+  info.hazardTrackingMode = MTLHazardTrackingModeUntracked;
 
   id<MTLHeap> heap = [state.device newHeapWithDescriptor:info];
   if (heap == nil) {
@@ -104,6 +107,7 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
   heap.max_rw_textures = MAX_BINDLESS_RW_TEXTURES;
   heap.max_samplers = MAX_BINDLESS_SAMPLERS;
 
+  // Order must match the declaration order of BindlessTables.
   heap.textures_offset = 0;
   heap.rw_textures_offset =
       heap.textures_offset + nx::cast<u64>(heap.max_textures) * SLOT_SIZE;
@@ -129,7 +133,8 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
   }
 
   nx::logi(log_rhi,
-           "bindless heap: {} textures / {} rw textures / {} samplers ({} KiB)",
+           "bindless heap: {} textures / {} rw textures / {} samplers "
+           "({} KiB)",
            heap.max_textures, heap.max_rw_textures, heap.max_samplers,
            total / 1024);
   return true;
@@ -228,6 +233,59 @@ id<MTLBuffer> alloc_bindless_buffer(MetalDeviceState &state, const u64 length,
       [state.device heapBufferSizeAndAlignWithLength:length options:options];
   id<MTLHeap> heap = grow_heaps(state, need.size + need.align);
   return heap != nil ? [heap newBufferWithLength:length options:options] : nil;
+}
+
+// Fences
+
+void begin_command_buffer(MetalDeviceState &state) noexcept {
+  state.fence_written = false;
+}
+
+void encoder_wait_fence(MetalDeviceState &state,
+                        id<MTLRenderCommandEncoder> encoder) noexcept {
+  if (encoder == nil || state.pass_fence == nil || !state.fence_written)
+    return;
+  // Before the vertex stage: a vertex shader may pull from a heap buffer, so
+  // waiting only before fragment would be too late.
+  [encoder waitForFence:state.pass_fence beforeStages:MTLRenderStageVertex];
+}
+
+void encoder_wait_fence(MetalDeviceState &state,
+                        id<MTLComputeCommandEncoder> encoder) noexcept {
+  if (encoder == nil || state.pass_fence == nil || !state.fence_written)
+    return;
+  [encoder waitForFence:state.pass_fence];
+}
+
+void encoder_wait_fence(MetalDeviceState &state,
+                        id<MTLBlitCommandEncoder> encoder) noexcept {
+  if (encoder == nil || state.pass_fence == nil || !state.fence_written)
+    return;
+  [encoder waitForFence:state.pass_fence];
+}
+
+void encoder_update_fence(MetalDeviceState &state,
+                          id<MTLRenderCommandEncoder> encoder) noexcept {
+  if (encoder == nil || state.pass_fence == nil)
+    return;
+  [encoder updateFence:state.pass_fence afterStages:MTLRenderStageFragment];
+  state.fence_written = true;
+}
+
+void encoder_update_fence(MetalDeviceState &state,
+                          id<MTLComputeCommandEncoder> encoder) noexcept {
+  if (encoder == nil || state.pass_fence == nil)
+    return;
+  [encoder updateFence:state.pass_fence];
+  state.fence_written = true;
+}
+
+void encoder_update_fence(MetalDeviceState &state,
+                          id<MTLBlitCommandEncoder> encoder) noexcept {
+  if (encoder == nil || state.pass_fence == nil)
+    return;
+  [encoder updateFence:state.pass_fence];
+  state.fence_written = true;
 }
 
 void track_resident(MetalDeviceState &state,
