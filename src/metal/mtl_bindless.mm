@@ -39,6 +39,42 @@ void write_slot(const MetalDeviceState &state, const u64 offset, const u32 slot,
               sizeof(id));
 }
 
+/// New heaps are this big unless a single resource needs more. Large enough
+/// that a 2D game's whole atlas set lands in one or two, small enough that the
+/// first allocation does not reserve an absurd amount of address space.
+constexpr u64 DEFAULT_HEAP_BYTES = 64ull << 20;
+
+/// Adds a heap big enough for @p required bytes and returns it, or nil.
+id<MTLHeap> grow_heaps(MetalDeviceState &state, const u64 required) noexcept {
+  MTLHeapDescriptor *info = [[MTLHeapDescriptor alloc] init];
+  info.size = nx::max<u64>(DEFAULT_HEAP_BYTES, required);
+  info.storageMode = MTLStorageModePrivate;
+  info.type = MTLHeapTypeAutomatic;
+  // Heaps default to MTLHazardTrackingModeDefault, which for a heap means
+  // *untracked*: Metal would insert no dependency between the compute pass
+  // that writes a texture and the render pass that samples it. The RHI has no
+  // fence plumbing yet - barrier() is bookkeeping only - so tracking has to
+  // stay on, or every cross-encoder read becomes a race. Revisit when the
+  // render graph can place MTLFences properly.
+  info.hazardTrackingMode = MTLHazardTrackingModeTracked;
+
+  id<MTLHeap> heap = [state.device newHeapWithDescriptor:info];
+  if (heap == nil) {
+    nx::logw(log_rhi, "bindless: could not allocate a {} MiB heap; falling "
+                      "back to per-resource residency",
+             info.size >> 20);
+    return nil;
+  }
+  heap.label = @"nx2d bindless";
+
+  state.bindless.heaps.push_back(heap);
+  state.bindless.heap_bytes += info.size;
+  nx::logi(log_rhi, "bindless: heap {} added ({} MiB, {} MiB total)",
+           state.bindless.heaps.size(), info.size >> 20,
+           state.bindless.heap_bytes >> 20);
+  return heap;
+}
+
 void clear_slot(const MetalDeviceState &state, const u64 offset, const u32 slot,
                 const u32 max_slots) noexcept {
   if (slot >= max_slots || state.bindless.argument_buffer == nil)
@@ -156,6 +192,44 @@ void free_rw_slot(MetalDeviceState &state, const u32 slot) noexcept {
   state.bindless.free_rw_slots.push_back(slot);
 }
 
+id<MTLTexture>
+alloc_bindless_texture(MetalDeviceState &state,
+                       MTLTextureDescriptor *descriptor) noexcept {
+  // The heaps are private-storage. A shared or memoryless texture would need a
+  // heap of its own kind, which is not worth it for the handful that exist.
+  if (descriptor.storageMode != MTLStorageModePrivate)
+    return nil;
+
+  for (id<MTLHeap> heap : state.bindless.heaps) {
+    if (id<MTLTexture> texture = [heap newTextureWithDescriptor:descriptor])
+      return texture;
+  }
+
+  // Every heap is full or too fragmented. Size the new one so this allocation
+  // certainly fits, alignment included.
+  const MTLSizeAndAlign need =
+      [state.device heapTextureSizeAndAlignWithDescriptor:descriptor];
+  id<MTLHeap> heap = grow_heaps(state, need.size + need.align);
+  return heap != nil ? [heap newTextureWithDescriptor:descriptor] : nil;
+}
+
+id<MTLBuffer> alloc_bindless_buffer(MetalDeviceState &state, const u64 length,
+                                    const MTLResourceOptions options) noexcept {
+  if ((options & MTLResourceStorageModeMask) != MTLResourceStorageModePrivate)
+    return nil;
+
+  for (id<MTLHeap> heap : state.bindless.heaps) {
+    if (id<MTLBuffer> buffer = [heap newBufferWithLength:length
+                                                 options:options])
+      return buffer;
+  }
+
+  const MTLSizeAndAlign need =
+      [state.device heapBufferSizeAndAlignWithLength:length options:options];
+  id<MTLHeap> heap = grow_heaps(state, need.size + need.align);
+  return heap != nil ? [heap newBufferWithLength:length options:options] : nil;
+}
+
 void track_resident(MetalDeviceState &state,
                     id<MTLResource> resource) noexcept {
   if (resource == nil)
@@ -192,9 +266,16 @@ void bind_bindless(MetalDeviceState &state,
                       offset:0
                      atIndex:BINDLESS_BUFFER_INDEX];
 
-  // Declaring residency per encoder is O(live textures). That is the right
-  // trade at 2D-engine scale; the way out at tens of thousands of textures is
-  // to sub-allocate them from MTLHeaps and call useHeaps: once instead.
+  // One call per heap, whatever it holds - that is the whole reason bindless
+  // resources are sub-allocated rather than allocated individually.
+  if (!state.bindless.heaps.empty()) {
+    [encoder useHeaps:state.bindless.heaps.data()
+                count:state.bindless.heaps.size()
+               stages:MTLRenderStageVertex | MTLRenderStageFragment];
+  }
+
+  // Whatever could not live in a heap still has to be named. This list stays
+  // short by construction: it only takes shared or memoryless resources.
   if (!state.bindless.resident.empty()) {
     [encoder useResources:state.bindless.resident.data()
                     count:state.bindless.resident.size()
@@ -211,6 +292,11 @@ void bind_bindless_compute(MetalDeviceState &state,
   [encoder setBuffer:state.bindless.argument_buffer
               offset:0
              atIndex:BINDLESS_BUFFER_INDEX];
+
+  if (!state.bindless.heaps.empty()) {
+    [encoder useHeaps:state.bindless.heaps.data()
+                count:state.bindless.heaps.size()];
+  }
 
   if (!state.bindless.resident.empty()) {
     [encoder useResources:state.bindless.resident.data()

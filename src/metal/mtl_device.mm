@@ -89,12 +89,17 @@ void collect_garbage(MetalDeviceState &state, const u64 completed_frame) {
         write_texture_descriptor(state, texture->bindless_slot, nil);
       for (const u32 slot : texture->uav_slots)
         free_rw_slot(state, slot);
-      forget_resident(state, texture->texture);
+      // Heap-backed resources were never in the list; their memory returns to
+      // the heap when ARC releases the last reference, which the erase below
+      // does.
+      if (!texture->heap_backed)
+        forget_resident(state, texture->texture);
       state.textures.erase(pending.texture);
     }
 
     if (const MetalBuffer *buffer = state.buffers.try_get(pending.buffer)) {
-      forget_resident(state, buffer->buffer);
+      if (!buffer->heap_backed && buffer->bindless_visible)
+        forget_resident(state, buffer->buffer);
       state.buffers.erase(pending.buffer);
     }
 
@@ -442,7 +447,20 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
     info.storageMode =
         to_mtl_storage_mode(desc.memory, desc.usage.has(TextureUsage::Transient));
 
-    texture.texture = [m_state->device newTextureWithDescriptor:info];
+    // Anything a shader reaches through the bindless tables comes from a heap
+    // where possible, so that one useHeaps: per encoder covers it instead of
+    // an entry in the per-resource residency list. A pure render target is
+    // named by the render pass descriptor and needs neither.
+    const bool bindless_visible = desc.usage.has(TextureUsage::Sampled) ||
+                                  desc.usage.has(TextureUsage::Storage);
+    if (bindless_visible) {
+      texture.texture = alloc_bindless_texture(*m_state, info);
+      texture.heap_backed = texture.texture != nil;
+    }
+
+    if (texture.texture == nil)
+      texture.texture = [m_state->device newTextureWithDescriptor:info];
+
     if (texture.texture == nil) {
       nx::loge(log_rhi, "create_texture('{}'): allocation failed", desc.name);
       return {};
@@ -494,12 +512,10 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
     write_texture_descriptor(*m_state, stored.bindless_slot, stored.texture);
   }
 
-  // Only resources the argument buffer can actually name need declaring
-  // resident. A pure render target is bound by the render pass descriptor,
-  // which Metal tracks for itself, so listing it would just make every
-  // encoder's useResources: call longer for nothing.
-  if (desc.usage.has(TextureUsage::Sampled) ||
-      desc.usage.has(TextureUsage::Storage))
+  // Heap-backed resources are already covered by useHeaps:; only the ones that
+  // fell back to a device allocation need naming individually.
+  if (!stored.heap_backed && (desc.usage.has(TextureUsage::Sampled) ||
+                              desc.usage.has(TextureUsage::Storage)))
     track_resident(*m_state, stored.texture);
 
   return handle;
@@ -540,8 +556,19 @@ BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
       break;
     }
 
-    buffer.buffer = [m_state->device newBufferWithLength:desc.size
-                                                 options:options];
+    // A buffer a shader reaches by GPU address needs residency exactly as a
+    // bindless texture does - naming it in a push block does not make its
+    // memory reachable - so it goes in a heap for the same reason.
+    buffer.bindless_visible = desc.usage.has(BufferUsage::DeviceAddress);
+    if (buffer.bindless_visible) {
+      buffer.buffer = alloc_bindless_buffer(*m_state, desc.size, options);
+      buffer.heap_backed = buffer.buffer != nil;
+    }
+
+    if (buffer.buffer == nil)
+      buffer.buffer = [m_state->device newBufferWithLength:desc.size
+                                                   options:options];
+
     if (buffer.buffer == nil) {
       nx::loge(log_rhi, "create_buffer('{}'): allocation of {} bytes failed",
                desc.name, desc.size);
@@ -557,7 +584,16 @@ BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
 
   buffer.size = desc.size;
   buffer.usage = desc.usage;
-  return m_state->buffers.insert(std::move(buffer));
+
+  const BufferHandle handle = m_state->buffers.insert(std::move(buffer));
+  if (!handle.valid())
+    return {};
+
+  MetalBuffer &stored = m_state->buffers[handle];
+  if (stored.bindless_visible && !stored.heap_backed)
+    track_resident(*m_state, stored.buffer);
+
+  return handle;
 }
 
 void MetalDevice::destroy_buffer(const BufferHandle handle) noexcept {

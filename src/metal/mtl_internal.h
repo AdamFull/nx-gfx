@@ -78,6 +78,9 @@ struct MetalTexture {
   /// Slot in the bindless argument buffer's texture table; INVALID unless the
   /// texture is Sampled.
   u32 bindless_slot = BINDLESS_INVALID_INDEX;
+  /// Sub-allocated from a bindless heap, so useHeaps: already covers it and it
+  /// is not in the per-resource residency list.
+  bool heap_backed = false;
   /// False for the backbuffer, whose MTLTexture belongs to the drawable and is
   /// swapped out from under the handle every frame.
   bool owns_texture = true;
@@ -88,6 +91,11 @@ struct MetalBuffer {
   u64 size = 0;
   BufferUsageFlags usage = BufferUsage::None;
   void *mapped = nullptr;
+  /// See MetalTexture::heap_backed.
+  bool heap_backed = false;
+  /// Reachable by GPU address from a shader, so it needs residency like a
+  /// bindless texture does.
+  bool bindless_visible = false;
 };
 
 struct MetalSampler {
@@ -131,10 +139,18 @@ struct BindlessHeap {
   nx::small_vector<u32, 64> free_rw_slots;
   u32 rw_high_water = 0;
 
-  /// Everything the argument buffer can name. An argument buffer carries no
-  /// residency information, so each encoder has to be told which resources it
-  /// may reach; this is that list.
+  // Residency. An argument buffer is just memory: naming a resource in it does
+  // not make the resource reachable, so every encoder must be told what it may
+  // touch. Doing that per resource is O(live resources) per pass, so anything
+  // that can be is sub-allocated from a heap instead - one useHeaps: call
+  // covers everything inside, however many resources that is.
+
+  /// Heaps bindless-visible resources are sub-allocated from.
+  nx::vector<id<MTLHeap>> heaps;
+  /// Resources that could not come from a heap (shared or memoryless storage,
+  /// or an allocation the heaps refused) and must be named individually.
   nx::vector<id<MTLResource>> resident;
+  u64 heap_bytes = 0;
 };
 
 /**
@@ -334,6 +350,17 @@ void write_sampler_descriptor(MetalDeviceState &state, u32 slot,
 void free_rw_slot(MetalDeviceState &state, u32 slot) noexcept;
 void track_resident(MetalDeviceState &state, id<MTLResource> resource) noexcept;
 void forget_resident(MetalDeviceState &state, id<MTLResource> resource) noexcept;
+
+/// Allocates a bindless-visible resource from a heap, growing the heap set if
+/// none has room. Returns nil when the resource cannot live in a heap at all,
+/// in which case the caller allocates from the device and tracks it
+/// individually.
+[[nodiscard]] id<MTLTexture>
+alloc_bindless_texture(MetalDeviceState &state,
+                       MTLTextureDescriptor *descriptor) noexcept;
+[[nodiscard]] id<MTLBuffer>
+alloc_bindless_buffer(MetalDeviceState &state, u64 length,
+                      MTLResourceOptions options) noexcept;
 /// Binds the argument buffer and declares every bindless resource resident.
 void bind_bindless(MetalDeviceState &state,
                    id<MTLRenderCommandEncoder> encoder) noexcept;
