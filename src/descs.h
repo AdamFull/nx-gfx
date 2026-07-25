@@ -150,6 +150,12 @@ struct SwapchainDesc {
   u32 frames_in_flight = 2;
 };
 
+#if defined(NX_RHI_METAL)
+inline constexpr nx::string_view SHADER_BINARY_EXT = ".metallib";
+#else
+inline constexpr nx::string_view SHADER_BINARY_EXT = ".spv";
+#endif
+
 /// A compiled shader blob (SPIR-V on Vulkan, metallib on Metal). One blob may
 /// hold several entry points; a pipeline names the one it wants.
 struct ShaderDesc {
