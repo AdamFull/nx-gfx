@@ -21,9 +21,15 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#include "foundation/containers/concurrent_queue.h"
 #include "foundation/containers/slot_map.h"
+#include "foundation/containers/small_vector.h"
 #include "foundation/diagnostics/log.h"
+#include "foundation/threading/sync.h"
+#include "foundation/threading/thread.h"
 #include "rendering/rhi/metal/mtl_device.h"
+
+#include <atomic>
 
 namespace nxe::rhi {
 
@@ -53,6 +59,13 @@ extern const nx::log::Category log_rhi;
 
 struct MetalTexture {
   id<MTLTexture> texture = nil;
+  /// One view per mip for the storage-image table; empty unless Storage.
+  /// nx::vector rather than small_vector: ARC refuses to work through the
+  /// latter's inline std::byte storage, which it cannot cast to a __strong id*.
+  /// Every container holding an Objective-C object here is nx::vector for that
+  /// reason.
+  nx::vector<id<MTLTexture>> uavs;
+  nx::small_vector<u32, 12> uav_slots;
   Format format = Format::Unknown;
   TextureDimension dimension = TextureDimension::Tex2D;
   u32 width = 0;
@@ -62,6 +75,9 @@ struct MetalTexture {
   u32 sample_count = 1;
   TextureUsageFlags usage = TextureUsage::None;
   ResourceState state = ResourceState::Undefined;
+  /// Slot in the bindless argument buffer's texture table; INVALID unless the
+  /// texture is Sampled.
+  u32 bindless_slot = BINDLESS_INVALID_INDEX;
   /// False for the backbuffer, whose MTLTexture belongs to the drawable and is
   /// swapped out from under the handle every frame.
   bool owns_texture = true;
@@ -76,6 +92,136 @@ struct MetalBuffer {
 
 struct MetalSampler {
   id<MTLSamplerState> sampler = nil;
+  /// Slot in the bindless argument buffer's sampler table.
+  u32 bindless_slot = BINDLESS_INVALID_INDEX;
+};
+
+struct MetalShader {
+  id<MTLLibrary> library = nil;
+};
+
+/// Metal splits what Vulkan calls a pipeline across three places: the render
+/// pipeline state, a separate depth/stencil state object, and encoder calls
+/// for cull mode and winding. All of it is captured here so bind_pipeline can
+/// apply the lot in one go.
+struct MetalPipeline {
+  id<MTLRenderPipelineState> render = nil;
+  id<MTLComputePipelineState> compute = nil;
+  id<MTLDepthStencilState> depth_stencil = nil;
+  MTLPrimitiveType topology = MTLPrimitiveTypeTriangle;
+  MTLCullMode cull = MTLCullModeNone;
+  MTLWinding winding = MTLWindingCounterClockwise;
+  MTLSize threads_per_group = {1, 1, 1};
+  bool is_compute = false;
+};
+
+/// The single bindless argument buffer: texture[], rwTexture[] and sampler[]
+/// back to back, each entry one 8-byte MTLResourceID. Texture and sampler
+/// slots are handle indices, so they need no allocation; rwTexture slots come
+/// from a free list because one texture owns a slot per mip.
+struct BindlessHeap {
+  id<MTLBuffer> argument_buffer = nil;
+  /// Byte offsets of each table within the buffer.
+  u64 textures_offset = 0;
+  u64 rw_textures_offset = 0;
+  u64 samplers_offset = 0;
+  u32 max_textures = 0;
+  u32 max_rw_textures = 0;
+  u32 max_samplers = 0;
+  nx::small_vector<u32, 64> free_rw_slots;
+  u32 rw_high_water = 0;
+
+  /// Everything the argument buffer can name. An argument buffer carries no
+  /// residency information, so each encoder has to be told which resources it
+  /// may reach; this is that list.
+  nx::vector<id<MTLResource>> resident;
+};
+
+/**
+ * @brief Staging and streaming state, owned by the device.
+ *
+ * Simpler than the Vulkan uploader in one important way: uploads are recorded
+ * into a command buffer on the *same* MTLCommandQueue as the frame and
+ * committed before it. A Metal queue runs its command buffers in submission
+ * order, so a texture uploaded before a frame is guaranteed ready for that
+ * frame with no semaphores, no queue-ownership transfer and no acquire
+ * barriers - the three things that make vk_upload.cpp what it is.
+ */
+struct MetalUploadState {
+  /// Staging buffers are pooled by size rather than sub-allocated from a ring:
+  /// with no ring there is no wraparound to reason about, and a returned
+  /// buffer is reused verbatim by the next upload that fits in it.
+  struct Staging {
+    id<MTLBuffer> buffer = nil;
+    u64 capacity = 0;
+  };
+
+  /// One committed batch and the staging it borrowed, held until the GPU is
+  /// done so the buffers can go back to the pool.
+  struct InFlight {
+    u64 value = 0;
+    /// Kept so wait() can block on the GPU rather than spinning.
+    id<MTLCommandBuffer> cmd = nil;
+    nx::vector<Staging> staging;
+  };
+
+  id<MTLCommandBuffer> batch = nil;
+  id<MTLBlitCommandEncoder> blit = nil;
+  /// Staging borrowed by the batch that is still open.
+  nx::vector<Staging> batch_staging;
+  nx::vector<Staging> free_staging;
+  nx::vector<InFlight> in_flight;
+
+  /// Ticket timeline. `submitted` is bumped when a batch is committed;
+  /// `completed` is bumped from the command buffer's completion handler, which
+  /// runs on an arbitrary thread - hence the atomic.
+  u64 submitted = 0;
+  std::atomic<u64> completed{0};
+  u64 bytes_staged = 0;
+
+  // Async loading. One worker does the slow, thread-safe half - reading bytes
+  // and decoding them - and never touches the device; pump() on the render
+  // thread turns finished decodes into textures.
+
+  enum class Source : u8 { Path, Memory };
+
+  struct LoadJob {
+    u32 id = 0;
+    u32 generation = 0;
+    Source source = Source::Path;
+    TextureUsageFlags usage = TextureUsage::Sampled | TextureUsage::CopyDst;
+  };
+
+  /// Slot in the request table. `status` is the only field both threads touch
+  /// while a job is live, and it is the handshake: the worker publishes
+  /// Decoding -> Ready-to-create, the render thread takes it from there.
+  struct LoadSlot {
+    std::atomic<LoadStatus> status{LoadStatus::None};
+    u32 generation = 0;
+    nx::string path;
+    nx::blob<u8> encoded;
+    ImageData decoded;
+    TextureHandle texture;
+    TextureUsageFlags usage = TextureUsage::Sampled | TextureUsage::CopyDst;
+    bool in_use = false;
+  };
+
+  static constexpr usize MAX_LOADS = 256;
+
+  nx::thread worker;
+  nx::mpmc::Queue<LoadJob, 256> job_queue;
+  /// Jobs the worker has finished decoding, waiting for pump() to make them
+  /// into textures.
+  nx::mpmc::Queue<LoadJob, 256> done_queue;
+  nx::event job_signal{false, false};
+  std::atomic<bool> worker_running{false};
+  /// Guards allocation of slots in `loads` only; the payloads are handed
+  /// between threads by the status handshake, not by this lock.
+  nx::mutex load_mutex;
+  LoadSlot loads[MAX_LOADS];
+  u32 next_load_id = 1;
+  u64 loads_ready = 0;
+  u64 loads_failed = 0;
 };
 
 struct MetalDeviceState {
@@ -114,9 +260,85 @@ struct MetalDeviceState {
   id<MTLRenderCommandEncoder> encoder = nil;
   bool frame_active = false;
 
+  /// Shadow copy of the push block. Metal's setBytes replaces the whole
+  /// binding, so a partial push_constants() call has to re-send the rest.
+  alignas(16) u8 push_constants[PUSH_CONSTANT_SIZE] = {};
+  MTLPrimitiveType bound_topology = MTLPrimitiveTypeTriangle;
+  bool has_bound_pipeline = false;
+
+  /// Bound at buffer index 1 on every encoder, matching where Slang puts the
+  /// ParameterBlock. Index 0 is the push block.
+  BindlessHeap bindless;
+  id<MTLBinaryArchive> pipeline_archive = nil;
+  nx::string pipeline_archive_path;
+
   nx::slot_map<MetalTexture, TextureHandle> textures;
   nx::slot_map<MetalBuffer, BufferHandle> buffers;
   nx::slot_map<MetalSampler, SamplerHandle> samplers;
+  nx::slot_map<MetalShader, ShaderHandle> shaders;
+  nx::slot_map<MetalPipeline, PipelineHandle> pipelines;
+
+  /// A resource freed during frame N stays alive - handle, bindless slot and
+  /// all - until the GPU has passed N. Deferring the slot_map erase, not just
+  /// the Objective-C release, is what stops a recycled handle index from
+  /// stomping a bindless slot the GPU is still reading through.
+  struct PendingDelete {
+    u64 frame = 0;
+    TextureHandle texture;
+    BufferHandle buffer;
+    SamplerHandle sampler;
+    PipelineHandle pipeline;
+    ShaderHandle shader;
+  };
+  nx::vector<PendingDelete> pending_deletes;
+
+  MetalUploadState upload;
+  /// The device owns the uploader's lifetime but not its code; these live in
+  /// mtl_upload.mm.
+  MetalDevice *owner = nullptr;
 };
+
+/// Buffer index the push block occupies, matching Slang's [[vk::push_constant]]
+/// lowering. Metal takes it through setVertexBytes / setFragmentBytes.
+inline constexpr u32 PUSH_CONSTANT_BUFFER_INDEX = 0;
+/// Buffer index of the bindless argument buffer (the ParameterBlock).
+inline constexpr u32 BINDLESS_BUFFER_INDEX = 1;
+
+/// Creates the argument buffer and its slot bookkeeping (mtl_bindless.mm).
+[[nodiscard]] bool create_bindless_heap(MetalDeviceState &state,
+                                        const DeviceCaps &caps);
+void write_texture_descriptor(MetalDeviceState &state, u32 slot,
+                              id<MTLTexture> texture) noexcept;
+void write_rw_texture_descriptor(MetalDeviceState &state, u32 slot,
+                                 id<MTLTexture> texture) noexcept;
+void write_sampler_descriptor(MetalDeviceState &state, u32 slot,
+                              id<MTLSamplerState> sampler) noexcept;
+[[nodiscard]] u32 alloc_rw_slot(MetalDeviceState &state) noexcept;
+void free_rw_slot(MetalDeviceState &state, u32 slot) noexcept;
+void track_resident(MetalDeviceState &state, id<MTLResource> resource) noexcept;
+void forget_resident(MetalDeviceState &state, id<MTLResource> resource) noexcept;
+/// Binds the argument buffer and declares every bindless resource resident.
+void bind_bindless(MetalDeviceState &state,
+                   id<MTLRenderCommandEncoder> encoder) noexcept;
+void bind_bindless_compute(MetalDeviceState &state,
+                           id<MTLComputeCommandEncoder> encoder) noexcept;
+
+/// Queues a resource for destruction once the GPU has passed the frame being
+/// recorded (mtl_device.mm). Exactly one handle field should be set.
+void retire(MetalDeviceState &state,
+            const MetalDeviceState::PendingDelete &pending);
+/// Really destroys everything retire() queued for a frame the GPU has passed.
+/// Pass ~0ull to force the lot, which is what shutdown wants.
+void collect_garbage(MetalDeviceState &state, u64 completed_frame);
+
+// Uploader internals (mtl_upload.mm), driven by the device's frame loop.
+
+[[nodiscard]] bool uploader_init(MetalDeviceState &state);
+void uploader_shutdown(MetalDeviceState &state) noexcept;
+/// Turns finished decodes into GPU textures, then commits the open batch so it
+/// runs ahead of this frame's rendering.
+void uploader_pump(MetalDeviceState &state);
+/// Returns staging borrowed by batches the GPU has finished with.
+void uploader_reclaim(MetalDeviceState &state) noexcept;
 
 } // namespace nxe::rhi

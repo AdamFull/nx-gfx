@@ -29,8 +29,10 @@ if (APPLE)
             metal/mtl_device.h
             metal/mtl_internal.h)
     list(APPEND NX_RHI_SOURCES
+            metal/mtl_bindless.mm
             metal/mtl_common.mm
             metal/mtl_device.mm
+            metal/mtl_pipeline.mm
             metal/mtl_swapchain.mm
             metal/mtl_upload.mm)
 else ()
@@ -86,8 +88,10 @@ if (APPLE)
     # CAMetalLayer, drawables) in C++ structs and relies on the compiler to
     # retain/release them. Same arrangement as the iOS platform backend.
     set_source_files_properties(
+            metal/mtl_bindless.mm
             metal/mtl_common.mm
             metal/mtl_device.mm
+            metal/mtl_pipeline.mm
             metal/mtl_swapchain.mm
             metal/mtl_upload.mm
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
