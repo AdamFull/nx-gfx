@@ -12,12 +12,14 @@ set(NX_RHI_HEADERS
         handles.h
         image/image.h
         rhi.h
+        spirv_reflect.h
         types.h
         upload.h)
 
 set(NX_RHI_SOURCES
         image/image.cpp
         image/stb_image_impl.cpp
+        spirv_reflect.cpp
         types.cpp)
 
 # Vulkan everywhere except Apple platforms, which get Metal. Note this is not
