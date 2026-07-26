@@ -27,8 +27,10 @@ struct DeviceDesc {
   u32 application_version = 0;
 #if NX_DEBUG
   bool enable_validation = true;
+  bool enable_sync_validation = true;
 #else
   bool enable_validation = false;
+  bool enable_sync_validation = false
 #endif
   bool break_on_validation_error = false;
   /// File the pipeline cache is loaded from and saved to. Empty keeps the cache

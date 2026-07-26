@@ -122,6 +122,25 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
                "validation requested but VK_LAYER_KHRONOS_validation is not "
                "installed; continuing without it");
     }
+
+    // VK_EXT_validation_features comes from the layer, so it is absent from the
+    // global extension list and has to be queried against the layer by name.
+    if (found && desc.enable_sync_validation) {
+      u32 count = 0;
+      NX_VK_TRY(vkEnumerateInstanceExtensionProperties(
+          "VK_LAYER_KHRONOS_validation", &count, nullptr));
+      nx::small_vector<VkExtensionProperties, 32> layer_extensions(count);
+      NX_VK_TRY(vkEnumerateInstanceExtensionProperties(
+          "VK_LAYER_KHRONOS_validation", &count, layer_extensions.data()));
+      for (const auto &extension : layer_extensions) {
+        if (std::strcmp(extension.extensionName,
+                        VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME) == 0) {
+          extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+          m_sync_validation = true;
+          break;
+        }
+      }
+    }
   }
 
   VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
@@ -146,6 +165,18 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   messenger_info.pUserData = &m_break_on_error;
   if (m_debug_utils)
     info.pNext = &messenger_info;
+
+  constexpr VkValidationFeatureEnableEXT SYNC_FEATURES[] = {
+      VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+  VkValidationFeaturesEXT validation_features{
+      VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+  validation_features.enabledValidationFeatureCount = 1;
+  validation_features.pEnabledValidationFeatures = SYNC_FEATURES;
+  if (m_sync_validation) {
+    validation_features.pNext = info.pNext;
+    info.pNext = &validation_features;
+    nx::logi(log_rhi, "synchronization validation enabled");
+  }
 
   NX_VK_TRY(vkCreateInstance(&info, nullptr, &m_instance));
 
