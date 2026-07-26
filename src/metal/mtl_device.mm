@@ -384,12 +384,15 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     slot.in_use = true;
 
     // Fences carry nothing across command buffers; the uploader's writes are
-    // ordered by the event instead. Only the first buffer needs the wait - the
-    // rest are committed after it on the same in-order queue.
+    // ordered by this event instead. Encoded here, before any encoder exists -
+    // a wait only orders the commands that follow it.
     begin_command_buffer(slot);
     if (s->upload.submitted > 0) {
       [slot.cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
     }
+    // Slot 0 opens the chain and waits for nothing, so frames stay free to
+    // overlap; open_contexts() encodes the waits for the later groups.
+    s->frame_event_base = s->frame_event_value;
   }
 
   // Re-point the backbuffer handle at this frame's drawable. The handle is
@@ -449,17 +452,15 @@ bool MetalDevice::end_frame() {
     // finished writing. Present and the completion signal go on the *last*
     // buffer - on slot 0 they would fire before the later groups ran.
     const usize last = s->used_contexts - 1;
-    const u64 base = s->frame_event_value;
+    const u64 base = s->frame_event_base;
     s->frame_event_value = base + s->used_contexts;
     for (usize i = 0; i < s->used_contexts; ++i) {
       MetalContextSlot &slot = s->contexts[i];
       if (slot.cmd == nil)
         continue;
 
-      // Wait for the previous group, then hand off to the next. Without this
-      // the buffers overlap and a group reads half-written transients.
-      if (i > 0)
-        [slot.cmd encodeWaitForEvent:s->frame_event value:base + i];
+      // Signal only - the matching wait was encoded when the buffer was
+      // created, the only position from which it can order anything.
       [slot.cmd encodeSignalEvent:s->frame_event value:base + i + 1];
 
       if (i == last) {
@@ -925,6 +926,12 @@ bool MetalDevice::open_contexts(const std::span<MetalCommandContext> out) {
       slot.cmd.label = @"nx2d frame (parallel)";
       slot.in_use = true;
       begin_command_buffer(slot);
+
+      // Encoded here, not at commit time: a wait only orders the commands that
+      // follow it in the buffer, so one encoded after the encoders orders
+      // nothing. This is what makes group i run after group i-1.
+      [slot.cmd encodeWaitForEvent:s->frame_event
+                             value:s->frame_event_base + first + i];
 
       out[i].m_state = s;
       out[i].m_slot = nx::cast<u32>(first + i);

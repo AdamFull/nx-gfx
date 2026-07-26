@@ -324,6 +324,9 @@ struct MetalDeviceState {
   /// writing. A fence cannot express this - it does not cross command buffers.
   id<MTLEvent> frame_event = nil;
   u64 frame_event_value = 0;
+  /// This frame's base value, fixed at begin_frame. Slot i waits on base + i
+  /// and signals base + i + 1, so the groups run in order.
+  u64 frame_event_base = 0;
 
   id<MTLBinaryArchive> pipeline_archive = nil;
   nx::string pipeline_archive_path;
