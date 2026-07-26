@@ -16,6 +16,7 @@
 
 #include "foundation/core/foundation.h"
 #include "foundation/strings/utf8_string_view.h"
+#include "rendering/rhi/shader_reflect.h"
 
 #include <span>
 
@@ -54,5 +55,10 @@ spirv_compute_entries(std::span<const u8> code,
 [[nodiscard]] bool spirv_local_size(std::span<const u8> code,
                                     nx::string_view entry_point,
                                     u32 out_size[3]) noexcept;
+
+/// Reflects a whole SPIR-V module into the backend-neutral form. Replaces
+/// whatever @p out held. False means @p code could not be parsed.
+[[nodiscard]] bool spirv_reflect_module(std::span<const u8> code,
+                                        ShaderReflection &out) noexcept;
 
 } // namespace nxe::rhi

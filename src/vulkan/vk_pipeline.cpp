@@ -7,7 +7,7 @@
 
 #include "foundation/diagnostics/log.h"
 #include "foundation/platform/filesystem.h"
-#include "rendering/rhi/spirv_reflect.h"
+#include "rendering/rhi/vulkan/vk_reflection.h"
 
 #include <cstring>
 #include <span>
@@ -173,12 +173,14 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   if (shader.module == VK_NULL_HANDLE)
     return {};
 
+  const std::span<const u8> code(static_cast<const u8 *>(desc.code),
+                                 desc.code_size);
+  if (!spirv_reflect_module(code, shader.reflection))
+    nx::logw(log_rhi, "create_shader('{}'): reflection failed", desc.name);
+
   {
     SpirvComputeEntry entries[8];
-    const usize count = spirv_compute_entries(
-        std::span<const u8>(static_cast<const u8 *>(desc.code),
-                            desc.code_size),
-        entries);
+    const usize count = spirv_compute_entries(code, entries);
     for (usize i = 0; i < count; ++i) {
       VulkanShader::ComputeEntry entry;
       entry.name = nx::string(entries[i].name);
@@ -193,6 +195,13 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   set_object_name(vk_handle_value(shader.module), VK_OBJECT_TYPE_SHADER_MODULE,
                   desc.name);
   return handle;
+}
+
+const ShaderReflection &
+VulkanDevice::reflection(const ShaderHandle handle) const noexcept {
+  static const ShaderReflection empty;
+  const VulkanShader *shader = m_shaders.try_get(handle);
+  return shader != nullptr ? shader->reflection : empty;
 }
 
 void VulkanDevice::destroy_shader(const ShaderHandle handle) noexcept {

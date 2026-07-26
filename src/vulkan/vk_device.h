@@ -12,6 +12,7 @@
 #include "rendering/rhi/bindless.h"
 #include "rendering/rhi/descs.h"
 #include "rendering/rhi/handles.h"
+#include "rendering/rhi/shader_reflect.h"
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/vulkan/vk_common.h"
 #include "rendering/rhi/vulkan/vk_upload.h"
@@ -90,6 +91,7 @@ struct VulkanShader {
     u32 local_size[3] = {};
   };
   nx::small_vector<ComputeEntry, 4> compute_entries;
+  ShaderReflection reflection;
 };
 
 struct VulkanPipeline {
@@ -279,6 +281,10 @@ public:
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
   [[nodiscard]] VulkanTexture *texture_mut(TextureHandle handle) noexcept;
+
+  /// The shader's reflected interface. Empty for an unknown handle.
+  [[nodiscard]] const ShaderReflection &
+  reflection(ShaderHandle handle) const noexcept;
 
   /// Tracked state, for the graph to resolve transitions against up front.
   [[nodiscard]] ResourceState

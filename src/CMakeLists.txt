@@ -12,14 +12,14 @@ set(NX_RHI_HEADERS
         handles.h
         image/image.h
         rhi.h
-        spirv_reflect.h
+        shader_reflect.h
         types.h
         upload.h)
 
 set(NX_RHI_SOURCES
         image/image.cpp
         image/stb_image_impl.cpp
-        spirv_reflect.cpp
+        shader_reflect.cpp
         types.cpp)
 
 # Vulkan everywhere except Apple platforms, which get Metal. Note this is not
@@ -42,12 +42,14 @@ else ()
     list(APPEND NX_RHI_HEADERS
             vulkan/vk_common.h
             vulkan/vk_device.h
+            vulkan/vk_reflection.h
             vulkan/vk_upload.h)
     list(APPEND NX_RHI_SOURCES
             vulkan/vk_bindless.cpp
             vulkan/vk_common.cpp
             vulkan/vk_device.cpp
             vulkan/vk_pipeline.cpp
+            vulkan/vk_reflection.cpp
             vulkan/vk_resources.cpp
             vulkan/vk_swapchain.cpp
             vulkan/vk_upload.cpp
@@ -71,7 +73,7 @@ add_library(nx::rhi ALIAS nx_rhi)
 # call.
 target_link_libraries(nx_rhi
         PUBLIC nx::foundation nx::runtime
-        PRIVATE nx::compile_options nx::stb nx::spirv_reflect)
+        PRIVATE nx::compile_options nx::stb)
 
 # stb_image's implementation TU is third-party code; its warnings are not ours
 # to fix and it is noisy under /W4.
@@ -123,6 +125,8 @@ else ()
             VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
 
     target_link_libraries(nx_rhi PUBLIC nx::volk nx::vma nx::vulkan_headers)
+    # Only the Vulkan backend consumes SPIR-V.
+    target_link_libraries(nx_rhi PRIVATE nx::spirv_reflect)
 
     # VMA's single implementation TU is third-party code; its warnings are not
     # ours to fix and it is noisy under /W4.
