@@ -356,11 +356,11 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     alloc.commandPool = frame.command_pool;
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = 1;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    if (NX_VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc, &cmd)) !=
+    VkCommandBuffer allocated = VK_NULL_HANDLE;
+    if (NX_VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc, &allocated)) !=
         VK_SUCCESS)
       return AcquireResult::SurfaceLost;
-    frame.command_buffers.push_back(cmd);
+    frame.command_buffers.push_back(allocated);
   }
 
   const VkCommandBuffer cmd = frame.command_buffers[0];
@@ -372,7 +372,6 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     return AcquireResult::SurfaceLost;
 
   // Bind the bindless set once for the whole frame, for both pipeline types.
-  // It is never rebound.
   const VkDescriptorSet set = m_bindless.set;
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           m_pipeline_layout, BINDLESS_SET, 1, &set, 0, nullptr);
@@ -433,18 +432,15 @@ bool VulkanDevice::end_frame() {
 
   NX_VK_CHECK(vkEndCommandBuffer(cmd));
 
-  // Submit: wait on the acquire (binary) semaphore, signal both the per-image
-  // release semaphore that present waits on and the frame timeline.
   ++m_timeline_value;
   frame.timeline_value = m_timeline_value;
 
   // Wait on the swapchain acquire, and - when the transfer queue uploaded
-  // resources this frame consumes - on the upload timeline as well, so the
-  // ownership acquire barriers recorded above see the copies completed.
+  // resources this frame consumes - on the upload timeline as well.
   VkSemaphoreSubmitInfo wait_infos[2] = {};
   wait_infos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
   wait_infos[0].semaphore = frame.acquire_semaphore;
-  wait_infos[0].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  wait_infos[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   u32 wait_count = 1;
   if (m_frame_upload_wait > 0) {
     wait_infos[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
