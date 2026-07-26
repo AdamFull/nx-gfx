@@ -192,7 +192,14 @@ public:
 private:
   friend class MetalDevice;
 
+  /// Defined in mtl_device.mm; resolves m_slot against the device.
+  [[nodiscard]] struct MetalContextSlot &ctx_slot() const noexcept;
+
   MetalDeviceState *m_state = nullptr;
+  /// Index into the device's per-context recording slots. Several contexts may
+  /// record on different threads at once, so every piece of mutable recording
+  /// state lives in the slot rather than on the device.
+  u32 m_slot = 0;
   bool m_in_render_pass = false;
 };
 

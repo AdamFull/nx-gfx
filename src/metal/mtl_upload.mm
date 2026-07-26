@@ -105,7 +105,7 @@ bool ensure_batch(MetalDeviceState &state) {
     if (up.batch == nil)
       return false;
     up.batch.label = @"nx2d uploads";
-    begin_command_buffer(state);
+    begin_command_buffer(up.batch_slot);
 
     up.blit = [up.batch blitCommandEncoder];
     if (up.blit == nil) {
@@ -113,7 +113,7 @@ bool ensure_batch(MetalDeviceState &state) {
       return false;
     }
     up.blit.label = @"nx2d uploads";
-    encoder_wait_fence(state, up.blit);
+    encoder_wait_fence(state, up.batch_slot, up.blit);
   }
   return true;
 }
@@ -128,7 +128,7 @@ u64 submit_batch(MetalDeviceState &state) {
   const u64 value = ++up.submitted;
 
   @autoreleasepool {
-    encoder_update_fence(state, up.blit);
+    encoder_update_fence(state, up.batch_slot, up.blit);
     [up.blit endEncoding];
 
     // Heap resources are untracked, and a fence does not reach across command

@@ -237,55 +237,55 @@ id<MTLBuffer> alloc_bindless_buffer(MetalDeviceState &state, const u64 length,
 
 // Fences
 
-void begin_command_buffer(MetalDeviceState &state) noexcept {
-  state.fence_written = false;
+void begin_command_buffer(MetalContextSlot &slot) noexcept {
+  slot.fence_written = false;
 }
 
-void encoder_wait_fence(MetalDeviceState &state,
+void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLRenderCommandEncoder> encoder) noexcept {
-  if (encoder == nil || state.pass_fence == nil || !state.fence_written)
+  if (encoder == nil || state.pass_fence == nil || !slot.fence_written)
     return;
   // Before the vertex stage: a vertex shader may pull from a heap buffer, so
   // waiting only before fragment would be too late.
   [encoder waitForFence:state.pass_fence beforeStages:MTLRenderStageVertex];
 }
 
-void encoder_wait_fence(MetalDeviceState &state,
+void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLComputeCommandEncoder> encoder) noexcept {
-  if (encoder == nil || state.pass_fence == nil || !state.fence_written)
+  if (encoder == nil || state.pass_fence == nil || !slot.fence_written)
     return;
   [encoder waitForFence:state.pass_fence];
 }
 
-void encoder_wait_fence(MetalDeviceState &state,
+void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLBlitCommandEncoder> encoder) noexcept {
-  if (encoder == nil || state.pass_fence == nil || !state.fence_written)
+  if (encoder == nil || state.pass_fence == nil || !slot.fence_written)
     return;
   [encoder waitForFence:state.pass_fence];
 }
 
-void encoder_update_fence(MetalDeviceState &state,
+void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
                           id<MTLRenderCommandEncoder> encoder) noexcept {
   if (encoder == nil || state.pass_fence == nil)
     return;
   [encoder updateFence:state.pass_fence afterStages:MTLRenderStageFragment];
-  state.fence_written = true;
+  slot.fence_written = true;
 }
 
-void encoder_update_fence(MetalDeviceState &state,
+void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
                           id<MTLComputeCommandEncoder> encoder) noexcept {
   if (encoder == nil || state.pass_fence == nil)
     return;
   [encoder updateFence:state.pass_fence];
-  state.fence_written = true;
+  slot.fence_written = true;
 }
 
-void encoder_update_fence(MetalDeviceState &state,
+void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
                           id<MTLBlitCommandEncoder> encoder) noexcept {
   if (encoder == nil || state.pass_fence == nil)
     return;
   [encoder updateFence:state.pass_fence];
-  state.fence_written = true;
+  slot.fence_written = true;
 }
 
 void track_resident(MetalDeviceState &state,

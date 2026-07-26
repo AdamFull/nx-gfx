@@ -161,6 +161,46 @@ struct BindlessHeap {
 };
 
 /**
+ * @brief Everything one recording thread owns while a frame is open.
+ *
+ * There is one of these per CommandContext, not one per device: the render
+ * graph may hand several contexts to several worker threads at once, so an
+ * encoder, its bound pipeline state and its fence bookkeeping all have to be
+ * per-context or the threads would trample each other.
+ *
+ * ARC keeps the Objective-C members alive across the begin_frame / end_frame
+ * boundary, which no @autoreleasepool inside a single call could span.
+ */
+struct MetalContextSlot {
+  id<MTLCommandBuffer> cmd = nil;
+  id<MTLRenderCommandEncoder> encoder = nil;
+  /// Open only between begin_compute_pass and end_compute_pass; Metal permits
+  /// exactly one encoder at a time, so this and `encoder` are never both set.
+  id<MTLComputeCommandEncoder> compute_encoder = nil;
+
+  /// Metal takes the index buffer on the draw call rather than from a bind, so
+  /// bind_index_buffer only records what the next draw_indexed should use.
+  id<MTLBuffer> index_buffer = nil;
+  MTLIndexType index_type = MTLIndexTypeUInt16;
+  u64 index_buffer_offset = 0;
+  /// Size of one index in bytes, for turning first_index into a byte offset.
+  u32 index_stride = 2;
+
+  /// Shadow copy of the push block. Metal's setBytes replaces the whole
+  /// binding, so a partial push_constants() call has to re-send the rest.
+  alignas(16) u8 push_constants[PUSH_CONSTANT_SIZE] = {};
+  MTLPrimitiveType bound_topology = MTLPrimitiveTypeTriangle;
+  MTLSize bound_threads_per_group = {1, 1, 1};
+  bool has_bound_pipeline = false;
+
+  /// A fence may only be waited on after it has been updated in the *same*
+  /// command buffer, so this resets with each new one.
+  bool fence_written = false;
+  /// Set while the slot holds a command buffer that end_frame must commit.
+  bool in_use = false;
+};
+
+/**
  * @brief Staging and streaming state, owned by the device.
  *
  * Simpler than the Vulkan uploader in one important way: uploads are recorded
@@ -195,6 +235,9 @@ struct MetalUploadState {
 
   id<MTLCommandBuffer> batch = nil;
   id<MTLBlitCommandEncoder> blit = nil;
+  /// The batch is its own command buffer, so it needs its own fence
+  /// bookkeeping - a fence may only be waited on in the buffer that updated it.
+  MetalContextSlot batch_slot;
   /// Staging borrowed by the batch that is still open.
   nx::vector<Staging> batch_staging;
   nx::vector<Staging> free_staging;
@@ -284,27 +327,14 @@ struct MetalDeviceState {
   // loop is our own while(). Every .mm entry point therefore wraps its body in
   // @autoreleasepool; assigning to these strong members is what keeps the
   // objects alive past the pool, across the begin_frame / end_frame boundary.
-  id<MTLCommandBuffer> cmd = nil;
-  id<MTLRenderCommandEncoder> encoder = nil;
-  /// Open only between begin_compute_pass and end_compute_pass; Metal permits
-  /// exactly one encoder at a time, so this and `encoder` are never both set.
-  id<MTLComputeCommandEncoder> compute_encoder = nil;
   bool frame_active = false;
 
-  /// Metal takes the index buffer on the draw call rather than from a bind, so
-  /// bind_index_buffer only records what the next draw_indexed should use.
-  id<MTLBuffer> index_buffer = nil;
-  MTLIndexType index_type = MTLIndexTypeUInt16;
-  u64 index_buffer_offset = 0;
-  /// Size of one index in bytes, for turning first_index into a byte offset.
-  u32 index_stride = 2;
-
-  /// Shadow copy of the push block. Metal's setBytes replaces the whole
-  /// binding, so a partial push_constants() call has to re-send the rest.
-  alignas(16) u8 push_constants[PUSH_CONSTANT_SIZE] = {};
-  MTLPrimitiveType bound_topology = MTLPrimitiveTypeTriangle;
-  MTLSize bound_threads_per_group = {1, 1, 1};
-  bool has_bound_pipeline = false;
+  /// Slot 0 is the context begin_frame hands back; open_contexts() lends out
+  /// the rest. They are committed in slot order at end_frame, which is the
+  /// order the render graph expects its groups to execute in.
+  static constexpr usize MAX_CONTEXTS = 8;
+  nx::vector<MetalContextSlot> contexts;
+  usize used_contexts = 0;
 
   /// Bound at buffer index 1 on every encoder, matching where Slang puts the
   /// ParameterBlock. Index 0 is the push block.
@@ -319,7 +349,6 @@ struct MetalDeviceState {
   //  - `upload_event` orders the uploader's command buffer against the frame's,
   //    which a fence cannot span.
   id<MTLFence> pass_fence = nil;
-  bool fence_written = false;
   id<MTLEvent> upload_event = nil;
 
   id<MTLBinaryArchive> pipeline_archive = nil;
@@ -406,25 +435,25 @@ void save_pipeline_archive(MetalDeviceState &state) noexcept;
 // slot in.
 
 /// Waits on the fence if an earlier encoder in this command buffer updated it.
-void encoder_wait_fence(MetalDeviceState &state,
+void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLRenderCommandEncoder> encoder) noexcept;
-void encoder_wait_fence(MetalDeviceState &state,
+void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLComputeCommandEncoder> encoder) noexcept;
-void encoder_wait_fence(MetalDeviceState &state,
+void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLBlitCommandEncoder> encoder) noexcept;
 
 /// Updates the fence so later encoders in this command buffer can order
 /// against this one's writes.
-void encoder_update_fence(MetalDeviceState &state,
+void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
                           id<MTLRenderCommandEncoder> encoder) noexcept;
-void encoder_update_fence(MetalDeviceState &state,
+void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
                           id<MTLComputeCommandEncoder> encoder) noexcept;
-void encoder_update_fence(MetalDeviceState &state,
+void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
                           id<MTLBlitCommandEncoder> encoder) noexcept;
 
 /// Called when a command buffer is created: a fence carries no state across
 /// command buffers, so the "has been updated" flag has to start clear.
-void begin_command_buffer(MetalDeviceState &state) noexcept;
+void begin_command_buffer(MetalContextSlot &slot) noexcept;
 
 /// Queues a resource for destruction once the GPU has passed the frame being
 /// recorded (mtl_device.mm). Exactly one handle field should be set.

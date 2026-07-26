@@ -65,14 +65,16 @@ MTLCullMode to_mtl_cull(const CullMode cull) noexcept {
   }
 }
 
-/// Inverted on purpose. The backend renders with a Y-flipped viewport so that
-/// Vulkan-convention clip space lands the same way on Metal (see
-/// to_mtl_viewport), and mirroring the framebuffer reverses the winding of
-/// every triangle. Flipping the front face back here cancels it out, so a
-/// pipeline that culls correctly on Vulkan culls correctly here.
+/// Straight through, matching how the Vulkan backend passes front_face to
+/// VkPipelineRasterizationStateCreateInfo unmodified.
+///
+/// Both APIs define the front face in framebuffer space, and both reach the
+/// framebuffer through the same clip-space Y inversion - Metal natively, Vulkan
+/// via its negative-height viewport - so the same FrontFace means the same
+/// thing on both without compensation.
 MTLWinding to_mtl_winding(const FrontFace face) noexcept {
-  return face == FrontFace::Clockwise ? MTLWindingCounterClockwise
-                                      : MTLWindingClockwise;
+  return face == FrontFace::Clockwise ? MTLWindingClockwise
+                                      : MTLWindingCounterClockwise;
 }
 
 /// Translates a BlendMode preset into Metal's factor/op pairs. The RHI names
@@ -491,18 +493,18 @@ void MetalCommandContext::bind_pipeline(const PipelineHandle handle) {
   }
 
   if (pipeline->is_compute) {
-    if (m_state->compute_encoder == nil) {
+    if (ctx_slot().compute_encoder == nil) {
       nx::loge(log_rhi, "bind_pipeline: a compute pipeline needs a compute "
                         "pass (begin_compute_pass)");
       return;
     }
-    [m_state->compute_encoder setComputePipelineState:pipeline->compute];
-    m_state->bound_threads_per_group = pipeline->threads_per_group;
-    m_state->has_bound_pipeline = true;
+    [ctx_slot().compute_encoder setComputePipelineState:pipeline->compute];
+    ctx_slot().bound_threads_per_group = pipeline->threads_per_group;
+    ctx_slot().has_bound_pipeline = true;
     return;
   }
 
-  id<MTLRenderCommandEncoder> encoder = m_state->encoder;
+  id<MTLRenderCommandEncoder> encoder = ctx_slot().encoder;
   if (encoder == nil) {
     nx::loge(log_rhi, "bind_pipeline outside a render pass");
     return;
@@ -514,15 +516,15 @@ void MetalCommandContext::bind_pipeline(const PipelineHandle handle) {
   if (pipeline->depth_stencil != nil)
     [encoder setDepthStencilState:pipeline->depth_stencil];
 
-  m_state->bound_topology = pipeline->topology;
-  m_state->has_bound_pipeline = true;
+  ctx_slot().bound_topology = pipeline->topology;
+  ctx_slot().has_bound_pipeline = true;
 }
 
 void MetalCommandContext::push_constants(const void *data, const u32 size,
                                          const u32 offset) {
   if (m_state == nullptr || data == nullptr || size == 0)
     return;
-  if (m_state->encoder == nil && m_state->compute_encoder == nil) {
+  if (ctx_slot().encoder == nil && ctx_slot().compute_encoder == nil) {
     nx::loge(log_rhi, "push_constants outside a pass");
     return;
   }
@@ -537,19 +539,19 @@ void MetalCommandContext::push_constants(const void *data, const u32 size,
   // Metal has no partial update for a setBytes argument: the whole buffer
   // binding is replaced each time. Shadow the block so a partial write keeps
   // whatever the previous writes put there.
-  std::memcpy(m_state->push_constants + offset, data, size);
+  std::memcpy(ctx_slot().push_constants + offset, data, size);
 
-  if (m_state->compute_encoder != nil) {
-    [m_state->compute_encoder setBytes:m_state->push_constants
+  if (ctx_slot().compute_encoder != nil) {
+    [ctx_slot().compute_encoder setBytes:ctx_slot().push_constants
                                 length:PUSH_CONSTANT_SIZE
                                atIndex:PUSH_CONSTANT_BUFFER_INDEX];
     return;
   }
 
-  [m_state->encoder setVertexBytes:m_state->push_constants
+  [ctx_slot().encoder setVertexBytes:ctx_slot().push_constants
                             length:PUSH_CONSTANT_SIZE
                            atIndex:PUSH_CONSTANT_BUFFER_INDEX];
-  [m_state->encoder setFragmentBytes:m_state->push_constants
+  [ctx_slot().encoder setFragmentBytes:ctx_slot().push_constants
                               length:PUSH_CONSTANT_SIZE
                              atIndex:PUSH_CONSTANT_BUFFER_INDEX];
 }
@@ -557,14 +559,14 @@ void MetalCommandContext::push_constants(const void *data, const u32 size,
 void MetalCommandContext::draw(const u32 vertex_count, const u32 instance_count,
                                const u32 first_vertex,
                                const u32 first_instance) {
-  if (m_state == nullptr || m_state->encoder == nil || vertex_count == 0)
+  if (m_state == nullptr || ctx_slot().encoder == nil || vertex_count == 0)
     return;
-  if (!m_state->has_bound_pipeline) {
+  if (!ctx_slot().has_bound_pipeline) {
     nx::loge(log_rhi, "draw without a bound pipeline");
     return;
   }
 
-  [m_state->encoder drawPrimitives:m_state->bound_topology
+  [ctx_slot().encoder drawPrimitives:ctx_slot().bound_topology
                        vertexStart:first_vertex
                        vertexCount:vertex_count
                      instanceCount:instance_count
@@ -585,11 +587,11 @@ void MetalCommandContext::bind_index_buffer(const BufferHandle handle,
 
   // Nothing is recorded here. Metal names the index buffer on the draw call,
   // so this only remembers what the next draw_indexed should pass along.
-  m_state->index_buffer = buffer->buffer;
-  m_state->index_type =
+  ctx_slot().index_buffer = buffer->buffer;
+  ctx_slot().index_type =
       type == IndexType::U32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
-  m_state->index_stride = type == IndexType::U32 ? 4u : 2u;
-  m_state->index_buffer_offset = offset;
+  ctx_slot().index_stride = type == IndexType::U32 ? 4u : 2u;
+  ctx_slot().index_buffer_offset = offset;
 }
 
 void MetalCommandContext::draw_indexed(const u32 index_count,
@@ -597,26 +599,26 @@ void MetalCommandContext::draw_indexed(const u32 index_count,
                                        const u32 first_index,
                                        const i32 vertex_offset,
                                        const u32 first_instance) {
-  if (m_state == nullptr || m_state->encoder == nil || index_count == 0)
+  if (m_state == nullptr || ctx_slot().encoder == nil || index_count == 0)
     return;
-  if (!m_state->has_bound_pipeline) {
+  if (!ctx_slot().has_bound_pipeline) {
     nx::loge(log_rhi, "draw_indexed without a bound pipeline");
     return;
   }
-  if (m_state->index_buffer == nil) {
+  if (ctx_slot().index_buffer == nil) {
     nx::loge(log_rhi, "draw_indexed without a bound index buffer");
     return;
   }
 
   // Vulkan takes first_index as an element count; Metal wants a byte offset
   // into the buffer, so it folds into the base offset here.
-  const u64 offset = m_state->index_buffer_offset +
-                     nx::cast<u64>(first_index) * m_state->index_stride;
+  const u64 offset = ctx_slot().index_buffer_offset +
+                     nx::cast<u64>(first_index) * ctx_slot().index_stride;
 
-  [m_state->encoder drawIndexedPrimitives:m_state->bound_topology
+  [ctx_slot().encoder drawIndexedPrimitives:ctx_slot().bound_topology
                                indexCount:index_count
-                                indexType:m_state->index_type
-                              indexBuffer:m_state->index_buffer
+                                indexType:ctx_slot().index_type
+                              indexBuffer:ctx_slot().index_buffer
                         indexBufferOffset:offset
                             instanceCount:instance_count
                                baseVertex:vertex_offset
@@ -628,18 +630,18 @@ void MetalCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
   if (m_state == nullptr || groups_x == 0 || groups_y == 0 || groups_z == 0)
     return;
 
-  id<MTLComputeCommandEncoder> encoder = m_state->compute_encoder;
+  id<MTLComputeCommandEncoder> encoder = ctx_slot().compute_encoder;
   if (encoder == nil) {
     nx::loge(log_rhi, "dispatch outside a compute pass");
     return;
   }
-  if (!m_state->has_bound_pipeline) {
+  if (!ctx_slot().has_bound_pipeline) {
     nx::loge(log_rhi, "dispatch without a bound pipeline");
     return;
   }
 
   [encoder dispatchThreadgroups:MTLSizeMake(groups_x, groups_y, groups_z)
-          threadsPerThreadgroup:m_state->bound_threads_per_group];
+          threadsPerThreadgroup:ctx_slot().bound_threads_per_group];
 }
 
 } // namespace nxe::rhi

@@ -217,11 +217,22 @@ void MetalDevice::destroy_swapchain() noexcept {
   wait_idle();
 
   @autoreleasepool {
-    if (s->encoder != nil) {
-      [s->encoder endEncoding];
-      s->encoder = nil;
+    // Any frame caught mid-record is abandoned wholesale: wait_idle() above
+    // means nothing is still executing, and the drawable this frame targeted
+    // is about to stop existing.
+    for (MetalContextSlot &slot : s->contexts) {
+      if (slot.encoder != nil) {
+        [slot.encoder endEncoding];
+        slot.encoder = nil;
+      }
+      if (slot.compute_encoder != nil) {
+        [slot.compute_encoder endEncoding];
+        slot.compute_encoder = nil;
+      }
+      slot.cmd = nil;
+      slot.in_use = false;
     }
-    s->cmd = nil;
+    s->used_contexts = 0;
     s->drawable = nil;
     s->frame_active = false;
 

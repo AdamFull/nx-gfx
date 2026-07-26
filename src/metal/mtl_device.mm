@@ -34,19 +34,21 @@ MTLScissorRect to_mtl_scissor(const Rect2D &rect) noexcept {
   };
 }
 
-/// Metal's clip space has +Y up; Vulkan's has +Y down. The RHI standardises on
-/// the Vulkan convention, so identical shader output must land identically on
-/// both backends - which means this backend flips.
+/// Straight through, with no Y flip - which is the whole point.
 ///
-/// A negative viewport height is how Metal expresses that, the same trick
-/// VK_KHR_maintenance1 gives Vulkan in the other direction. It costs nothing:
-/// the flip happens in fixed-function viewport transform, not in the shader.
-/// It does reverse triangle winding, which to_mtl_winding() compensates for.
+/// The RHI standardises on the Metal/D3D convention, and the Vulkan backend
+/// reaches it by giving vkCmdSetViewport a negative height (see
+/// VulkanCommandContext::set_viewport). Metal is already there natively: its
+/// NDC-to-framebuffer transform inverts Y exactly as a negative-height Vulkan
+/// viewport does, so clip-space CCW comes out framebuffer-CW on both.
+///
+/// Flipping here as well would invert Metal relative to Vulkan, which is
+/// invisible in a single pass to the backbuffer and shows up the moment
+/// anything renders offscreen and samples it back.
 MTLViewport to_mtl_viewport(const f32 x, const f32 y, const f32 width,
                             const f32 height, const f32 min_depth,
                             const f32 max_depth) noexcept {
-  return MTLViewport{x, nx::cast<f64>(y) + height, width, -nx::cast<f64>(height),
-                     min_depth, max_depth};
+  return MTLViewport{x, y, width, height, min_depth, max_depth};
 }
 
 u32 max_texture_dimension(id<MTLDevice> device) noexcept {
@@ -156,6 +158,11 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     m_caps.device_name = m_device_name.view();
     m_caps.api_version = metal3 ? 3u : 2u;
     m_caps.discrete = ![device hasUnifiedMemory];
+    // Metal exposes no vendor or driver version. registryID is the closest
+    // stable identifier - unique per GPU per boot - which is enough to tell two
+    // adapters apart in a log, and better than leaving the field zero.
+    m_caps.vendor_id = nx::cast<u32>([device registryID] & 0xFFFFFFFFu);
+    m_caps.driver_version = m_caps.api_version;
 
     // Bindless needs argument-buffer Tier 2: Tier 1 permits neither arrays of
     // resources in an argument buffer nor dynamic indexing into one, which is
@@ -335,19 +342,30 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
       return AcquireResult::OutOfDate;
     }
 
-    s->cmd = [s->queue commandBuffer];
-    if (s->cmd == nil) {
+    // Every slot is released at end_frame; slot 0 is this context's.
+    s->contexts.resize(MetalDeviceState::MAX_CONTEXTS);
+    for (MetalContextSlot &slot : s->contexts)
+      slot.in_use = false;
+    s->used_contexts = 1;
+
+    MetalContextSlot &slot = s->contexts[0];
+    slot = MetalContextSlot{};
+    slot.cmd = [s->queue commandBuffer];
+    if (slot.cmd == nil) {
       s->drawable = nil;
       dispatch_semaphore_signal(s->frame_semaphore);
       return AcquireResult::SurfaceLost;
     }
-    s->cmd.label = @"nx2d frame";
+    slot.cmd.label = @"nx2d frame";
+    slot.in_use = true;
 
     // A fence carries nothing across command buffers, so this one starts
     // un-updated; the uploader's writes are ordered by the event instead.
-    begin_command_buffer(*s);
+    begin_command_buffer(slot);
+    // Only the first buffer needs the wait: the rest are committed after it on
+    // the same queue, which runs them in order.
     if (s->upload.submitted > 0) {
-      [s->cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
+      [slot.cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
     }
   }
 
@@ -364,6 +382,7 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
 
   s->frame_active = true;
   out_context.m_state = s;
+  out_context.m_slot = 0;
   out_context.m_in_render_pass = false;
 
   // A drawable whose size no longer matches the layer means the surface moved
@@ -385,32 +404,54 @@ bool MetalDevice::end_frame() {
   @autoreleasepool {
     // A caller that forgot to end a pass would otherwise hit an assertion
     // inside Metal on commit; close it and say so.
-    if (s->encoder != nil) {
-      nx::logw(log_rhi, "end_frame with a render pass still open");
-      encoder_update_fence(*s, s->encoder);
-      [s->encoder endEncoding];
-      s->encoder = nil;
-    }
-    if (s->compute_encoder != nil) {
-      nx::logw(log_rhi, "end_frame with a compute pass still open");
-      encoder_update_fence(*s, s->compute_encoder);
-      [s->compute_encoder endEncoding];
-      s->compute_encoder = nil;
+    for (usize i = 0; i < s->used_contexts; ++i) {
+      MetalContextSlot &slot = s->contexts[i];
+      if (slot.encoder != nil) {
+        nx::logw(log_rhi, "end_frame with a render pass still open");
+        encoder_update_fence(*s, slot, slot.encoder);
+        [slot.encoder endEncoding];
+        slot.encoder = nil;
+      }
+      if (slot.compute_encoder != nil) {
+        nx::logw(log_rhi, "end_frame with a compute pass still open");
+        encoder_update_fence(*s, slot, slot.compute_encoder);
+        [slot.compute_encoder endEncoding];
+        slot.compute_encoder = nil;
+      }
     }
 
-    // Captured by the block rather than reaching through `s`, so the handler
-    // stays valid even if the device is torn down before the GPU catches up.
-    dispatch_semaphore_t semaphore = s->frame_semaphore;
-    [s->cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
-      dispatch_semaphore_signal(semaphore);
-    }];
+    // Commit in slot order. A queue executes command buffers in commit order,
+    // which is what makes recording group N on another thread safe: the
+    // ordering the graph asked for is re-established here regardless of which
+    // thread finished encoding first.
+    //
+    // Present and the frame-completion signal go on the *last* buffer, not the
+    // first: hanging them off slot 0 would present before the later groups had
+    // run.
+    const usize last = s->used_contexts - 1;
+    for (usize i = 0; i < s->used_contexts; ++i) {
+      MetalContextSlot &slot = s->contexts[i];
+      if (slot.cmd == nil)
+        continue;
 
-    if (s->drawable != nil)
-      [s->cmd presentDrawable:s->drawable];
-    [s->cmd commit];
+      if (i == last) {
+        // Captured by the block rather than reaching through `s`, so the
+        // handler stays valid even if the device is torn down before the GPU
+        // catches up.
+        dispatch_semaphore_t semaphore = s->frame_semaphore;
+        [slot.cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+          dispatch_semaphore_signal(semaphore);
+        }];
+        if (s->drawable != nil)
+          [slot.cmd presentDrawable:s->drawable];
+      }
+      [slot.cmd commit];
+      slot.cmd = nil;
+      slot.in_use = false;
+    }
   }
 
-  s->cmd = nil;
+  s->used_contexts = 0;
   s->drawable = nil;
   s->frame_active = false;
   ++s->frames_submitted;
@@ -828,7 +869,40 @@ void MetalDevice::destroy_sampler(const SamplerHandle handle) noexcept {
 // free list because a texture owns one per mip.
 
 bool MetalDevice::open_contexts(const std::span<MetalCommandContext> out) {
-  return out.empty();
+  if (m_state == nullptr || !m_state->frame_active || out.empty())
+    return out.empty();
+
+  MetalDeviceState *s = m_state;
+  if (s->used_contexts + out.size() > MetalDeviceState::MAX_CONTEXTS) {
+    nx::logw(log_rhi, "open_contexts: {} more would exceed the {} slot limit; "
+                      "recording serially instead",
+             out.size(), MetalDeviceState::MAX_CONTEXTS);
+    return false;
+  }
+
+  const usize first = s->used_contexts;
+  @autoreleasepool {
+    for (usize i = 0; i < out.size(); ++i) {
+      MetalContextSlot &slot = s->contexts[first + i];
+      slot = MetalContextSlot{};
+      slot.cmd = [s->queue commandBuffer];
+      if (slot.cmd == nil) {
+        // Keep whatever opened cleanly; end_frame still commits those in order.
+        s->used_contexts = first + i;
+        return false;
+      }
+      slot.cmd.label = @"nx2d frame (parallel)";
+      slot.in_use = true;
+      begin_command_buffer(slot);
+
+      out[i].m_state = s;
+      out[i].m_slot = nx::cast<u32>(first + i);
+      out[i].m_in_render_pass = false;
+    }
+  }
+
+  s->used_contexts = first + out.size();
+  return true;
 }
 
 void MetalDevice::set_texture_state(const TextureHandle handle,
@@ -884,8 +958,15 @@ u64 MetalDevice::buffer_address(const BufferHandle handle) const noexcept {
 
 // MetalCommandContext
 
+/// The recording slot this context owns. Contexts are handed out by
+/// begin_frame and open_contexts and never outlive the frame, so the index is
+/// always in range while one is valid.
+MetalContextSlot &MetalCommandContext::ctx_slot() const noexcept {
+  return m_state->contexts[m_slot];
+}
+
 void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
-  if (m_state == nullptr || m_state->cmd == nil)
+  if (m_state == nullptr || ctx_slot().cmd == nil)
     return;
   if (m_in_render_pass) {
     nx::loge(log_rhi, "begin_render_pass('{}') inside another render pass",
@@ -982,36 +1063,36 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
       return;
     }
 
-    m_state->encoder = [m_state->cmd renderCommandEncoderWithDescriptor:pass];
-    if (m_state->encoder == nil) {
+    ctx_slot().encoder = [ctx_slot().cmd renderCommandEncoderWithDescriptor:pass];
+    if (ctx_slot().encoder == nil) {
       nx::loge(log_rhi, "begin_render_pass('{}'): encoder creation failed",
                desc.name);
       return;
     }
-    m_state->encoder.label = to_ns_string(desc.name);
+    ctx_slot().encoder.label = to_ns_string(desc.name);
 
     // Anything this pass samples may have been written by an earlier encoder
     // in this command buffer, and heap resources carry no automatic tracking.
-    encoder_wait_fence(*m_state, m_state->encoder);
+    encoder_wait_fence(*m_state, ctx_slot(), ctx_slot().encoder);
 
     // The bindless argument buffer is bound once per encoder and never
     // rebound, matching how the Vulkan backend binds its descriptor set once
     // per frame. Encoder state does not survive endEncoding, so "once per
     // frame" has to become "once per pass" here.
-    bind_bindless(*m_state, m_state->encoder);
-    m_state->has_bound_pipeline = false;
+    bind_bindless(*m_state, ctx_slot().encoder);
+    ctx_slot().has_bound_pipeline = false;
 
     // Metal's default viewport is not flipped, so one has to be set even when
     // the caller never touches it - otherwise every draw comes out mirrored.
     // The size is the first attachment's, at the mip the pass renders to.
-    [m_state->encoder
+    [ctx_slot().encoder
         setViewport:to_mtl_viewport(0.f, 0.f, nx::cast<f32>(pass_width),
                                     nx::cast<f32>(pass_height), 0.f, 1.f)];
 
     // Metal has no render area on the pass itself; it is a scissor rectangle.
     if (desc.render_area.extent.width != 0 &&
         desc.render_area.extent.height != 0)
-      [m_state->encoder setScissorRect:to_mtl_scissor(desc.render_area)];
+      [ctx_slot().encoder setScissorRect:to_mtl_scissor(desc.render_area)];
   }
 
   m_in_render_pass = true;
@@ -1021,23 +1102,23 @@ void MetalCommandContext::end_render_pass() {
   if (m_state == nullptr || !m_in_render_pass)
     return;
 
-  if (m_state->encoder != nil) {
-    encoder_update_fence(*m_state, m_state->encoder);
-    [m_state->encoder endEncoding];
-    m_state->encoder = nil;
+  if (ctx_slot().encoder != nil) {
+    encoder_update_fence(*m_state, ctx_slot(), ctx_slot().encoder);
+    [ctx_slot().encoder endEncoding];
+    ctx_slot().encoder = nil;
   }
-  m_state->has_bound_pipeline = false;
+  ctx_slot().has_bound_pipeline = false;
   m_in_render_pass = false;
 }
 
 void MetalCommandContext::begin_compute_pass(const nx::string_view name) {
-  if (m_state == nullptr || m_state->cmd == nil)
+  if (m_state == nullptr || ctx_slot().cmd == nil)
     return;
-  if (m_in_render_pass || m_state->encoder != nil) {
+  if (m_in_render_pass || ctx_slot().encoder != nil) {
     nx::loge(log_rhi, "begin_compute_pass('{}') inside a render pass", name);
     return;
   }
-  if (m_state->compute_encoder != nil) {
+  if (ctx_slot().compute_encoder != nil) {
     nx::loge(log_rhi, "begin_compute_pass('{}') inside another compute pass",
              name);
     return;
@@ -1047,46 +1128,46 @@ void MetalCommandContext::begin_compute_pass(const nx::string_view name) {
     // Concurrent dispatch would let independent dispatches overlap, but it
     // also drops the automatic ordering between them. Serial matches what a
     // caller coming from vkCmdDispatch expects.
-    m_state->compute_encoder = [m_state->cmd
+    ctx_slot().compute_encoder = [ctx_slot().cmd
         computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
-    if (m_state->compute_encoder == nil) {
+    if (ctx_slot().compute_encoder == nil) {
       nx::loge(log_rhi, "begin_compute_pass('{}'): encoder creation failed",
                name);
       return;
     }
-    m_state->compute_encoder.label = to_ns_string(name);
+    ctx_slot().compute_encoder.label = to_ns_string(name);
 
-    encoder_wait_fence(*m_state, m_state->compute_encoder);
-    bind_bindless_compute(*m_state, m_state->compute_encoder);
+    encoder_wait_fence(*m_state, ctx_slot(), ctx_slot().compute_encoder);
+    bind_bindless_compute(*m_state, ctx_slot().compute_encoder);
   }
-  m_state->has_bound_pipeline = false;
+  ctx_slot().has_bound_pipeline = false;
 }
 
 void MetalCommandContext::end_compute_pass() {
-  if (m_state == nullptr || m_state->compute_encoder == nil)
+  if (m_state == nullptr || ctx_slot().compute_encoder == nil)
     return;
 
-  encoder_update_fence(*m_state, m_state->compute_encoder);
-  [m_state->compute_encoder endEncoding];
-  m_state->compute_encoder = nil;
-  m_state->has_bound_pipeline = false;
+  encoder_update_fence(*m_state, ctx_slot(), ctx_slot().compute_encoder);
+  [ctx_slot().compute_encoder endEncoding];
+  ctx_slot().compute_encoder = nil;
+  ctx_slot().has_bound_pipeline = false;
 }
 
 void MetalCommandContext::set_viewport(const Viewport &viewport) {
-  if (m_state == nullptr || m_state->encoder == nil)
+  if (m_state == nullptr || ctx_slot().encoder == nil)
     return;
 
-  [m_state->encoder setViewport:to_mtl_viewport(viewport.x, viewport.y,
+  [ctx_slot().encoder setViewport:to_mtl_viewport(viewport.x, viewport.y,
                                                 viewport.width, viewport.height,
                                                 viewport.min_depth,
                                                 viewport.max_depth)];
 }
 
 void MetalCommandContext::set_scissor(const Rect2D &rect) {
-  if (m_state == nullptr || m_state->encoder == nil)
+  if (m_state == nullptr || ctx_slot().encoder == nil)
     return;
 
-  [m_state->encoder setScissorRect:to_mtl_scissor(rect)];
+  [ctx_slot().encoder setScissorRect:to_mtl_scissor(rect)];
 }
 
 void MetalCommandContext::barrier(const TextureBarrier *textures,
@@ -1123,10 +1204,10 @@ void MetalCommandContext::push_debug_group(const nx::string_view name,
 
   @autoreleasepool {
     NSString *label = to_ns_string(name);
-    if (m_state->encoder != nil)
-      [m_state->encoder pushDebugGroup:label];
-    else if (m_state->cmd != nil)
-      [m_state->cmd pushDebugGroup:label];
+    if (ctx_slot().encoder != nil)
+      [ctx_slot().encoder pushDebugGroup:label];
+    else if (ctx_slot().cmd != nil)
+      [ctx_slot().cmd pushDebugGroup:label];
   }
 }
 
@@ -1134,10 +1215,10 @@ void MetalCommandContext::pop_debug_group() {
   if (m_state == nullptr)
     return;
 
-  if (m_state->encoder != nil)
-    [m_state->encoder popDebugGroup];
-  else if (m_state->cmd != nil)
-    [m_state->cmd popDebugGroup];
+  if (ctx_slot().encoder != nil)
+    [ctx_slot().encoder popDebugGroup];
+  else if (ctx_slot().cmd != nil)
+    [ctx_slot().cmd popDebugGroup];
 }
 
 } // namespace nxe::rhi
