@@ -269,6 +269,12 @@ public:
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
   [[nodiscard]] VulkanTexture *texture_mut(TextureHandle handle) noexcept;
+
+  /// The state a texture is currently tracked in. The render graph resolves
+  /// its planned transitions against this while still single-threaded, so that
+  /// recording never has to consult - or race on - the tracked state.
+  [[nodiscard]] ResourceState
+  texture_state(TextureHandle handle) const noexcept;
   [[nodiscard]] bool debug_utils_enabled() const noexcept {
     return m_debug_utils;
   }

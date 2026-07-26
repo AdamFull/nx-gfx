@@ -257,6 +257,12 @@ public:
   // Bindless indices, for the push block. The heap needs argument-buffer
   // Tier 2 and is not built yet, so these report "no slot" for now.
 
+  /// The state a texture is currently tracked in. The render graph resolves
+  /// its planned transitions against this while still single-threaded, so that
+  /// recording never has to consult - or race on - the tracked state.
+  [[nodiscard]] ResourceState
+  texture_state(TextureHandle handle) const noexcept;
+
   [[nodiscard]] u32 texture_index(TextureHandle handle) const noexcept;
   [[nodiscard]] u32 rw_texture_index(TextureHandle handle,
                                      u32 mip = 0) const noexcept;

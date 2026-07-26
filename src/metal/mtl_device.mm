@@ -827,6 +827,14 @@ void MetalDevice::destroy_sampler(const SamplerHandle handle) noexcept {
 // sampler's slot are their handle indices; storage-image slots come from a
 // free list because a texture owns one per mip.
 
+ResourceState
+MetalDevice::texture_state(const TextureHandle handle) const noexcept {
+  if (m_state == nullptr)
+    return ResourceState::Undefined;
+  const MetalTexture *texture = m_state->textures.try_get(handle);
+  return texture != nullptr ? texture->state : ResourceState::Undefined;
+}
+
 u32 MetalDevice::texture_index(const TextureHandle handle) const noexcept {
   if (m_state == nullptr)
     return BINDLESS_INVALID_INDEX;

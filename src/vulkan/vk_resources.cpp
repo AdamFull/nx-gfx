@@ -340,6 +340,12 @@ VulkanTexture *VulkanDevice::texture_mut(const TextureHandle handle) noexcept {
   return m_textures.try_get(handle);
 }
 
+ResourceState
+VulkanDevice::texture_state(const TextureHandle handle) const noexcept {
+  const VulkanTexture *texture = m_textures.try_get(handle);
+  return texture != nullptr ? texture->state : ResourceState::Undefined;
+}
+
 // Buffers
 
 BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
