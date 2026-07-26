@@ -98,6 +98,7 @@ struct MemoryRequirements {
 struct HeapDesc {
   nx::string_view name = "heap";
   u64 size = 0;
+  u64 alignment = 256;
   /// Intersection of the memory_type_bits of everything to be placed here.
   u32 memory_type_bits = ~0u;
   MemoryUsage memory = MemoryUsage::DeviceLocal;

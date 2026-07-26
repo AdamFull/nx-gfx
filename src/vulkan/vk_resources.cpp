@@ -215,7 +215,7 @@ HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
   // across everything it intends to place here.
   VkMemoryRequirements requirements{};
   requirements.size = desc.size;
-  requirements.alignment = 256; // covers every image alignment we ask for
+  requirements.alignment = desc.alignment < 1 ? 1 : desc.alignment;
   requirements.memoryTypeBits = desc.memory_type_bits;
 
   // VMA_MEMORY_USAGE_AUTO* is rejected here: it infers the memory type from the
