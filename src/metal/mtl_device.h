@@ -272,6 +272,10 @@ public:
   [[nodiscard]] u32 sampler_index(SamplerHandle handle) const noexcept;
   [[nodiscard]] u64 buffer_address(BufferHandle handle) const noexcept;
 
+  /// Host pointer for a persistently mapped buffer, else null. Per-frame data
+  /// is written straight through this rather than staged and copied.
+  [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
+
 private:
   DeviceCaps m_caps;
   /// Backing store for m_caps.device_name, which is only a view.

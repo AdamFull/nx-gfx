@@ -983,6 +983,13 @@ u32 MetalDevice::sampler_index(const SamplerHandle handle) const noexcept {
   return sampler != nullptr ? sampler->bindless_slot : BINDLESS_INVALID_INDEX;
 }
 
+void *MetalDevice::buffer_mapped(const BufferHandle handle) const noexcept {
+  if (m_state == nullptr)
+    return nullptr;
+  const MetalBuffer *buffer = m_state->buffers.try_get(handle);
+  return buffer != nullptr ? buffer->mapped : nullptr;
+}
+
 u64 MetalDevice::buffer_address(const BufferHandle handle) const noexcept {
   if (m_state == nullptr)
     return 0;

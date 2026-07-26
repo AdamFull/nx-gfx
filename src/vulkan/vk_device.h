@@ -282,6 +282,10 @@ public:
   [[nodiscard]] VkDeviceAddress
   buffer_address(BufferHandle handle) const noexcept;
 
+  /// Host pointer for a persistently mapped buffer, else null. Per-frame data
+  /// is written straight through this rather than staged and copied.
+  [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
+
   // Internals used by VulkanCommandContext
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }

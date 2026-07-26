@@ -473,6 +473,11 @@ VulkanDevice::buffer_address(const BufferHandle handle) const noexcept {
   return buffer != nullptr ? buffer->device_address : 0;
 }
 
+void *VulkanDevice::buffer_mapped(const BufferHandle handle) const noexcept {
+  const VulkanBuffer *buffer = m_buffers.try_get(handle);
+  return buffer != nullptr ? buffer->mapped : nullptr;
+}
+
 // Command recording
 
 void VulkanCommandContext::barrier(const TextureBarrier *textures,
