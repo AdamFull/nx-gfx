@@ -678,6 +678,13 @@ void VulkanUploader::pump() {
     m_load_uploading.push_back({res.id, res.generation});
   });
 
+  for (const LoadRequest &pending : m_load_uploading) {
+    if (m_load_ticket[pending.id - 1].value > m_value) {
+      flush_locked();
+      break;
+    }
+  }
+
   for (usize i = m_load_uploading.size(); i > 0; --i) {
     const LoadRequest u = m_load_uploading[i - 1];
     const u32 s = u.id - 1;
@@ -699,6 +706,13 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE || size == 0)
     return {};
+
+  if (offset > buf->size || size > buf->size - offset) {
+    nx::logw(log_up,
+             "read_buffer: {}..{} is outside the {}-byte buffer", offset,
+             offset + size, buf->size);
+    return {};
+  }
 
   flush_locked(); // Readback is its own submit; get pending uploads out first.
 
@@ -736,8 +750,15 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
 ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
                                             const u32 mip, const u32 layer) {
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
-  if (tex == nullptr || tex->image == VK_NULL_HANDLE || mip >= tex->mip_levels)
+  if (tex == nullptr || tex->image == VK_NULL_HANDLE)
     return {};
+  if (mip >= tex->mip_levels || layer >= tex->layers) {
+    nx::logw(log_up,
+             "read_texture: mip {} / layer {} is outside the {}-mip, "
+             "{}-layer texture",
+             mip, layer, tex->mip_levels, tex->layers);
+    return {};
+  }
 
   const u32 w = (tex->width >> mip) == 0 ? 1u : (tex->width >> mip);
   const u32 h = (tex->height >> mip) == 0 ? 1u : (tex->height >> mip);
