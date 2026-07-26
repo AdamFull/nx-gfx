@@ -12,6 +12,22 @@ namespace {
 
 const nx::log::Category log_rhi = nx::log::category("rhi");
 
+/// Whether the surface has actually resized out from under the swapchain.
+/// Used to tell a real resize apart from a permanently-suboptimal swapchain.
+[[nodiscard]] bool surface_resized(VkPhysicalDevice physical,
+                                   VkSurfaceKHR surface,
+                                   const VkExtent2D current) noexcept {
+  VkSurfaceCapabilitiesKHR caps{};
+  if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &caps) !=
+      VK_SUCCESS)
+    return false;
+  // 0xFFFFFFFF means the surface defers to us, so our extent is current.
+  if (caps.currentExtent.width == 0xFFFFFFFFu)
+    return false;
+  return caps.currentExtent.width != current.width ||
+         caps.currentExtent.height != current.height;
+}
+
 /// Creates a VkSurfaceKHR from whatever the PAL handed us. This is the one
 /// place in the RHI that knows about window systems.
 VkSurfaceKHR create_surface(VkInstance instance,
@@ -207,7 +223,10 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
   info.imageUsage =
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  info.preTransform = caps.currentTransform;
+  info.preTransform =
+      (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+          ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+          : caps.currentTransform;
   info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   info.presentMode = m_present_mode;
   info.clipped = VK_TRUE;
@@ -390,8 +409,11 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   out_context.m_in_render_pass = false;
   m_frame_active = true;
 
-  return acquired == VK_SUBOPTIMAL_KHR ? AcquireResult::Suboptimal
-                                       : AcquireResult::Success;
+  // Report suboptimal only when it means something actionable - see end_frame.
+  const bool suboptimal =
+      acquired == VK_SUBOPTIMAL_KHR &&
+      surface_resized(m_physical_device, m_surface, m_swapchain_extent);
+  return suboptimal ? AcquireResult::Suboptimal : AcquireResult::Success;
 }
 
 bool VulkanDevice::end_frame() {
@@ -486,8 +508,10 @@ bool VulkanDevice::end_frame() {
 
   m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
 
-  if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR)
+  if (presented == VK_ERROR_OUT_OF_DATE_KHR)
     return false; // Rendered fine, but the swapchain wants rebuilding.
+  if (presented == VK_SUBOPTIMAL_KHR)
+    return !surface_resized(m_physical_device, m_surface, m_swapchain_extent);
   if (presented != VK_SUCCESS) {
     NX_VK_CHECK(presented);
     return false;
