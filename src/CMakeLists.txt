@@ -71,7 +71,7 @@ add_library(nx::rhi ALIAS nx_rhi)
 # call.
 target_link_libraries(nx_rhi
         PUBLIC nx::foundation nx::runtime
-        PRIVATE nx::compile_options nx::stb)
+        PRIVATE nx::compile_options nx::stb nx::spirv_reflect)
 
 # stb_image's implementation TU is third-party code; its warnings are not ours
 # to fix and it is noisy under /W4.
