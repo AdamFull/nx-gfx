@@ -91,13 +91,13 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
   return true;
 }
 
-TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
-  if (desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
-    nx::loge(log_rhi, "create_texture('{}'): invalid format or extent",
-             desc.name);
-    return {};
-  }
+namespace {
 
+/// The VkImageCreateInfo a TextureDesc maps to. Shared by the owning and the
+/// heap-placed paths, so the two cannot drift - which would make the memory
+/// requirements queried for one wrong for the other.
+[[nodiscard]] VkImageCreateInfo
+to_image_create_info(const TextureDesc &desc) noexcept {
   const bool is_cube = desc.dimension == TextureDimension::TexCube;
   const bool is_3d = desc.dimension == TextureDimension::Tex3D;
 
@@ -112,10 +112,22 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
   info.usage = to_vk_image_usage(desc.usage, desc.format);
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
   info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   if (is_cube)
     info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  return info;
+}
+
+} // namespace
+
+TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
+  if (desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
+    nx::loge(log_rhi, "create_texture('{}'): invalid format or extent",
+             desc.name);
+    return {};
+  }
+
+  const VkImageCreateInfo info = to_image_create_info(desc);
 
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = to_vma_usage(desc.memory);
@@ -159,6 +171,147 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
 
   // Register in the bindless heap. The SRV slot is the handle index; each UAV
   // (one per mip) takes a slot from the storage free list.
+  if (stored.srv != VK_NULL_HANDLE)
+    write_texture_descriptor(nx::cast<u32>(handle.index()), stored.srv);
+  for (const VkImageView uav : stored.uavs) {
+    const u32 slot = alloc_rw_slot();
+    stored.uav_indices.push_back(slot);
+    write_rw_texture_descriptor(slot, uav);
+  }
+
+  return handle;
+}
+
+// Memory aliasing
+
+MemoryRequirements
+VulkanDevice::texture_requirements(const TextureDesc &desc) const {
+  const VkImageCreateInfo info = to_image_create_info(desc);
+
+  // Vulkan 1.3 answers this from the descriptor alone, so there is no throwaway
+  // VkImage to create and destroy just to ask.
+  VkDeviceImageMemoryRequirements query{
+      VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS};
+  query.pCreateInfo = &info;
+
+  VkMemoryRequirements2 result{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+  vkGetDeviceImageMemoryRequirements(m_device, &query, &result);
+
+  return MemoryRequirements{
+      .size = result.memoryRequirements.size,
+      .alignment = result.memoryRequirements.alignment,
+      .memory_type_bits = result.memoryRequirements.memoryTypeBits,
+  };
+}
+
+HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
+  if (desc.size == 0) {
+    nx::loge(log_rhi, "create_heap('{}'): zero size", desc.name);
+    return {};
+  }
+
+  // The heap is raw memory, so its requirements are stated rather than derived
+  // from a resource. memory_type_bits is the intersection the caller computed
+  // across everything it intends to place here.
+  VkMemoryRequirements requirements{};
+  requirements.size = desc.size;
+  requirements.alignment = 256; // covers every image alignment we ask for
+  requirements.memoryTypeBits = desc.memory_type_bits;
+
+  // VMA_MEMORY_USAGE_AUTO* is rejected here: it infers the memory type from the
+  // resource being created, and a raw allocation has none. State the properties
+  // wanted instead.
+  VmaAllocationCreateInfo alloc_info{};
+  alloc_info.usage = VMA_MEMORY_USAGE_UNKNOWN;
+  alloc_info.flags = to_vma_flags(desc.memory, false);
+  switch (desc.memory) {
+  case MemoryUsage::Upload:
+    alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    break;
+  case MemoryUsage::Readback:
+    alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    break;
+  default:
+    alloc_info.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    break;
+  }
+
+  VulkanHeap heap;
+  heap.size = desc.size;
+  if (NX_VK_CHECK(vmaAllocateMemory(m_allocator, &requirements, &alloc_info,
+                                    &heap.allocation, nullptr)) != VK_SUCCESS) {
+    nx::loge(log_rhi, "create_heap('{}'): {} KiB allocation failed", desc.name,
+             desc.size / 1024);
+    return {};
+  }
+  return m_heaps.insert(std::move(heap));
+}
+
+void VulkanDevice::destroy_heap(const HeapHandle handle) noexcept {
+  VulkanHeap *heap = m_heaps.try_get(handle);
+  if (heap == nullptr)
+    return;
+  // Every image placed here must already be gone; the graph tears them down
+  // together.
+  if (heap->allocation != VK_NULL_HANDLE)
+    vmaFreeMemory(m_allocator, heap->allocation);
+  m_heaps.erase(handle);
+}
+
+TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
+                                                   const HeapHandle heap_handle,
+                                                   const u64 offset) {
+  const VulkanHeap *heap = m_heaps.try_get(heap_handle);
+  if (heap == nullptr || desc.format == Format::Unknown || desc.width == 0 ||
+      desc.height == 0) {
+    nx::loge(log_rhi, "create_texture_in_heap('{}'): invalid heap or extent",
+             desc.name);
+    return {};
+  }
+
+  const VkImageCreateInfo info = to_image_create_info(desc);
+
+  VulkanTexture texture;
+  if (NX_VK_CHECK(vmaCreateAliasingImage2(m_allocator, heap->allocation, offset,
+                                          &info, &texture.image)) !=
+      VK_SUCCESS) {
+    nx::loge(log_rhi,
+             "create_texture_in_heap('{}'): binding at offset {} failed",
+             desc.name, offset);
+    return {};
+  }
+
+  texture.format = desc.format;
+  texture.dimension = desc.dimension;
+  texture.width = desc.width;
+  texture.height = desc.height;
+  texture.mip_levels = desc.mip_levels;
+  texture.layers = info.arrayLayers;
+  texture.usage = desc.usage;
+  texture.state = ResourceState::Undefined;
+  // Owns the VkImage but not the memory: allocation stays null so teardown
+  // destroys the image and leaves the heap alone.
+  texture.owns_image = true;
+  texture.allocation = VK_NULL_HANDLE;
+
+  if (!create_texture_views(texture, desc.name)) {
+    for (const VkImageView view : texture.uavs)
+      vkDestroyImageView(m_device, view, nullptr);
+    if (texture.srv != VK_NULL_HANDLE)
+      vkDestroyImageView(m_device, texture.srv, nullptr);
+    if (texture.rtv != VK_NULL_HANDLE)
+      vkDestroyImageView(m_device, texture.rtv, nullptr);
+    vkDestroyImage(m_device, texture.image, nullptr);
+    return {};
+  }
+
+  const TextureHandle handle = m_textures.insert(std::move(texture));
+  VulkanTexture &stored = *m_textures.try_get(handle);
+  set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
+                  desc.name);
+
   if (stored.srv != VK_NULL_HANDLE)
     write_texture_descriptor(nx::cast<u32>(handle.index()), stored.srv);
   for (const VkImageView uav : stored.uavs) {

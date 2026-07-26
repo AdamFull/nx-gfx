@@ -74,6 +74,13 @@ struct VulkanSampler {
   VkSampler sampler = VK_NULL_HANDLE;
 };
 
+/// A VMA allocation the caller sub-allocates by hand. Aliased images are bound
+/// into it at an offset and own their VkImage but not the memory under it.
+struct VulkanHeap {
+  VmaAllocation allocation = VK_NULL_HANDLE;
+  u64 size = 0;
+};
+
 struct VulkanShader {
   VkShaderModule module = VK_NULL_HANDLE;
   struct ComputeEntry {
@@ -219,6 +226,23 @@ public:
   [[nodiscard]] SamplerHandle create_sampler(const SamplerDesc &desc);
   void destroy_sampler(SamplerHandle handle) noexcept;
 
+  // Memory aliasing
+  //
+  // Two transients whose lifetimes do not overlap can share bytes. The render
+  // graph knows those lifetimes, so it does the packing: it asks what each
+  // texture needs, creates one heap, and places them at computed offsets.
+
+  [[nodiscard]] MemoryRequirements
+  texture_requirements(const TextureDesc &desc) const;
+  [[nodiscard]] HeapHandle create_heap(const HeapDesc &desc);
+  void destroy_heap(HeapHandle handle) noexcept;
+  /// Places a texture at @p offset in @p heap. The offset must satisfy the
+  /// alignment from texture_requirements(). Contents are undefined whenever
+  /// another resource has since used those bytes, so the first use each frame
+  /// must transition from Undefined - which is what the graph already does.
+  [[nodiscard]] TextureHandle
+  create_texture_in_heap(const TextureDesc &desc, HeapHandle heap, u64 offset);
+
   // Shaders and pipelines (vk_pipeline.cpp).
 
   [[nodiscard]] ShaderHandle create_shader(const ShaderDesc &desc);
@@ -322,6 +346,7 @@ private:
   nx::slot_map<VulkanTexture, TextureHandle> m_textures;
   nx::slot_map<VulkanBuffer, BufferHandle> m_buffers;
   nx::slot_map<VulkanSampler, SamplerHandle> m_samplers;
+  nx::slot_map<VulkanHeap, HeapHandle> m_heaps;
   nx::slot_map<VulkanShader, ShaderHandle> m_shaders;
   nx::slot_map<VulkanPipeline, PipelineHandle> m_pipelines;
 
