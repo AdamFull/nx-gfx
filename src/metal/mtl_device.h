@@ -17,6 +17,7 @@
 #include "rendering/rhi/descs.h"
 #include "rendering/rhi/handles.h"
 #include "rendering/rhi/image/image.h"
+#include "rendering/rhi/shader_reflect.h"
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/upload.h"
 

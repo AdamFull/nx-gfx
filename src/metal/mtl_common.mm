@@ -80,10 +80,17 @@ MTLPixelFormat to_mtl_format(const Format format) noexcept {
   case Format::D32_FLOAT:
     return MTLPixelFormatDepth32Float;
   case Format::D24_UNORM_S8_UINT:
-    // Only the Mac families have it, and only on some GPUs
-    // (depth24Stencil8PixelFormatSupported). Callers that need a guarantee
-    // should ask for D32_FLOAT_S8_UINT instead.
+    // Only the Mac families have it - and there only on some GPUs, gated on
+    // depth24Stencil8PixelFormatSupported. It does not exist on iOS at all,
+    // where the enumerator is not even declared. Reporting Invalid rather than
+    // quietly substituting a 32-bit format keeps the precision change from
+    // being a surprise; callers that want a guarantee ask for
+    // D32_FLOAT_S8_UINT, which every Metal device has.
+#if TARGET_OS_OSX || TARGET_OS_MACCATALYST
     return MTLPixelFormatDepth24Unorm_Stencil8;
+#else
+    return MTLPixelFormatInvalid;
+#endif
   case Format::D32_FLOAT_S8_UINT:
     return MTLPixelFormatDepth32Float_Stencil8;
 
