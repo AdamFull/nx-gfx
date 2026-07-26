@@ -86,6 +86,10 @@ enum class Format : u16 {
   Count
 };
 
+/// Whether barrier() advances the RHI's tracked texture states. Skip it when
+/// the caller owns the timeline and may be recording on several threads.
+enum class StateTracking : u8 { Update, Skip };
+
 enum class ResourceState : u16 {
   Undefined = 0, ///< Contents are garbage; only valid as a barrier source.
   General,       ///< Any access; the catch-all when nothing tighter applies.

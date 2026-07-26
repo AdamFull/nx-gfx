@@ -175,7 +175,8 @@ public:
   /// RHI's own view of each texture's state up to date - which is what
   /// begin_render_pass and the swapchain read to decide load/store actions.
   void barrier(const TextureBarrier *textures, u32 texture_count,
-               const BufferBarrier *buffers = nullptr, u32 buffer_count = 0);
+               const BufferBarrier *buffers = nullptr, u32 buffer_count = 0,
+               StateTracking tracking = StateTracking::Update);
   void barrier(const TextureBarrier &texture) { barrier(&texture, 1); }
 
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
@@ -266,6 +267,8 @@ public:
   /// Tracked state, for the graph to resolve transitions against up front.
   [[nodiscard]] ResourceState
   texture_state(TextureHandle handle) const noexcept;
+  /// Pairs with StateTracking::Skip: the caller writes back what it recorded.
+  void set_texture_state(TextureHandle handle, ResourceState state) noexcept;
 
   [[nodiscard]] u32 texture_index(TextureHandle handle) const noexcept;
   [[nodiscard]] u32 rw_texture_index(TextureHandle handle,

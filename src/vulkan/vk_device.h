@@ -149,7 +149,8 @@ public:
 
   /// Explicit barriers. The render graph is the intended caller.
   void barrier(const TextureBarrier *textures, u32 texture_count,
-               const BufferBarrier *buffers = nullptr, u32 buffer_count = 0);
+               const BufferBarrier *buffers = nullptr, u32 buffer_count = 0,
+               StateTracking tracking = StateTracking::Update);
   void barrier(const TextureBarrier &texture) { barrier(&texture, 1); }
 
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
@@ -282,6 +283,8 @@ public:
   /// Tracked state, for the graph to resolve transitions against up front.
   [[nodiscard]] ResourceState
   texture_state(TextureHandle handle) const noexcept;
+  /// Pairs with StateTracking::Skip: the caller writes back what it recorded.
+  void set_texture_state(TextureHandle handle, ResourceState state) noexcept;
   [[nodiscard]] bool debug_utils_enabled() const noexcept {
     return m_debug_utils;
   }

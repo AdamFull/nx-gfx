@@ -831,6 +831,14 @@ bool MetalDevice::open_contexts(const std::span<MetalCommandContext> out) {
   return out.empty();
 }
 
+void MetalDevice::set_texture_state(const TextureHandle handle,
+                                    const ResourceState state) noexcept {
+  if (m_state == nullptr)
+    return;
+  if (MetalTexture *texture = m_state->textures.try_get(handle))
+    texture->state = state;
+}
+
 ResourceState
 MetalDevice::texture_state(const TextureHandle handle) const noexcept {
   if (m_state == nullptr)
@@ -1084,8 +1092,9 @@ void MetalCommandContext::set_scissor(const Rect2D &rect) {
 void MetalCommandContext::barrier(const TextureBarrier *textures,
                                   const u32 texture_count,
                                   const BufferBarrier *buffers,
-                                  const u32 buffer_count) {
-  if (m_state == nullptr)
+                                  const u32 buffer_count,
+                                  const StateTracking tracking) {
+  if (m_state == nullptr || tracking == StateTracking::Skip)
     return;
 
   // Metal tracks read-after-write hazards between encoders itself, so there is

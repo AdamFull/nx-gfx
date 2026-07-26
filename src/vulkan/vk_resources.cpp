@@ -346,6 +346,12 @@ VulkanDevice::texture_state(const TextureHandle handle) const noexcept {
   return texture != nullptr ? texture->state : ResourceState::Undefined;
 }
 
+void VulkanDevice::set_texture_state(const TextureHandle handle,
+                                     const ResourceState state) noexcept {
+  if (VulkanTexture *texture = m_textures.try_get(handle))
+    texture->state = state;
+}
+
 // Buffers
 
 BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
@@ -472,7 +478,8 @@ VulkanDevice::buffer_address(const BufferHandle handle) const noexcept {
 void VulkanCommandContext::barrier(const TextureBarrier *textures,
                                    const u32 texture_count,
                                    const BufferBarrier *buffers,
-                                   const u32 buffer_count) {
+                                   const u32 buffer_count,
+                                   const StateTracking tracking) {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
     return;
 
@@ -515,7 +522,8 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
         desc.layer_count == ~0u ? VK_REMAINING_ARRAY_LAYERS : desc.layer_count;
 
     image_barriers.push_back(barrier);
-    texture->state = desc.to;
+    if (tracking == StateTracking::Update)
+      texture->state = desc.to;
   }
 
   for (u32 i = 0; i < buffer_count; ++i) {
