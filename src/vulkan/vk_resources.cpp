@@ -111,8 +111,9 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
       desc.sample_count == 0 ? 1 : desc.sample_count);
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
   info.usage = to_vk_image_usage(desc.usage, desc.format);
-  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   if (is_cube)
     info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 
