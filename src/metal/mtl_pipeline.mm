@@ -637,4 +637,80 @@ void MetalCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
           threadsPerThreadgroup:ctx_slot().bound_threads_per_group];
 }
 
+void MetalCommandContext::draw_indirect(const BufferHandle handle,
+                                        const u64 offset, const u32 draw_count,
+                                        const u32 stride) {
+  if (m_state == nullptr || ctx_slot().encoder == nil || draw_count == 0)
+    return;
+  if (!ctx_slot().has_bound_pipeline) {
+    nx::loge(log_rhi, "draw_indirect without a bound pipeline");
+    return;
+  }
+  const MetalBuffer *buffer = m_state->buffers.try_get(handle);
+  if (buffer == nullptr || buffer->buffer == nil)
+    return;
+
+  const u64 step =
+      stride != 0 ? stride : nx::cast<u64>(sizeof(DrawIndirectCommand));
+  for (u32 i = 0; i < draw_count; ++i) {
+    [ctx_slot().encoder drawPrimitives:ctx_slot().bound_topology
+                       indirectBuffer:buffer->buffer
+                 indirectBufferOffset:offset + nx::cast<u64>(i) * step];
+  }
+}
+
+void MetalCommandContext::draw_indexed_indirect(const BufferHandle handle,
+                                                const u64 offset,
+                                                const u32 draw_count,
+                                                const u32 stride) {
+  if (m_state == nullptr || ctx_slot().encoder == nil || draw_count == 0)
+    return;
+  if (!ctx_slot().has_bound_pipeline) {
+    nx::loge(log_rhi, "draw_indexed_indirect without a bound pipeline");
+    return;
+  }
+  if (ctx_slot().index_buffer == nil) {
+    nx::loge(log_rhi, "draw_indexed_indirect without an index buffer");
+    return;
+  }
+  const MetalBuffer *buffer = m_state->buffers.try_get(handle);
+  if (buffer == nullptr || buffer->buffer == nil)
+    return;
+
+  const u64 step =
+      stride != 0 ? stride : nx::cast<u64>(sizeof(DrawIndexedIndirectCommand));
+  for (u32 i = 0; i < draw_count; ++i) {
+    [ctx_slot().encoder drawIndexedPrimitives:ctx_slot().bound_topology
+                                    indexType:ctx_slot().index_type
+                                  indexBuffer:ctx_slot().index_buffer
+                            indexBufferOffset:ctx_slot().index_buffer_offset
+                               indirectBuffer:buffer->buffer
+                         indirectBufferOffset:offset +
+                                              nx::cast<u64>(i) * step];
+  }
+}
+
+void MetalCommandContext::dispatch_indirect(const BufferHandle handle,
+                                            const u64 offset) {
+  if (m_state == nullptr)
+    return;
+  id<MTLComputeCommandEncoder> encoder = ctx_slot().compute_encoder;
+  if (encoder == nil) {
+    nx::loge(log_rhi, "dispatch_indirect outside a compute pass");
+    return;
+  }
+  if (!ctx_slot().has_bound_pipeline) {
+    nx::loge(log_rhi, "dispatch_indirect without a bound pipeline");
+    return;
+  }
+  const MetalBuffer *buffer = m_state->buffers.try_get(handle);
+  if (buffer == nullptr || buffer->buffer == nil)
+    return;
+
+  [encoder dispatchThreadgroupsWithIndirectBuffer:buffer->buffer
+                             indirectBufferOffset:offset
+                            threadsPerThreadgroup:ctx_slot()
+                                                      .bound_threads_per_group];
+}
+
 } // namespace nxe::rhi

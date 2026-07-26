@@ -456,6 +456,39 @@ void VulkanCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
   vkCmdDispatch(m_cmd, groups_x, groups_y, groups_z);
 }
 
+void VulkanCommandContext::draw_indirect(const BufferHandle buffer,
+                                         const u64 offset,
+                                         const u32 draw_count,
+                                         const u32 stride) {
+  const VulkanBuffer *buf = m_device->buffer(buffer);
+  if (buf == nullptr)
+    return;
+  vkCmdDrawIndirect(m_cmd, buf->buffer, offset, draw_count,
+                    stride != 0 ? stride
+                                : nx::cast<u32>(sizeof(DrawIndirectCommand)));
+}
+
+void VulkanCommandContext::draw_indexed_indirect(const BufferHandle buffer,
+                                                 const u64 offset,
+                                                 const u32 draw_count,
+                                                 const u32 stride) {
+  const VulkanBuffer *buf = m_device->buffer(buffer);
+  if (buf == nullptr)
+    return;
+  vkCmdDrawIndexedIndirect(
+      m_cmd, buf->buffer, offset, draw_count,
+      stride != 0 ? stride
+                  : nx::cast<u32>(sizeof(DrawIndexedIndirectCommand)));
+}
+
+void VulkanCommandContext::dispatch_indirect(const BufferHandle buffer,
+                                             const u64 offset) {
+  const VulkanBuffer *buf = m_device->buffer(buffer);
+  if (buf == nullptr)
+    return;
+  vkCmdDispatchIndirect(m_cmd, buf->buffer, offset);
+}
+
 void VulkanCommandContext::begin_compute_pass(const nx::string_view name) {
   if (m_in_render_pass) {
     nx::loge(log_rhi, "begin_compute_pass('{}') inside a render pass", name);

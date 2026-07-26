@@ -158,6 +158,12 @@ public:
                     u32 first_instance = 0);
   void dispatch(u32 groups_x, u32 groups_y = 1, u32 groups_z = 1);
 
+  void draw_indirect(BufferHandle buffer, u64 offset = 0, u32 draw_count = 1,
+                     u32 stride = 0);
+  void draw_indexed_indirect(BufferHandle buffer, u64 offset = 0,
+                             u32 draw_count = 1, u32 stride = 0);
+  void dispatch_indirect(BufferHandle buffer, u64 offset = 0);
+
   /// Only bookkeeping: Metal tracks non-heap hazards itself, and heap ones are
   /// handled by the pass fence. The state drives load/store actions.
   void barrier(const TextureBarrier *textures, u32 texture_count,

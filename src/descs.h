@@ -228,6 +228,29 @@ struct ComputePipelineDesc {
   u32 group_size[3] = {0, 0, 0};
 };
 
+/// One indirect draw, as the GPU writes it. Layout is fixed by both APIs, so
+/// a compute pass fills these directly and the CPU never sees the count.
+struct DrawIndirectCommand {
+  u32 vertex_count = 0;
+  u32 instance_count = 0;
+  u32 first_vertex = 0;
+  u32 first_instance = 0;
+};
+
+struct DrawIndexedIndirectCommand {
+  u32 index_count = 0;
+  u32 instance_count = 0;
+  u32 first_index = 0;
+  i32 vertex_offset = 0;
+  u32 first_instance = 0;
+};
+
+struct DispatchIndirectCommand {
+  u32 groups_x = 0;
+  u32 groups_y = 0;
+  u32 groups_z = 0;
+};
+
 /// Barrier describing a texture's state transition. The render graph is the
 /// intended producer of these; hand-written barriers are expert-mode.
 struct TextureBarrier {
