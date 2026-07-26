@@ -162,6 +162,11 @@ public:
   /// Sets the whole 128-byte push block. Offset/size in bytes.
   void push_constants(const void *data, u32 size, u32 offset = 0);
 
+  /// Pushes what a BlockWriter staged, at the size reflection reported.
+  void push_constants(const BlockWriter &block) {
+    push_constants(block.bytes().data(), nx::cast<u32>(block.bytes().size()));
+  }
+
   void bind_index_buffer(BufferHandle buffer, IndexType type, u64 offset = 0);
 
   void draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0,
@@ -263,6 +268,10 @@ public:
 
   // Bindless indices, for the push block. The heap needs argument-buffer
   // Tier 2 and is not built yet, so these report "no slot" for now.
+
+  /// The shader's reflected interface. Empty for an unknown handle.
+  [[nodiscard]] const ShaderReflection &
+  reflection(ShaderHandle handle) const noexcept;
 
   /// Tracked state, for the graph to resolve transitions against up front.
   [[nodiscard]] ResourceState

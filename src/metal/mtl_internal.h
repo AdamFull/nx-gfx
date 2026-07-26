@@ -111,6 +111,7 @@ struct MetalHeap {
 
 struct MetalShader {
   id<MTLLibrary> library = nil;
+  ShaderReflection reflection;
 };
 
 /// Metal splits what Vulkan calls a pipeline across three places: the render

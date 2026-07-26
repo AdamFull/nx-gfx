@@ -137,6 +137,11 @@ public:
   /// Sets the whole 128-byte push block. Offset/size in bytes.
   void push_constants(const void *data, u32 size, u32 offset = 0);
 
+  /// Pushes what a BlockWriter staged, at the size reflection reported.
+  void push_constants(const BlockWriter &block) {
+    push_constants(block.bytes().data(), nx::cast<u32>(block.bytes().size()));
+  }
+
   /// The only buffer binding in the API: everything else a shader reads is
   /// reached bindlessly by device address. An index buffer cannot be, because
   /// the index fetch is fixed-function on both backends.

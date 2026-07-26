@@ -256,7 +256,24 @@ ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {
     shader.library.label = to_ns_string(desc.name);
   }
 
+  // Same sidecar, same parser as the Vulkan backend - a metallib carries no
+  // [numthreads] and Metal's own reflection only comes with a pipeline state,
+  // so this is where the workgroup size and the push block come from.
+  if (!desc.reflection_json.empty() &&
+      !reflect_from_json(desc.reflection_json, shader.reflection))
+    nx::logw(log_rhi, "create_shader('{}'): reflection sidecar unusable",
+             desc.name);
+
   return m_state->shaders.insert(std::move(shader));
+}
+
+const ShaderReflection &
+MetalDevice::reflection(const ShaderHandle handle) const noexcept {
+  static const ShaderReflection empty;
+  if (m_state == nullptr)
+    return empty;
+  const MetalShader *shader = m_state->shaders.try_get(handle);
+  return shader != nullptr ? shader->reflection : empty;
 }
 
 void MetalDevice::destroy_shader(const ShaderHandle handle) noexcept {
@@ -379,13 +396,19 @@ MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
   if (m_state == nullptr)
     return {};
 
-  if (desc.group_size[0] == 0 || desc.group_size[1] == 0 ||
-      desc.group_size[2] == 0) {
-    nx::loge(log_rhi, "create_compute_pipeline('{}'): group_size must be set "
-                      "to the shader's [numthreads]; Metal takes it at "
-                      "dispatch and cannot read it from the metallib",
-             desc.name);
-    return {};
+  u32 group_size[3] = {desc.group_size[0], desc.group_size[1],
+                       desc.group_size[2]};
+  if (group_size[0] == 0 || group_size[1] == 0 || group_size[2] == 0) {
+    const MetalShader *cs = m_state->shaders.try_get(desc.compute.shader);
+    if (cs == nullptr ||
+        !cs->reflection.local_size(nx::id_string(desc.compute.entry_point),
+                                   group_size)) {
+      nx::loge(log_rhi,
+               "create_compute_pipeline('{}'): no group_size given and the "
+               "reflection sidecar does not state one for '{}'",
+               desc.name, desc.compute.entry_point);
+      return {};
+    }
   }
 
   MetalPipeline pipeline;
@@ -430,10 +453,10 @@ MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
     }
 
     pipeline.threads_per_group = MTLSizeMake(
-        desc.group_size[0], desc.group_size[1], desc.group_size[2]);
+        group_size[0], group_size[1], group_size[2]);
 
-    const NSUInteger declared = nx::cast<NSUInteger>(desc.group_size[0]) *
-                                desc.group_size[1] * desc.group_size[2];
+    const NSUInteger declared = nx::cast<NSUInteger>(group_size[0]) *
+                                group_size[1] * group_size[2];
     if (declared > pipeline.compute.maxTotalThreadsPerThreadgroup) {
       nx::loge(log_rhi, "create_compute_pipeline('{}'): {} threads per group "
                         "exceeds this device's limit of {}",

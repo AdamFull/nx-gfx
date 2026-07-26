@@ -61,6 +61,11 @@ struct ShaderReflection {
                                 u32 out_size[3]) const noexcept;
 };
 
+/// Fills @p out from slangc's -reflection-json sidecar. The same parser serves
+/// both backends; each reads the sidecar built for its own target.
+[[nodiscard]] bool reflect_from_json(nx::string_view text,
+                                     ShaderReflection &out);
+
 /**
  * @brief CPU staging for one block: write fields by name, then upload.
  *

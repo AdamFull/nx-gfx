@@ -20,6 +20,7 @@ set(NX_RHI_SOURCES
         image/image.cpp
         image/stb_image_impl.cpp
         shader_reflect.cpp
+        shader_reflect_json.cpp
         types.cpp)
 
 # Vulkan everywhere except Apple platforms, which get Metal. Note this is not
@@ -42,14 +43,12 @@ else ()
     list(APPEND NX_RHI_HEADERS
             vulkan/vk_common.h
             vulkan/vk_device.h
-            vulkan/vk_reflection.h
             vulkan/vk_upload.h)
     list(APPEND NX_RHI_SOURCES
             vulkan/vk_bindless.cpp
             vulkan/vk_common.cpp
             vulkan/vk_device.cpp
             vulkan/vk_pipeline.cpp
-            vulkan/vk_reflection.cpp
             vulkan/vk_resources.cpp
             vulkan/vk_swapchain.cpp
             vulkan/vk_upload.cpp
@@ -125,8 +124,6 @@ else ()
             VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
 
     target_link_libraries(nx_rhi PUBLIC nx::volk nx::vma nx::vulkan_headers)
-    # Only the Vulkan backend consumes SPIR-V.
-    target_link_libraries(nx_rhi PRIVATE nx::spirv_reflect)
 
     # VMA's single implementation TU is third-party code; its warnings are not
     # ours to fix and it is noisy under /W4.

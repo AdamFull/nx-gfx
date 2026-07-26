@@ -181,6 +181,7 @@ struct ShaderDesc {
   nx::string_view name = "shader";
   const void *code = nullptr;
   usize code_size = 0;
+  nx::string_view reflection_json;
 };
 
 /// A shader stage in a pipeline: which blob, and which entry point in it.

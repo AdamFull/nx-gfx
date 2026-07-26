@@ -7,7 +7,6 @@
 
 #include "foundation/diagnostics/log.h"
 #include "foundation/platform/filesystem.h"
-#include "rendering/rhi/vulkan/vk_reflection.h"
 
 #include <cstring>
 #include <span>
@@ -173,22 +172,18 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   if (shader.module == VK_NULL_HANDLE)
     return {};
 
-  const std::span<const u8> code(static_cast<const u8 *>(desc.code),
-                                 desc.code_size);
-  if (!spirv_reflect_module(code, shader.reflection))
-    nx::logw(log_rhi, "create_shader('{}'): reflection failed", desc.name);
+  if (!desc.reflection_json.empty() &&
+      !reflect_from_json(desc.reflection_json, shader.reflection))
+    nx::logw(log_rhi, "create_shader('{}'): reflection sidecar unusable",
+             desc.name);
 
-  {
-    SpirvComputeEntry entries[8];
-    const usize count = spirv_compute_entries(code, entries);
-    for (usize i = 0; i < count; ++i) {
-      VulkanShader::ComputeEntry entry;
-      entry.name = nx::string(entries[i].name);
-      entry.local_size[0] = entries[i].local_size[0];
-      entry.local_size[1] = entries[i].local_size[1];
-      entry.local_size[2] = entries[i].local_size[2];
-      shader.compute_entries.push_back(std::move(entry));
-    }
+  for (const ReflectComputeEntry &e : shader.reflection.compute_entries) {
+    VulkanShader::ComputeEntry entry;
+    entry.name = nx::string(e.name.view());
+    entry.local_size[0] = e.local_size[0];
+    entry.local_size[1] = e.local_size[1];
+    entry.local_size[2] = e.local_size[2];
+    shader.compute_entries.push_back(std::move(entry));
   }
 
   const ShaderHandle handle = m_shaders.insert(std::move(shader));
@@ -460,7 +455,6 @@ void VulkanCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
                                     const u32 groups_z) {
   vkCmdDispatch(m_cmd, groups_x, groups_y, groups_z);
 }
-
 
 void VulkanCommandContext::begin_compute_pass(const nx::string_view name) {
   if (m_in_render_pass) {
