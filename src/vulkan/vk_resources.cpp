@@ -588,6 +588,15 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     info.storeOp = to_vk_store_op(attachment.store);
     std::memcpy(info.clearValue.color.float32, attachment.clear.color,
                 sizeof(f32) * 4);
+
+    if (const VulkanTexture *resolve =
+            m_device->texture(attachment.resolve_target);
+        resolve != nullptr && resolve->rtv != VK_NULL_HANDLE) {
+      info.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+      info.resolveImageView = resolve->rtv;
+      info.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+
     colors.push_back(info);
   }
 
