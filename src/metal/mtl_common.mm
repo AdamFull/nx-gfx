@@ -80,12 +80,9 @@ MTLPixelFormat to_mtl_format(const Format format) noexcept {
   case Format::D32_FLOAT:
     return MTLPixelFormatDepth32Float;
   case Format::D24_UNORM_S8_UINT:
-    // Only the Mac families have it - and there only on some GPUs, gated on
-    // depth24Stencil8PixelFormatSupported. It does not exist on iOS at all,
-    // where the enumerator is not even declared. Reporting Invalid rather than
-    // quietly substituting a 32-bit format keeps the precision change from
-    // being a surprise; callers that want a guarantee ask for
-    // D32_FLOAT_S8_UINT, which every Metal device has.
+    // Mac-only, and there only on some GPUs; the enumerator does not even
+    // exist on iOS. Invalid rather than a quiet 32-bit substitution - callers
+    // wanting a guarantee ask for D32_FLOAT_S8_UINT.
 #if TARGET_OS_OSX || TARGET_OS_MACCATALYST
     return MTLPixelFormatDepth24Unorm_Stencil8;
 #else
@@ -198,9 +195,8 @@ MTLTextureUsage to_mtl_texture_usage(const TextureUsageFlags usage) noexcept {
 
 MTLStorageMode to_mtl_storage_mode(const MemoryUsage memory,
                                    const bool transient) noexcept {
-  // A transient attachment never leaves tile memory. Memoryless exists only on
-  // Apple GPUs; on Intel/AMD Macs the private fallback is the correct answer
-  // rather than an error, because Transient is documented as a hint.
+  // Memoryless exists only on Apple GPUs; elsewhere private is the right
+  // fallback, since Transient is a hint.
   if (transient) {
 #if TARGET_OS_IPHONE
     return MTLStorageModeMemoryless;
@@ -212,9 +208,9 @@ MTLStorageMode to_mtl_storage_mode(const MemoryUsage memory,
   switch (memory) {
   case MemoryUsage::Upload:
   case MemoryUsage::Readback:
-    // Shared is host-visible and coherent on every Metal device. Managed would
-    // be marginally faster for GPU reads on discrete Macs, but it needs
-    // explicit didModifyRange bookkeeping and does not exist on Apple silicon.
+    // Shared is host-visible and coherent everywhere. Managed would be a touch
+    // faster on discrete Macs but needs didModifyRange and is absent on Apple
+    // silicon.
     return MTLStorageModeShared;
   case MemoryUsage::DeviceLocal:
   default:

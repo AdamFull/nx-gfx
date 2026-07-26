@@ -2,10 +2,9 @@
  * @file mtl_pipeline.mm
  * @brief Shader libraries and pipeline state objects.
  *
- * Metal splits what Vulkan calls one pipeline across three places: the render
- * pipeline state (shaders, attachment formats, blending), a separate
- * MTLDepthStencilState, and encoder calls for cull mode, winding and primitive
- * type. MetalPipeline holds all of it so bind_pipeline can apply the lot.
+ * Metal splits a Vulkan pipeline three ways - the PSO, MTLDepthStencilState,
+ * and encoder calls for cull, winding and topology - so MetalPipeline holds all
+ * of it and bind_pipeline applies the lot.
  */
 
 #include "rendering/rhi/metal/mtl_internal.h"
@@ -37,9 +36,8 @@ MTLPrimitiveType to_mtl_topology(const PrimitiveTopology topology) noexcept {
   }
 }
 
-/// Metal also needs the topology *class* at pipeline creation, but only when
-/// the shader writes a point size or the pipeline is used with a tessellator.
-/// Reporting it unconditionally is harmless and keeps validation quiet.
+/// Only strictly needed for point size or tessellation, but reporting it
+/// always is harmless and keeps validation quiet.
 MTLPrimitiveTopologyClass
 to_mtl_topology_class(const PrimitiveTopology topology) noexcept {
   switch (topology) {
@@ -65,13 +63,9 @@ MTLCullMode to_mtl_cull(const CullMode cull) noexcept {
   }
 }
 
-/// Straight through, matching how the Vulkan backend passes front_face to
-/// VkPipelineRasterizationStateCreateInfo unmodified.
-///
-/// Both APIs define the front face in framebuffer space, and both reach the
-/// framebuffer through the same clip-space Y inversion - Metal natively, Vulkan
-/// via its negative-height viewport - so the same FrontFace means the same
-/// thing on both without compensation.
+/// Straight through, as the Vulkan backend also passes front_face unmodified.
+/// Both define the front face in framebuffer space and both invert Y on the way
+/// there, so no compensation is needed.
 MTLWinding to_mtl_winding(const FrontFace face) noexcept {
   return face == FrontFace::Clockwise ? MTLWindingClockwise
                                       : MTLWindingCounterClockwise;
@@ -129,9 +123,8 @@ void apply_blend(MTLRenderPipelineColorAttachmentDescriptor *attachment,
   }
 }
 
-/// Looks an entry point up in a shader blob. Slang emits Metal entry points
-/// under their original names, so the RHI's entry_point string maps straight
-/// across.
+/// Slang emits Metal entry points under their original names, so entry_point
+/// maps straight across.
 id<MTLFunction> lookup_function(const MetalDeviceState &state,
                                 const ShaderEntry &entry,
                                 const nx::string_view pipeline_name,

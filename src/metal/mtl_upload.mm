@@ -2,22 +2,14 @@
  * @file mtl_upload.mm
  * @brief Asynchronous GPU upload and file/decode streaming.
  *
- * Uploads stage through a pooled shared-memory buffer and are batched: each
- * call records a blit into a shared command buffer and returns an UploadTicket,
- * but nothing is committed until the batch is flushed (once per frame by the
- * device, or on an explicit flush()/wait()).
+ * Uploads stage through pooled shared memory and are batched: each call records
+ * a blit and returns a ticket, but nothing is committed until the batch flushes
+ * (once per frame, or on flush()/wait()). The batch shares the frame's queue
+ * and is committed before it, so in-order execution replaces the transfer-queue
+ * handoff, acquire barriers and semaphores the Vulkan uploader needs.
  *
- * Metal makes the synchronisation half of this far smaller than the Vulkan
- * equivalent. The batch is committed on the same MTLCommandQueue as the frame
- * and always before it, and a queue runs command buffers in submission order,
- * so an upload recorded during frame N is complete before frame N's rendering
- * starts. There is no transfer queue to hand ownership back from, no acquire
- * barriers to inject, and no semaphore to make the frame wait on.
- *
- * File loading is offloaded to one worker thread that does only the slow,
- * thread-safe part - reading bytes and decoding images - and never touches the
- * device. It talks to the render thread through lock-free queues and an atomic
- * status per request.
+ * One worker thread does the slow, device-free half - reading and decoding -
+ * and talks to the render thread through lock-free queues and an atomic status.
  */
 
 #include "rendering/rhi/metal/mtl_internal.h"

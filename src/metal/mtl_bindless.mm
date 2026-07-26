@@ -2,22 +2,15 @@
  * @file mtl_bindless.mm
  * @brief The single bindless argument buffer.
  *
- * Slang lowers the shader's ParameterBlock<BindlessTables> to one Metal
- * argument buffer holding three back-to-back arrays: textures, then
- * rw_textures, then samplers. On Tier 2 hardware every entry is one 8-byte
- * MTLResourceID, so the buffer is written straight from the CPU with no
- * MTLArgumentEncoder - the layout is fully determined by the array bounds
- * declared in shaders/bindless.slang.
+ * Slang lowers ParameterBlock<BindlessTables> to one argument buffer holding
+ * textures, rw_textures and samplers back to back, 8 bytes per entry, so the
+ * CPU writes it directly - the layout comes from the array bounds in
+ * shaders/bindless.slang.
  *
- * The two things Metal needs that Vulkan does not:
- *
- *  - Tier 2 argument buffers. Tier 1 allows neither arrays of resources nor
- *    dynamic indexing into them, which is the entire binding model. There is
- *    no fallback; init() refuses the device.
- *
- *  - Residency. An argument buffer is just memory: naming a texture in it does
- *    not make the texture reachable. Every encoder must be told, which is what
- *    the `resident` list and bind_bindless() are for.
+ * Two things Vulkan does not need: Tier 2 argument buffers (Tier 1 has neither
+ * resource arrays nor dynamic indexing, so init() refuses the device), and
+ * residency - naming a resource here does not make it reachable, which is what
+ * the heaps and `resident` list are for.
  */
 
 #include "rendering/rhi/metal/mtl_internal.h"
@@ -39,9 +32,8 @@ void write_slot(const MetalDeviceState &state, const u64 offset, const u32 slot,
               sizeof(id));
 }
 
-/// New heaps are this big unless a single resource needs more. Large enough
-/// that a 2D game's whole atlas set lands in one or two, small enough that the
-/// first allocation does not reserve an absurd amount of address space.
+/// New heap size unless one resource needs more: big enough for a 2D game's
+/// atlas set, small enough not to reserve absurd address space up front.
 constexpr u64 DEFAULT_HEAP_BYTES = 64ull << 20;
 
 /// Adds a heap big enough for @p required bytes and returns it, or nil.
@@ -50,15 +42,9 @@ id<MTLHeap> grow_heaps(MetalDeviceState &state, const u64 required) noexcept {
   info.size = nx::max<u64>(DEFAULT_HEAP_BYTES, required);
   info.storageMode = MTLStorageModePrivate;
   info.type = MTLHeapTypeAutomatic;
-  // Untracked: Metal inserts no dependency between an encoder that writes a
-  // resource in this heap and one that later reads it. The backend places that
-  // synchronisation itself - see pass_fence and upload_event in
-  // MetalDeviceState - which is what lets the driver stop tracking every
-  // bindless resource individually at each encoder boundary.
-  //
-  // Only heap resources are untracked. Everything else keeps Metal's automatic
-  // tracking, so the hand-placed synchronisation covers exactly the bindless
-  // set and nothing more.
+  // Untracked: Metal inserts no cross-encoder dependency for these, so the
+  // backend places it (pass_fence, upload_event) and the driver stops tracking
+  // every bindless resource per encoder. Only heap resources are untracked.
   info.hazardTrackingMode = MTLHazardTrackingModeUntracked;
 
   id<MTLHeap> heap = [state.device newHeapWithDescriptor:info];
@@ -324,16 +310,15 @@ void bind_bindless(MetalDeviceState &state,
                       offset:0
                      atIndex:BINDLESS_BUFFER_INDEX];
 
-  // One call per heap, whatever it holds - that is the whole reason bindless
-  // resources are sub-allocated rather than allocated individually.
+  // One call per heap whatever it holds - the reason for sub-allocating.
   if (!state.bindless.heaps.empty()) {
     [encoder useHeaps:state.bindless.heaps.data()
                 count:state.bindless.heaps.size()
                stages:MTLRenderStageVertex | MTLRenderStageFragment];
   }
 
-  // Whatever could not live in a heap still has to be named. This list stays
-  // short by construction: it only takes shared or memoryless resources.
+  // Whatever could not live in a heap. Short by construction: shared and
+  // memoryless resources only.
   if (!state.bindless.resident.empty()) {
     [encoder useResources:state.bindless.resident.data()
                     count:state.bindless.resident.size()

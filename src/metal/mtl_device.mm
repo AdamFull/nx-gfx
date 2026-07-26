@@ -12,9 +12,8 @@
 namespace nxe::rhi {
 namespace {
 
-/// Metal's validation layer is opt-in through the environment and is read when
-/// the device is created, so setting it here still takes effect - as long as no
-/// MTLDevice has been made yet, which init() guarantees.
+/// Metal reads these when the device is created, so setting them here works as
+/// long as no MTLDevice exists yet - which init() guarantees.
 void enable_metal_validation() noexcept {
   if (::getenv("METAL_DEVICE_WRAPPER_TYPE") != nullptr)
     return; // Respect an explicit setting (including a deliberate 0).
@@ -22,9 +21,8 @@ void enable_metal_validation() noexcept {
   ::setenv("METAL_ERROR_MODE", "3", 0); // assert on API misuse
 }
 
-/// MTLScissorRect is a bare struct with no Make helper, and its fields are
-/// unsigned: a negative offset would wrap to an enormous rectangle and trip
-/// Metal's validation, so clamp instead.
+/// MTLScissorRect has no Make helper and unsigned fields, so a negative offset
+/// would wrap to an enormous rectangle. Clamp instead.
 MTLScissorRect to_mtl_scissor(const Rect2D &rect) noexcept {
   return MTLScissorRect{
       nx::cast<NSUInteger>(nx::max<i32>(0, rect.offset.x)),
@@ -34,21 +32,41 @@ MTLScissorRect to_mtl_scissor(const Rect2D &rect) noexcept {
   };
 }
 
-/// Straight through, with no Y flip - which is the whole point.
-///
-/// The RHI standardises on the Metal/D3D convention, and the Vulkan backend
-/// reaches it by giving vkCmdSetViewport a negative height (see
-/// VulkanCommandContext::set_viewport). Metal is already there natively: its
-/// NDC-to-framebuffer transform inverts Y exactly as a negative-height Vulkan
-/// viewport does, so clip-space CCW comes out framebuffer-CW on both.
-///
-/// Flipping here as well would invert Metal relative to Vulkan, which is
-/// invisible in a single pass to the backbuffer and shows up the moment
-/// anything renders offscreen and samples it back.
+/// No Y flip on purpose. The RHI uses the Metal/D3D convention, which Vulkan
+/// reaches via a negative-height viewport and Metal has natively. Flipping here
+/// too would mirror Metal against Vulkan - invisible when rendering straight to
+/// the backbuffer, obvious the moment a pass samples an offscreen target.
 MTLViewport to_mtl_viewport(const f32 x, const f32 y, const f32 width,
                             const f32 height, const f32 min_depth,
                             const f32 max_depth) noexcept {
   return MTLViewport{x, y, width, height, min_depth, max_depth};
+}
+
+/// Releases bindless heaps that no longer hold anything.
+void sweep_empty_heaps(MetalDeviceState &state) noexcept {
+  BindlessHeap &bindless = state.bindless;
+  if (bindless.heaps.empty())
+    return;
+
+  usize kept = 0;
+  for (usize i = 0; i < bindless.heaps.size(); ++i) {
+    id<MTLHeap> heap = bindless.heaps[i];
+    // usedSize counts live sub-allocations; zero means every texture and
+    // buffer that lived here has been released.
+    if (heap != nil && [heap usedSize] == 0) {
+      const u64 size = [heap size];
+      bindless.heap_bytes -= nx::min<u64>(size, bindless.heap_bytes);
+      nx::logi(log_rhi, "bindless: heap released ({} MiB, {} MiB total)",
+               size >> 20, bindless.heap_bytes >> 20);
+      continue; // dropped: ARC frees it once the vector shrinks
+    }
+    if (kept != i)
+      bindless.heaps[kept] = bindless.heaps[i];
+    ++kept;
+  }
+
+  while (bindless.heaps.size() > kept)
+    bindless.heaps.pop_back();
 }
 
 u32 max_texture_dimension(id<MTLDevice> device) noexcept {
@@ -61,10 +79,9 @@ u32 max_texture_dimension(id<MTLDevice> device) noexcept {
 
 } // namespace
 
-/// Which frames the GPU has finished is derived from the frame semaphore rather
-/// than tracked separately: it admits at most frames_in_flight outstanding
-/// frames, so by the time frame T + frames_in_flight is being recorded, frame T
-/// has certainly completed.
+/// Completion is derived from the frame semaphore: it admits at most
+/// frames_in_flight outstanding frames, so frame T is done by the time
+/// T + frames_in_flight is recorded.
 void retire(MetalDeviceState &state,
             const MetalDeviceState::PendingDelete &pending) {
   MetalDeviceState::PendingDelete entry = pending;
@@ -91,9 +108,8 @@ void collect_garbage(MetalDeviceState &state, const u64 completed_frame) {
         write_texture_descriptor(state, texture->bindless_slot, nil);
       for (const u32 slot : texture->uav_slots)
         free_rw_slot(state, slot);
-      // Heap-backed resources were never in the list; their memory returns to
-      // the heap when ARC releases the last reference, which the erase below
-      // does.
+      // Heap-backed resources were never listed; the erase below returns their
+      // memory to the heap.
       if (!texture->heap_backed)
         forget_resident(state, texture->texture);
       state.textures.erase(pending.texture);
@@ -118,6 +134,11 @@ void collect_garbage(MetalDeviceState &state, const u64 completed_frame) {
 
   while (state.pending_deletes.size() > kept)
     state.pending_deletes.pop_back();
+
+  // Give emptied heaps back instead of holding 64 MiB each forever. Safe even
+  // while an older frame still names one in useHeaps:, because command buffers
+  // retain their references until they complete.
+  sweep_empty_heaps(state);
 }
 
 MetalDevice::~MetalDevice() { shutdown(); }
@@ -359,11 +380,10 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     slot.cmd.label = @"nx2d frame";
     slot.in_use = true;
 
-    // A fence carries nothing across command buffers, so this one starts
-    // un-updated; the uploader's writes are ordered by the event instead.
+    // Fences carry nothing across command buffers; the uploader's writes are
+    // ordered by the event instead. Only the first buffer needs the wait - the
+    // rest are committed after it on the same in-order queue.
     begin_command_buffer(slot);
-    // Only the first buffer needs the wait: the rest are committed after it on
-    // the same queue, which runs them in order.
     if (s->upload.submitted > 0) {
       [slot.cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
     }
@@ -420,14 +440,10 @@ bool MetalDevice::end_frame() {
       }
     }
 
-    // Commit in slot order. A queue executes command buffers in commit order,
-    // which is what makes recording group N on another thread safe: the
-    // ordering the graph asked for is re-established here regardless of which
-    // thread finished encoding first.
-    //
-    // Present and the frame-completion signal go on the *last* buffer, not the
-    // first: hanging them off slot 0 would present before the later groups had
-    // run.
+    // Commit in slot order: the queue executes in commit order, which restores
+    // the graph's ordering however the worker threads finished. Present and the
+    // completion signal go on the *last* buffer - on slot 0 they would present
+    // before the later groups ran.
     const usize last = s->used_contexts - 1;
     for (usize i = 0; i < s->used_contexts; ++i) {
       MetalContextSlot &slot = s->contexts[i];
@@ -1071,8 +1087,8 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     }
     ctx_slot().encoder.label = to_ns_string(desc.name);
 
-    // Anything this pass samples may have been written by an earlier encoder
-    // in this command buffer, and heap resources carry no automatic tracking.
+    // Heap resources carry no automatic tracking, so order against any earlier
+    // encoder in this command buffer.
     encoder_wait_fence(*m_state, ctx_slot(), ctx_slot().encoder);
 
     // The bindless argument buffer is bound once per encoder and never

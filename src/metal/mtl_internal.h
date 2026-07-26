@@ -4,14 +4,9 @@
  * @file mtl_internal.h
  * @brief The backend's Objective-C state, shared between the Metal .mm files.
  *
- * Objective-C++ only: never include this from a .cpp. Everything the public
- * mtl_device.h hides behind an opaque MetalDeviceState pointer is spelled out
- * here.
- *
- * ARC owns every object in these structs. That is the reason the state is
- * heap-allocated with new/delete rather than being a member of MetalDevice:
- * MetalDevice lives in a plain C++ header, where a strong `id` member could not
- * be declared, let alone destroyed correctly.
+ * Objective-C++ only. ARC owns every `id` here, which is why the state is
+ * new/deleted rather than living in MetalDevice - a plain C++ header cannot
+ * declare a strong `id` member.
  */
 
 #if !defined(__OBJC__)
@@ -60,10 +55,9 @@ extern const nx::log::Category log_rhi;
 struct MetalTexture {
   id<MTLTexture> texture = nil;
   /// One view per mip for the storage-image table; empty unless Storage.
-  /// nx::vector rather than small_vector: ARC refuses to work through the
-  /// latter's inline std::byte storage, which it cannot cast to a __strong id*.
-  /// Every container holding an Objective-C object here is nx::vector for that
-  /// reason.
+  /// nx::vector, not small_vector: ARC cannot cast the latter's inline
+  /// std::byte storage to a __strong id*. Same for every container of `id`
+  /// here.
   nx::vector<id<MTLTexture>> uavs;
   nx::small_vector<u32, 12> uav_slots;
   Format format = Format::Unknown;
@@ -114,10 +108,8 @@ struct MetalShader {
   ShaderReflection reflection;
 };
 
-/// Metal splits what Vulkan calls a pipeline across three places: the render
-/// pipeline state, a separate depth/stencil state object, and encoder calls
-/// for cull mode and winding. All of it is captured here so bind_pipeline can
-/// apply the lot in one go.
+/// Metal splits a Vulkan pipeline three ways - PSO, depth/stencil state, and
+/// encoder calls for cull and winding - so bind_pipeline applies all of it.
 struct MetalPipeline {
   id<MTLRenderPipelineState> render = nil;
   id<MTLComputePipelineState> compute = nil;
@@ -129,10 +121,9 @@ struct MetalPipeline {
   bool is_compute = false;
 };
 
-/// The single bindless argument buffer: texture[], rwTexture[] and sampler[]
-/// back to back, each entry one 8-byte MTLResourceID. Texture and sampler
-/// slots are handle indices, so they need no allocation; rwTexture slots come
-/// from a free list because one texture owns a slot per mip.
+/// The bindless argument buffer: texture[], rwTexture[] and sampler[] back to
+/// back, 8 bytes per entry. Texture and sampler slots are handle indices;
+/// rwTexture slots come from a free list, since a texture owns one per mip.
 struct BindlessHeap {
   id<MTLBuffer> argument_buffer = nil;
   /// Byte offsets of each table within the buffer, in the declaration order of
@@ -146,11 +137,9 @@ struct BindlessHeap {
   nx::small_vector<u32, 64> free_rw_slots;
   u32 rw_high_water = 0;
 
-  // Residency. An argument buffer is just memory: naming a resource in it does
-  // not make the resource reachable, so every encoder must be told what it may
-  // touch. Doing that per resource is O(live resources) per pass, so anything
-  // that can be is sub-allocated from a heap instead - one useHeaps: call
-  // covers everything inside, however many resources that is.
+  // Residency: naming a resource in an argument buffer does not make it
+  // reachable, so every encoder must be told. Per-resource is O(live) per pass,
+  // hence heaps - one useHeaps: covers everything inside.
 
   /// Heaps bindless-visible resources are sub-allocated from.
   nx::vector<id<MTLHeap>> heaps;
@@ -160,17 +149,9 @@ struct BindlessHeap {
   u64 heap_bytes = 0;
 };
 
-/**
- * @brief Everything one recording thread owns while a frame is open.
- *
- * There is one of these per CommandContext, not one per device: the render
- * graph may hand several contexts to several worker threads at once, so an
- * encoder, its bound pipeline state and its fence bookkeeping all have to be
- * per-context or the threads would trample each other.
- *
- * ARC keeps the Objective-C members alive across the begin_frame / end_frame
- * boundary, which no @autoreleasepool inside a single call could span.
- */
+/// Everything one recording thread owns while a frame is open. One per
+/// CommandContext, not per device: the graph hands contexts to several worker
+/// threads at once, so encoder and bound state must not be shared.
 struct MetalContextSlot {
   id<MTLCommandBuffer> cmd = nil;
   id<MTLRenderCommandEncoder> encoder = nil;
@@ -200,27 +181,18 @@ struct MetalContextSlot {
   bool in_use = false;
 };
 
-/**
- * @brief Staging and streaming state, owned by the device.
- *
- * Simpler than the Vulkan uploader in one important way: uploads are recorded
- * into a command buffer on the *same* MTLCommandQueue as the frame and
- * committed before it. A Metal queue runs its command buffers in submission
- * order, so a texture uploaded before a frame is guaranteed ready for that
- * frame with no semaphores, no queue-ownership transfer and no acquire
- * barriers - the three things that make vk_upload.cpp what it is.
- */
+/// Staging and streaming state, owned by the device. Much smaller than the
+/// Vulkan uploader because uploads share the frame's queue and are committed
+/// before it: in-order execution replaces the semaphores, queue-ownership
+/// transfers and acquire barriers vk_upload.cpp needs.
 struct MetalUploadState {
-  /// Staging buffers are pooled by size rather than sub-allocated from a ring:
-  /// with no ring there is no wraparound to reason about, and a returned
-  /// buffer is reused verbatim by the next upload that fits in it.
+  /// Pooled by size rather than sub-allocated from a ring: no wraparound to
+  /// reason about, and a returned buffer is reused verbatim.
   struct Staging {
     id<MTLBuffer> buffer = nil;
     u64 capacity = 0;
-    /// Readback staging is allocated with the default CPU cache mode so the
-    /// CPU can actually read it; upload staging is write-combined, where a
-    /// read costs an uncached fetch per byte. The pools are therefore kept
-    /// apart - an upload must never be handed a readback buffer or vice versa.
+    /// Readback uses the default cache mode; upload staging is write-combined,
+    /// where a CPU read costs an uncached fetch per byte. Hence separate pools.
     bool host_read = false;
   };
 
@@ -250,9 +222,8 @@ struct MetalUploadState {
   std::atomic<u64> completed{0};
   u64 bytes_staged = 0;
 
-  // Async loading. One worker does the slow, thread-safe half - reading bytes
-  // and decoding them - and never touches the device; pump() on the render
-  // thread turns finished decodes into textures.
+  // Async loading: one worker reads and decodes, never touching the device;
+  // pump() on the render thread turns finished decodes into textures.
 
   enum class Source : u8 { Path, Memory };
 
@@ -263,9 +234,8 @@ struct MetalUploadState {
     TextureUsageFlags usage = TextureUsage::Sampled | TextureUsage::CopyDst;
   };
 
-  /// Slot in the request table. `status` is the only field both threads touch
-  /// while a job is live, and it is the handshake: the worker publishes
-  /// Decoding -> Ready-to-create, the render thread takes it from there.
+  /// `status` is the only field both threads touch while a job is live, and it
+  /// is the handshake between them.
   struct LoadSlot {
     std::atomic<LoadStatus> status{LoadStatus::None};
     u32 generation = 0;
@@ -322,11 +292,9 @@ struct MetalDeviceState {
   u32 frames_in_flight = 2;
   u64 frames_submitted = 0;
 
-  // Metal vends command buffers, drawables and encoders autoreleased, and this
-  // process has no run loop to drain the thread's outermost pool - the frame
-  // loop is our own while(). Every .mm entry point therefore wraps its body in
-  // @autoreleasepool; assigning to these strong members is what keeps the
-  // objects alive past the pool, across the begin_frame / end_frame boundary.
+  // Metal vends these autoreleased and this process has no run loop to drain
+  // the outer pool, so every .mm entry point wraps its body in
+  // @autoreleasepool; the strong members are what survive the drain.
   bool frame_active = false;
 
   /// Slot 0 is the context begin_frame hands back; open_contexts() lends out
@@ -361,10 +329,9 @@ struct MetalDeviceState {
   nx::slot_map<MetalShader, ShaderHandle> shaders;
   nx::slot_map<MetalPipeline, PipelineHandle> pipelines;
 
-  /// A resource freed during frame N stays alive - handle, bindless slot and
-  /// all - until the GPU has passed N. Deferring the slot_map erase, not just
-  /// the Objective-C release, is what stops a recycled handle index from
-  /// stomping a bindless slot the GPU is still reading through.
+  /// A resource freed during frame N stays alive - handle and bindless slot
+  /// included - until the GPU passes N, so a recycled index cannot stomp a slot
+  /// still being read.
   struct PendingDelete {
     u64 frame = 0;
     TextureHandle texture;
@@ -425,14 +392,12 @@ void bind_bindless_compute(MetalDeviceState &state,
 void create_pipeline_archive(MetalDeviceState &state, nx::string_view path);
 void save_pipeline_archive(MetalDeviceState &state) noexcept;
 
-// Hand-placed synchronisation for untracked heap resources (mtl_bindless.mm).
-//
-// Placement is at pass granularity: any encoder that could have written a heap
-// resource updates the fence, and any encoder that could read one waits on it.
-// That is coarser than necessary - it orders passes that share nothing - but
-// the RHI has no dependency information to be more precise with until the
-// render graph exists. It is correct, and it is where the precise version will
-// slot in.
+// Pass-granularity synchronisation for untracked heap resources
+// (mtl_bindless.mm). Not per-resource on purpose: a fence only orders encoders
+// within one command buffer, and open_contexts() gives each pass group its own
+// buffer, so in the parallel path there is never an earlier writer to wait on
+// (measured: 3384 begin-pass calls, 0 waits). Overlap needs a second queue, not
+// finer fences. These still carry the serial fallback.
 
 /// Waits on the fence if an earlier encoder in this command buffer updated it.
 void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,

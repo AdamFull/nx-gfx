@@ -2,9 +2,8 @@
  * @file mtl_swapchain.mm
  * @brief CAMetalLayer setup and presentation.
  *
- * Metal has no swapchain object. A CAMetalLayer is the surface, and it vends
- * one drawable at a time; "recreating the swapchain" is nothing more than
- * changing the layer's drawableSize.
+ * Metal has no swapchain object: a CAMetalLayer is the surface, and recreating
+ * it is just a change of drawableSize.
  */
 
 #include "rendering/rhi/metal/mtl_internal.h"
@@ -18,9 +17,8 @@
 namespace nxe::rhi {
 namespace {
 
-/// AppKit is main-thread-only, and create_swapchain is called from whichever
-/// thread drives the frame loop. On the desktop backend that is already the
-/// main thread (GLFW requires it), so this is normally a straight call.
+/// AppKit is main-thread-only. The desktop frame loop already runs there
+/// (GLFW requires it), so this is normally a straight call.
 void on_main_thread(void (^block)(void)) {
   if ([NSThread isMainThread]) {
     block();
@@ -97,10 +95,8 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
         // physical pixels (IWindow reports the framebuffer size).
         layer.contentsScale = window.backingScaleFactor;
 
-        // Layer-hosting, not layer-backed: we own the layer and AppKit must
-        // not replace it. Note that this leaves layer.delegate nil, so the
-        // view has to be remembered explicitly for the detach in
-        // destroy_swapchain.
+        // Layer-hosting, not layer-backed: we own the layer. This leaves
+        // layer.delegate nil, so remember the view for the detach later.
         view.wantsLayer = YES;
         view.layer = layer;
         layer_host = view;
@@ -141,13 +137,11 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
 
   @autoreleasepool {
     layer.drawableSize = CGSizeMake(desc.width, desc.height);
-    // One more drawable than frames in flight would only add latency; one
-    // fewer would stall every frame on the compositor.
+    // More would add latency; fewer would stall on the compositor.
     layer.maximumDrawableCount = nx::clamp<u32>(frames_in_flight, 2, 3);
 #if TARGET_OS_OSX
-    // Immediate is the only mode that means anything different here: Fifo and
-    // Mailbox both wait for the display, and CAMetalLayer has no queue-depth
-    // knob to tell them apart.
+    // Only Immediate differs: Fifo and Mailbox both wait for the display and
+    // CAMetalLayer has no queue-depth knob to tell them apart.
     layer.displaySyncEnabled = desc.present_mode != PresentMode::Immediate;
 #endif
   }
@@ -217,9 +211,8 @@ void MetalDevice::destroy_swapchain() noexcept {
   wait_idle();
 
   @autoreleasepool {
-    // Any frame caught mid-record is abandoned wholesale: wait_idle() above
-    // means nothing is still executing, and the drawable this frame targeted
-    // is about to stop existing.
+    // Abandon any frame caught mid-record: wait_idle() means nothing is still
+    // executing, and its drawable is about to stop existing.
     for (MetalContextSlot &slot : s->contexts) {
       if (slot.encoder != nil) {
         [slot.encoder endEncoding];

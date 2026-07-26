@@ -4,12 +4,9 @@
  * @file mtl_device.h
  * @brief Metal device, swapchain and command context.
  *
- * Unlike the Vulkan backend, whose header can name VkImage and friends because
- * they are plain C handles, every Metal type is an Objective-C object. This
- * header is included from ordinary .cpp translation units (device.h pulls it
- * in for the Device alias), so it must stay pure C++: all Objective-C state
- * lives behind MetalDeviceState, which is only defined in mtl_internal.h and
- * only visible to the .mm files.
+ * Pure C++ by necessity: device.h pulls this into ordinary .cpp files, and
+ * every Metal type is an Objective-C object. All of that lives behind
+ * MetalDeviceState, defined only in mtl_internal.h.
  */
 
 #include "foundation/strings/utf8_string.h"
@@ -45,9 +42,8 @@ struct DeviceDesc {
   nx::string_view pipeline_cache_path;
 };
 
-/// Handle to an in-flight readback. `data` is valid once is_complete(ticket)
-/// (or after wait(ticket)) and stays valid until a later read_* call reuses the
-/// same staging - copy it out promptly.
+/// In-flight readback. `data` is valid once the ticket completes, and only
+/// until a later read_* reuses the staging - copy it out promptly.
 struct ReadbackResult {
   UploadTicket ticket;
   const u8 *data = nullptr;
@@ -70,14 +66,9 @@ struct UploaderStats {
   u64 loads_failed = 0;
 };
 
-/**
- * @brief Asynchronous GPU upload, readback and file/decode streaming.
- *
- * Uploads stage through pooled shared-memory buffers and are batched: each call
- * records a blit and returns an UploadTicket, but nothing is committed until
- * the batch is flushed - once per frame by the device, or on an explicit
- * flush() / wait().
- */
+/// Asynchronous GPU upload, readback and file/decode streaming. Uploads are
+/// batched: a call records a blit and returns a ticket, but nothing is
+/// committed until the batch flushes (once per frame, or on flush()/wait()).
 class MetalUploader {
 public:
   MetalUploader() = default;
@@ -109,10 +100,8 @@ public:
   [[nodiscard]] TextureHandle loaded_texture(LoadRequest req) const noexcept;
   void release(LoadRequest req) noexcept;
 
-  // Readbacks (render thread)
-  // The source must not be in concurrent use on the GPU - read after
-  // wait_idle(), or from a resource nothing else touches this frame. A readback
-  // flushes any open upload batch and submits on its own.
+  // Readbacks (render thread). The source must not be in concurrent GPU use.
+  // A readback flushes any open upload batch and submits on its own.
 
   ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
   ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
@@ -123,12 +112,9 @@ public:
 
   [[nodiscard]] UploaderStats stats() const noexcept;
 
-  /// Turns finished async decodes into GPU textures and advances them to
-  /// Ready, then submits the batch their uploads joined.
-  ///
-  /// The device calls this once per frame, so a normal render loop never needs
-  /// to. Anything driving the uploader without frames - a loading screen, a
-  /// tool, a test - does: nothing else moves a load off Uploading.
+  /// Turns finished decodes into textures and submits their uploads. The
+  /// device calls it once per frame; anything driving the uploader without
+  /// frames must call it, or loads never leave Uploading.
   void pump();
 
 private:
@@ -137,13 +123,8 @@ private:
   MetalDeviceState *m_state = nullptr;
 };
 
-/**
- * @brief Records one frame's work into the frame's MTLCommandBuffer.
- *
- * Metal has no standalone command buffer that outlives an encoder, so a context
- * owns at most one encoder at a time: begin_render_pass opens a render command
- * encoder and end_render_pass closes it.
- */
+/// Records one frame's work. A context owns at most one encoder at a time:
+/// begin_render_pass opens it, end_render_pass closes it.
 class MetalCommandContext {
 public:
   MetalCommandContext() = default;
@@ -177,9 +158,8 @@ public:
                     u32 first_instance = 0);
   void dispatch(u32 groups_x, u32 groups_y = 1, u32 groups_z = 1);
 
-  /// Metal tracks hazards between encoders for itself, so these only keep the
-  /// RHI's own view of each texture's state up to date - which is what
-  /// begin_render_pass and the swapchain read to decide load/store actions.
+  /// Only bookkeeping: Metal tracks non-heap hazards itself, and heap ones are
+  /// handled by the pass fence. The state drives load/store actions.
   void barrier(const TextureBarrier *textures, u32 texture_count,
                const BufferBarrier *buffers = nullptr, u32 buffer_count = 0,
                StateTracking tracking = StateTracking::Update);
@@ -196,9 +176,8 @@ private:
   [[nodiscard]] struct MetalContextSlot &ctx_slot() const noexcept;
 
   MetalDeviceState *m_state = nullptr;
-  /// Index into the device's per-context recording slots. Several contexts may
-  /// record on different threads at once, so every piece of mutable recording
-  /// state lives in the slot rather than on the device.
+  /// Index into the device's recording slots. Contexts record on different
+  /// threads, so mutable state lives per slot, not on the device.
   u32 m_slot = 0;
   bool m_in_render_pass = false;
 };
