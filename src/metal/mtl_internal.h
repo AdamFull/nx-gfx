@@ -104,6 +104,11 @@ struct MetalSampler {
   u32 bindless_slot = BINDLESS_INVALID_INDEX;
 };
 
+struct MetalHeap {
+  id<MTLHeap> heap = nil;
+  u64 size = 0;
+};
+
 struct MetalShader {
   id<MTLLibrary> library = nil;
 };
@@ -322,6 +327,7 @@ struct MetalDeviceState {
   nx::slot_map<MetalTexture, TextureHandle> textures;
   nx::slot_map<MetalBuffer, BufferHandle> buffers;
   nx::slot_map<MetalSampler, SamplerHandle> samplers;
+  nx::slot_map<MetalHeap, HeapHandle> heaps;
   nx::slot_map<MetalShader, ShaderHandle> shaders;
   nx::slot_map<MetalPipeline, PipelineHandle> pipelines;
 

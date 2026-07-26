@@ -230,6 +230,15 @@ public:
   [[nodiscard]] BufferHandle create_buffer(const BufferDesc &desc);
   void destroy_buffer(BufferHandle handle) noexcept;
 
+  // Memory aliasing. The render graph packs transients with disjoint lifetimes
+  // into one heap; see the Vulkan header for the contract, which is identical.
+  [[nodiscard]] MemoryRequirements
+  texture_requirements(const TextureDesc &desc) const;
+  [[nodiscard]] HeapHandle create_heap(const HeapDesc &desc);
+  void destroy_heap(HeapHandle handle) noexcept;
+  [[nodiscard]] TextureHandle
+  create_texture_in_heap(const TextureDesc &desc, HeapHandle heap, u64 offset);
+
   [[nodiscard]] SamplerHandle create_sampler(const SamplerDesc &desc);
   void destroy_sampler(SamplerHandle handle) noexcept;
 

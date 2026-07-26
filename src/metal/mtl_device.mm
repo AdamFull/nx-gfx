@@ -429,6 +429,38 @@ TextureHandle MetalDevice::current_backbuffer() const noexcept {
 
 // Resources
 
+namespace {
+
+/// The MTLTextureDescriptor a TextureDesc maps to. Shared by the owning and the
+/// heap-placed paths, so the two cannot drift - which would make the size and
+/// alignment measured for one wrong for the other. Autoreleased: call inside an
+/// @autoreleasepool.
+MTLTextureDescriptor *make_texture_descriptor(const TextureDesc &desc) {
+  const bool is_3d = desc.dimension == TextureDimension::Tex3D;
+  const u32 layers = is_3d ? 1 : nx::max<u32>(1, desc.depth_or_layers);
+  const u32 sample_count = nx::max<u32>(1, desc.sample_count);
+
+  MTLTextureDescriptor *info = [[MTLTextureDescriptor alloc] init];
+  info.textureType = to_mtl_texture_type(desc.dimension, layers, sample_count);
+  info.pixelFormat = to_mtl_format(desc.format);
+  info.width = desc.width;
+  info.height = desc.height;
+  info.depth = is_3d ? nx::max<u32>(1, desc.depth_or_layers) : 1;
+  info.mipmapLevelCount = nx::max<u32>(1, desc.mip_levels);
+  // A cube's six faces are its slices, not its array length; Metal counts
+  // arrayLength in whole cubes.
+  info.arrayLength = desc.dimension == TextureDimension::TexCube
+                         ? nx::max<u32>(1, layers / 6)
+                         : layers;
+  info.sampleCount = sample_count;
+  info.usage = to_mtl_texture_usage(desc.usage);
+  info.storageMode =
+      to_mtl_storage_mode(desc.memory, desc.usage.has(TextureUsage::Transient));
+  return info;
+}
+
+} // namespace
+
 TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
   if (m_state == nullptr)
     return {};
@@ -452,23 +484,7 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
 
   MetalTexture texture;
   @autoreleasepool {
-    MTLTextureDescriptor *info = [[MTLTextureDescriptor alloc] init];
-    info.textureType =
-        to_mtl_texture_type(desc.dimension, layers, sample_count);
-    info.pixelFormat = pixel_format;
-    info.width = desc.width;
-    info.height = desc.height;
-    info.depth = is_3d ? nx::max<u32>(1, desc.depth_or_layers) : 1;
-    info.mipmapLevelCount = nx::max<u32>(1, desc.mip_levels);
-    // A cube's six faces are its slices, not its array length; Metal counts
-    // arrayLength in whole cubes.
-    info.arrayLength = desc.dimension == TextureDimension::TexCube
-                           ? nx::max<u32>(1, layers / 6)
-                           : layers;
-    info.sampleCount = sample_count;
-    info.usage = to_mtl_texture_usage(desc.usage);
-    info.storageMode =
-        to_mtl_storage_mode(desc.memory, desc.usage.has(TextureUsage::Transient));
+    MTLTextureDescriptor *info = make_texture_descriptor(desc);
 
     // Anything a shader reaches through the bindless tables comes from a heap
     // where possible, so that one useHeaps: per encoder covers it instead of
@@ -541,6 +557,141 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
                               desc.usage.has(TextureUsage::Storage)))
     track_resident(*m_state, stored.texture);
 
+  return handle;
+}
+
+// Memory aliasing
+//
+// MTLHeap with placement type is Metal's equivalent of a hand-suballocated
+// VkDeviceMemory: the caller picks the offsets, and two textures placed on
+// overlapping bytes alias. Metal has no memory-type constraint, so
+// memory_type_bits stays all-ones.
+
+MemoryRequirements
+MetalDevice::texture_requirements(const TextureDesc &desc) const {
+  if (m_state == nullptr)
+    return {};
+
+  MemoryRequirements out;
+  @autoreleasepool {
+    MTLTextureDescriptor *info = make_texture_descriptor(desc);
+    const MTLSizeAndAlign sa =
+        [m_state->device heapTextureSizeAndAlignWithDescriptor:info];
+    out.size = sa.size;
+    out.alignment = nx::max<u64>(1, sa.align);
+  }
+  return out;
+}
+
+HeapHandle MetalDevice::create_heap(const HeapDesc &desc) {
+  if (m_state == nullptr || desc.size == 0) {
+    nx::loge(log_rhi, "create_heap('{}'): zero size", desc.name);
+    return {};
+  }
+
+  MetalHeap heap;
+  @autoreleasepool {
+    MTLHeapDescriptor *info = [[MTLHeapDescriptor alloc] init];
+    info.size = desc.size;
+    // Placement, not automatic: automatic heaps sub-allocate themselves and
+    // would ignore the offsets the graph computed.
+    info.type = MTLHeapTypePlacement;
+    info.storageMode = desc.memory == MemoryUsage::DeviceLocal
+                           ? MTLStorageModePrivate
+                           : MTLStorageModeShared;
+    heap.heap = [m_state->device newHeapWithDescriptor:info];
+    if (heap.heap == nil) {
+      nx::loge(log_rhi, "create_heap('{}'): {} KiB allocation failed", desc.name,
+               desc.size / 1024);
+      return {};
+    }
+    heap.heap.label = to_ns_string(desc.name);
+  }
+  heap.size = desc.size;
+  return m_state->heaps.insert(std::move(heap));
+}
+
+void MetalDevice::destroy_heap(const HeapHandle handle) noexcept {
+  if (m_state == nullptr || !handle.valid())
+    return;
+  if (MetalHeap *heap = m_state->heaps.try_get(handle)) {
+    heap->heap = nil; // ARC releases once every placed texture has gone
+    m_state->heaps.erase(handle);
+  }
+}
+
+TextureHandle MetalDevice::create_texture_in_heap(const TextureDesc &desc,
+                                                  const HeapHandle heap_handle,
+                                                  const u64 offset) {
+  if (m_state == nullptr)
+    return {};
+  MetalHeap *heap = m_state->heaps.try_get(heap_handle);
+  if (heap == nullptr || heap->heap == nil ||
+      desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
+    nx::loge(log_rhi, "create_texture_in_heap('{}'): invalid heap or extent",
+             desc.name);
+    return {};
+  }
+
+  const bool is_3d = desc.dimension == TextureDimension::Tex3D;
+  const u32 layers = is_3d ? 1 : nx::max<u32>(1, desc.depth_or_layers);
+  const u32 sample_count = nx::max<u32>(1, desc.sample_count);
+  const MTLPixelFormat pixel_format = to_mtl_format(desc.format);
+
+  MetalTexture texture;
+  @autoreleasepool {
+    MTLTextureDescriptor *info = make_texture_descriptor(desc);
+    texture.texture = [heap->heap newTextureWithDescriptor:info offset:offset];
+    if (texture.texture == nil) {
+      nx::loge(log_rhi,
+               "create_texture_in_heap('{}'): placement at offset {} failed",
+               desc.name, offset);
+      return {};
+    }
+    texture.texture.label = to_ns_string(desc.name);
+  }
+  // Placed in a heap, so one useHeaps: covers residency - same as the
+  // bindless-heap path in create_texture.
+  texture.heap_backed = true;
+
+  texture.format = desc.format;
+  texture.dimension = desc.dimension;
+  texture.width = desc.width;
+  texture.height = desc.height;
+  texture.mip_levels = nx::max<u32>(1, desc.mip_levels);
+  texture.layers = layers;
+  texture.sample_count = sample_count;
+  texture.usage = desc.usage;
+  texture.state = desc.initial_state;
+  texture.owns_texture = true;
+
+  if (desc.usage.has(TextureUsage::Storage)) {
+    @autoreleasepool {
+      for (u32 mip = 0; mip < texture.mip_levels; ++mip) {
+        id<MTLTexture> view = [texture.texture
+            newTextureViewWithPixelFormat:pixel_format
+                              textureType:texture.texture.textureType
+                                   levels:NSMakeRange(mip, 1)
+                                   slices:NSMakeRange(0, layers)];
+        const u32 slot =
+            view != nil ? alloc_rw_slot(*m_state) : BINDLESS_INVALID_INDEX;
+        texture.uavs.push_back(view);
+        texture.uav_slots.push_back(slot);
+        if (slot != BINDLESS_INVALID_INDEX)
+          write_rw_texture_descriptor(*m_state, slot, view);
+      }
+    }
+  }
+
+  const TextureHandle handle = m_state->textures.insert(std::move(texture));
+  if (!handle.valid())
+    return {};
+
+  MetalTexture &stored = m_state->textures[handle];
+  if (desc.usage.has(TextureUsage::Sampled)) {
+    stored.bindless_slot = bindless_index(handle);
+    write_texture_descriptor(*m_state, stored.bindless_slot, stored.texture);
+  }
   return handle;
 }
 
