@@ -827,6 +827,10 @@ void MetalDevice::destroy_sampler(const SamplerHandle handle) noexcept {
 // sampler's slot are their handle indices; storage-image slots come from a
 // free list because a texture owns one per mip.
 
+bool MetalDevice::open_contexts(const std::span<MetalCommandContext> out) {
+  return out.empty();
+}
+
 ResourceState
 MetalDevice::texture_state(const TextureHandle handle) const noexcept {
   if (m_state == nullptr)

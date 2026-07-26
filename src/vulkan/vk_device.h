@@ -170,8 +170,7 @@ struct CommandSlot {
 };
 
 struct FrameContext {
-  /// Slots persist across frames and are reset, not reallocated. The first
-  /// `used_slots` of them are open this frame, and submit in this order.
+  /// The first `used_slots` are open this frame, and submit in this order.
   nx::small_vector<CommandSlot, 8> slots;
   u32 used_slots = 0;
   VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
@@ -280,9 +279,7 @@ public:
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
   [[nodiscard]] VulkanTexture *texture_mut(TextureHandle handle) noexcept;
 
-  /// The state a texture is currently tracked in. The render graph resolves
-  /// its planned transitions against this while still single-threaded, so that
-  /// recording never has to consult - or race on - the tracked state.
+  /// Tracked state, for the graph to resolve transitions against up front.
   [[nodiscard]] ResourceState
   texture_state(TextureHandle handle) const noexcept;
   [[nodiscard]] bool debug_utils_enabled() const noexcept {

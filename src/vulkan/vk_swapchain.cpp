@@ -466,8 +466,7 @@ bool VulkanDevice::end_frame() {
   m_frame_active = false;
 
   FrameContext &frame = m_frames[m_frame_index];
-  // Into the last slot: it executes last, so this is the frame's final write
-  // to the backbuffer no matter how many contexts were opened.
+  // The last slot executes last, so this stays the final backbuffer write.
   const VkCommandBuffer cmd = frame.slots[frame.used_slots - 1].cmd;
 
   // The image must be in PRESENT_SRC before handing it to the present engine.
@@ -528,9 +527,8 @@ bool VulkanDevice::end_frame() {
   signal_infos[1].value = m_timeline_value;
   signal_infos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
-  // One submit, N buffers. Command buffers in a single submit execute in array
-  // order, so a group that depends on an earlier one needs nothing but a later
-  // position here - no semaphores, no second submit.
+  // Buffers in one submit execute in array order, so a dependent group needs
+  // only a later position - no semaphores, no second submit.
   nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
   for (u32 i = 0; i < frame.used_slots; ++i) {
     VkCommandBufferSubmitInfo info{

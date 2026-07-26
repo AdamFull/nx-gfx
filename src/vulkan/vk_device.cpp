@@ -500,9 +500,7 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
   for (u32 i = 0; i < m_frames_in_flight; ++i) {
     FrameContext frame;
 
-    // Slots - and their pools - are created on demand by open_slot(), so a
-    // frame that never records in parallel never allocates a second pool.
-
+    // Slots and their pools are created on demand by open_slot().
     VkSemaphoreCreateInfo binary_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     NX_VK_TRY(vkCreateSemaphore(m_device, &binary_info, nullptr,
                                 &frame.acquire_semaphore));

@@ -218,6 +218,12 @@ public:
   [[nodiscard]] AcquireResult begin_frame(MetalCommandContext &out_context);
   [[nodiscard]] bool end_frame();
 
+  /// Always fails for now: every MetalCommandContext shares the device's one
+  /// command buffer and encoder, so there is nothing to hand out. Parallel
+  /// encoding needs a command buffer per context, ordered with -enqueue.
+  /// Callers fall back to recording serially.
+  [[nodiscard]] bool open_contexts(std::span<MetalCommandContext> out);
+
   [[nodiscard]] TextureHandle current_backbuffer() const noexcept;
 
   void wait_idle() noexcept;
@@ -257,9 +263,7 @@ public:
   // Bindless indices, for the push block. The heap needs argument-buffer
   // Tier 2 and is not built yet, so these report "no slot" for now.
 
-  /// The state a texture is currently tracked in. The render graph resolves
-  /// its planned transitions against this while still single-threaded, so that
-  /// recording never has to consult - or race on - the tracked state.
+  /// Tracked state, for the graph to resolve transitions against up front.
   [[nodiscard]] ResourceState
   texture_state(TextureHandle handle) const noexcept;
 
