@@ -42,10 +42,12 @@ id<MTLHeap> grow_heaps(MetalDeviceState &state, const u64 required) noexcept {
   info.size = nx::max<u64>(DEFAULT_HEAP_BYTES, required);
   info.storageMode = MTLStorageModePrivate;
   info.type = MTLHeapTypeAutomatic;
-  // Untracked: Metal inserts no cross-encoder dependency for these, so the
-  // backend places it (pass_fence, upload_event) and the driver stops tracking
-  // every bindless resource per encoder. Only heap resources are untracked.
-  info.hazardTrackingMode = MTLHazardTrackingModeUntracked;
+  // Tracked, deliberately. Untracked would need the backend to place every
+  // cross-encoder dependency itself, and it cannot: a fence only reaches within
+  // one command buffer, while open_contexts() gives each pass group its own.
+  // That left heap resources with no synchronisation at all - survivable on an
+  // immediate-mode desktop GPU, but it corrupts on a tile-based one.
+  info.hazardTrackingMode = MTLHazardTrackingModeTracked;
 
   id<MTLHeap> heap = [state.device newHeapWithDescriptor:info];
   if (heap == nil) {
