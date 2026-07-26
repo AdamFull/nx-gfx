@@ -12,6 +12,48 @@ namespace {
 
 const nx::log::Category log_rhi = nx::log::category("rhi");
 
+[[nodiscard]] bool open_slot(VkDevice device, const u32 queue_family,
+                             VkDescriptorSet bindless, VkPipelineLayout layout,
+                             FrameContext &frame, const u32 index) {
+  while (frame.slots.size() <= index)
+    frame.slots.push_back(CommandSlot{});
+  CommandSlot &slot = frame.slots[index];
+
+  if (slot.pool == VK_NULL_HANDLE) {
+    VkCommandPoolCreateInfo pool_info{
+        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    // Reset the whole pool each frame rather than individual buffers: it is
+    // one call and lets the driver recycle the backing blocks wholesale.
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = queue_family;
+    if (NX_VK_CHECK(vkCreateCommandPool(device, &pool_info, nullptr,
+                                        &slot.pool)) != VK_SUCCESS)
+      return false;
+
+    VkCommandBufferAllocateInfo alloc{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    alloc.commandPool = slot.pool;
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc.commandBufferCount = 1;
+    if (NX_VK_CHECK(vkAllocateCommandBuffers(device, &alloc, &slot.cmd)) !=
+        VK_SUCCESS)
+      return false;
+  } else {
+    NX_VK_CHECK(vkResetCommandPool(device, slot.pool, 0));
+  }
+
+  VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  if (NX_VK_CHECK(vkBeginCommandBuffer(slot.cmd, &begin)) != VK_SUCCESS)
+    return false;
+
+  vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+                          BINDLESS_SET, 1, &bindless, 0, nullptr);
+  vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout,
+                          BINDLESS_SET, 1, &bindless, 0, nullptr);
+  return true;
+}
+
 /// Whether the surface has actually resized out from under the swapchain.
 /// Used to tell a real resize apart from a permanently-suboptimal swapchain.
 [[nodiscard]] bool surface_resized(VkPhysicalDevice physical,
@@ -365,37 +407,13 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     return AcquireResult::SurfaceLost;
   }
 
-  // Recycling the whole pool is cheaper than resetting buffers individually.
-  NX_VK_CHECK(vkResetCommandPool(m_device, frame.command_pool, 0));
-  frame.used_command_buffers = 0;
-
-  if (frame.command_buffers.empty()) {
-    VkCommandBufferAllocateInfo alloc{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    alloc.commandPool = frame.command_pool;
-    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc.commandBufferCount = 1;
-    VkCommandBuffer allocated = VK_NULL_HANDLE;
-    if (NX_VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc, &allocated)) !=
-        VK_SUCCESS)
-      return AcquireResult::SurfaceLost;
-    frame.command_buffers.push_back(allocated);
-  }
-
-  const VkCommandBuffer cmd = frame.command_buffers[0];
-  frame.used_command_buffers = 1;
-
-  VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  if (NX_VK_CHECK(vkBeginCommandBuffer(cmd, &begin)) != VK_SUCCESS)
+  if (!open_slot(m_device,
+                 m_queue_families[nx::cast<usize>(QueueType::Graphics)],
+                 m_bindless.set, m_pipeline_layout, frame, 0))
     return AcquireResult::SurfaceLost;
+  frame.used_slots = 1;
 
-  // Bind the bindless set once for the whole frame, for both pipeline types.
-  const VkDescriptorSet set = m_bindless.set;
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          m_pipeline_layout, BINDLESS_SET, 1, &set, 0, nullptr);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          m_pipeline_layout, BINDLESS_SET, 1, &set, 0, nullptr);
+  const VkCommandBuffer cmd = frame.slots[0].cmd;
 
   // Turn finished async decodes into textures, submit the batch of uploads
   // accumulated since the last frame, then take ownership of everything it
@@ -416,13 +434,41 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   return suboptimal ? AcquireResult::Suboptimal : AcquireResult::Success;
 }
 
+bool VulkanDevice::open_contexts(const std::span<VulkanCommandContext> out) {
+  if (!m_frame_active || out.empty())
+    return out.empty();
+
+  FrameContext &frame = m_frames[m_frame_index];
+  const u32 first = frame.used_slots;
+  const u32 queue_family =
+      m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+
+  for (usize i = 0; i < out.size(); ++i) {
+    const u32 index = first + nx::cast<u32>(i);
+    if (!open_slot(m_device, queue_family, m_bindless.set, m_pipeline_layout,
+                   frame, index)) {
+      // Keep whatever opened cleanly; end_frame still submits those in order.
+      frame.used_slots = index;
+      return false;
+    }
+    out[i].m_cmd = frame.slots[index].cmd;
+    out[i].m_device = this;
+    out[i].m_in_render_pass = false;
+  }
+
+  frame.used_slots = first + nx::cast<u32>(out.size());
+  return true;
+}
+
 bool VulkanDevice::end_frame() {
   if (!m_frame_active)
     return true;
   m_frame_active = false;
 
   FrameContext &frame = m_frames[m_frame_index];
-  const VkCommandBuffer cmd = frame.command_buffers[0];
+  // Into the last slot: it executes last, so this is the frame's final write
+  // to the backbuffer no matter how many contexts were opened.
+  const VkCommandBuffer cmd = frame.slots[frame.used_slots - 1].cmd;
 
   // The image must be in PRESENT_SRC before handing it to the present engine.
   if (VulkanTexture *backbuffer =
@@ -452,7 +498,8 @@ bool VulkanDevice::end_frame() {
     }
   }
 
-  NX_VK_CHECK(vkEndCommandBuffer(cmd));
+  for (u32 i = 0; i < frame.used_slots; ++i)
+    NX_VK_CHECK(vkEndCommandBuffer(frame.slots[i].cmd));
 
   ++m_timeline_value;
   frame.timeline_value = m_timeline_value;
@@ -481,15 +528,22 @@ bool VulkanDevice::end_frame() {
   signal_infos[1].value = m_timeline_value;
   signal_infos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
-  VkCommandBufferSubmitInfo cmd_info{
-      VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-  cmd_info.commandBuffer = cmd;
+  // One submit, N buffers. Command buffers in a single submit execute in array
+  // order, so a group that depends on an earlier one needs nothing but a later
+  // position here - no semaphores, no second submit.
+  nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
+  for (u32 i = 0; i < frame.used_slots; ++i) {
+    VkCommandBufferSubmitInfo info{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    info.commandBuffer = frame.slots[i].cmd;
+    cmd_infos.push_back(info);
+  }
 
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
   submit.waitSemaphoreInfoCount = wait_count;
   submit.pWaitSemaphoreInfos = wait_infos;
-  submit.commandBufferInfoCount = 1;
-  submit.pCommandBufferInfos = &cmd_info;
+  submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
+  submit.pCommandBufferInfos = cmd_infos.data();
   submit.signalSemaphoreInfoCount = 2;
   submit.pSignalSemaphoreInfos = signal_infos;
 

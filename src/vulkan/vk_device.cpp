@@ -500,15 +500,8 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
   for (u32 i = 0; i < m_frames_in_flight; ++i) {
     FrameContext frame;
 
-    VkCommandPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    // Reset the whole pool each frame rather than individual buffers: it is
-    // one call and lets the driver recycle the backing blocks wholesale.
-    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pool_info.queueFamilyIndex =
-        m_queue_families[nx::cast<usize>(QueueType::Graphics)];
-    NX_VK_TRY(vkCreateCommandPool(m_device, &pool_info, nullptr,
-                                  &frame.command_pool));
+    // Slots - and their pools - are created on demand by open_slot(), so a
+    // frame that never records in parallel never allocates a second pool.
 
     VkSemaphoreCreateInfo binary_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     NX_VK_TRY(vkCreateSemaphore(m_device, &binary_info, nullptr,
@@ -604,8 +597,10 @@ void VulkanDevice::shutdown() noexcept {
   for (auto &frame : m_frames) {
     if (frame.acquire_semaphore != VK_NULL_HANDLE)
       vkDestroySemaphore(m_device, frame.acquire_semaphore, nullptr);
-    if (frame.command_pool != VK_NULL_HANDLE)
-      vkDestroyCommandPool(m_device, frame.command_pool, nullptr);
+    // Destroying a pool frees the command buffers allocated from it.
+    for (const CommandSlot &slot : frame.slots)
+      if (slot.pool != VK_NULL_HANDLE)
+        vkDestroyCommandPool(m_device, slot.pool, nullptr);
   }
   m_frames.clear();
 

@@ -18,6 +18,8 @@
 
 #include <vk_mem_alloc.h>
 
+#include <span>
+
 namespace nxe::rhi {
 
 class VulkanDevice;
@@ -162,10 +164,16 @@ private:
   bool m_in_render_pass = false;
 };
 
+struct CommandSlot {
+  VkCommandPool pool = VK_NULL_HANDLE;
+  VkCommandBuffer cmd = VK_NULL_HANDLE;
+};
+
 struct FrameContext {
-  VkCommandPool command_pool = VK_NULL_HANDLE;
-  nx::small_vector<VkCommandBuffer, 8> command_buffers;
-  u32 used_command_buffers = 0;
+  /// Slots persist across frames and are reset, not reallocated. The first
+  /// `used_slots` of them are open this frame, and submit in this order.
+  nx::small_vector<CommandSlot, 8> slots;
+  u32 used_slots = 0;
   VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
   u64 timeline_value = 0;
 };
@@ -204,6 +212,8 @@ public:
 
   [[nodiscard]] AcquireResult begin_frame(VulkanCommandContext &out_context);
   [[nodiscard]] bool end_frame();
+
+  [[nodiscard]] bool open_contexts(std::span<VulkanCommandContext> out);
 
   [[nodiscard]] TextureHandle current_backbuffer() const noexcept {
     return m_backbuffers.empty() ? TextureHandle{}
