@@ -30,7 +30,7 @@ struct DeviceDesc {
   bool enable_sync_validation = true;
 #else
   bool enable_validation = false;
-  bool enable_sync_validation = false
+  bool enable_sync_validation = false;
 #endif
   bool break_on_validation_error = false;
   /// File the pipeline cache is loaded from and saved to. Empty keeps the cache
@@ -293,6 +293,7 @@ private:
   nx::string m_device_name;
   bool m_debug_utils = false;
   bool m_break_on_error = false;
+  bool m_sync_validation = false;
 
   VkQueue m_queues[nx::cast<usize>(QueueType::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(QueueType::Count)] = {};
