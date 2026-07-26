@@ -84,6 +84,25 @@ struct TextureDesc {
   ResourceState initial_state = ResourceState::Undefined;
 };
 
+/// What a resource needs from a heap. Query it before packing, then place the
+/// resource at an offset that satisfies the alignment.
+struct MemoryRequirements {
+  u64 size = 0;
+  u64 alignment = 1;
+  u32 memory_type_bits = ~0u;
+};
+
+/// Memory the caller sub-allocates itself. Resources placed at non-overlapping
+/// offsets are independent; resources placed at overlapping offsets alias, and
+/// must not be in use at the same time.
+struct HeapDesc {
+  nx::string_view name = "heap";
+  u64 size = 0;
+  /// Intersection of the memory_type_bits of everything to be placed here.
+  u32 memory_type_bits = ~0u;
+  MemoryUsage memory = MemoryUsage::DeviceLocal;
+};
+
 struct BufferDesc {
   nx::string_view name = "buffer";
   u64 size = 0;
