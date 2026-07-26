@@ -248,7 +248,9 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     // Synchronisation for the untracked bindless heaps.
     state->pass_fence = [device newFence];
     state->upload_event = [device newEvent];
-    if (state->pass_fence == nil || state->upload_event == nil) {
+    state->frame_event = [device newEvent];
+    if (state->pass_fence == nil || state->upload_event == nil ||
+        state->frame_event == nil) {
       nx::loge(log_rhi, "init: could not create the heap synchronisation "
                         "primitives");
       delete state;
@@ -258,6 +260,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     }
     state->pass_fence.label = @"nx2d pass";
     state->upload_event.label = @"nx2d uploads";
+    state->frame_event.label = @"nx2d frame groups";
 
     create_pipeline_archive(*state, desc.pipeline_cache_path);
 
@@ -440,15 +443,24 @@ bool MetalDevice::end_frame() {
       }
     }
 
-    // Commit in slot order: the queue executes in commit order, which restores
-    // the graph's ordering however the worker threads finished. Present and the
-    // completion signal go on the *last* buffer - on slot 0 they would present
-    // before the later groups ran.
+    // Commit in slot order, and make the GPU honour that order with an event
+    // chain. Commit order alone is not enough: buffers on a queue may overlap
+    // execution, so a later group could read transients an earlier one had not
+    // finished writing. Present and the completion signal go on the *last*
+    // buffer - on slot 0 they would fire before the later groups ran.
     const usize last = s->used_contexts - 1;
+    const u64 base = s->frame_event_value;
+    s->frame_event_value = base + s->used_contexts;
     for (usize i = 0; i < s->used_contexts; ++i) {
       MetalContextSlot &slot = s->contexts[i];
       if (slot.cmd == nil)
         continue;
+
+      // Wait for the previous group, then hand off to the next. Without this
+      // the buffers overlap and a group reads half-written transients.
+      if (i > 0)
+        [slot.cmd encodeWaitForEvent:s->frame_event value:base + i];
+      [slot.cmd encodeSignalEvent:s->frame_event value:base + i + 1];
 
       if (i == last) {
         // Captured by the block rather than reaching through `s`, so the
@@ -653,6 +665,9 @@ HeapHandle MetalDevice::create_heap(const HeapDesc &desc) {
     // Placement, not automatic: automatic heaps sub-allocate themselves and
     // would ignore the offsets the graph computed.
     info.type = MTLHeapTypePlacement;
+    // Explicit: a heap defaults to untracked, and these hold every transient
+    // the graph aliases. See the note in mtl_bindless.mm's grow_heaps.
+    info.hazardTrackingMode = MTLHazardTrackingModeTracked;
     info.storageMode = desc.memory == MemoryUsage::DeviceLocal
                            ? MTLStorageModePrivate
                            : MTLStorageModeShared;

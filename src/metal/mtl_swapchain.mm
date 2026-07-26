@@ -137,8 +137,13 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
 
   @autoreleasepool {
     layer.drawableSize = CGSizeMake(desc.width, desc.height);
-    // More would add latency; fewer would stall on the compositor.
-    layer.maximumDrawableCount = nx::clamp<u32>(frames_in_flight, 2, 3);
+    // One more than frames in flight, not the same number. frames_in_flight
+    // caps how far the CPU may run ahead; this caps how many drawables the
+    // compositor will vend, and with only as many as there are frames the next
+    // frame has nowhere to render until vblank frees one - which locks the app
+    // to half the refresh rate. Measured on an A15: 30 fps at 2, 60 at 3.
+    // frames_in_flight = 1 still gets 2, for callers that want the latency.
+    layer.maximumDrawableCount = nx::clamp<u32>(frames_in_flight + 1, 2, 3);
 #if TARGET_OS_OSX
     // Only Immediate differs: Fifo and Mailbox both wait for the display and
     // CAMetalLayer has no queue-depth knob to tell them apart.

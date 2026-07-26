@@ -318,6 +318,12 @@ struct MetalDeviceState {
   //    which a fence cannot span.
   id<MTLFence> pass_fence = nil;
   id<MTLEvent> upload_event = nil;
+  /// Orders the frame's command buffers against each other. Committing in order
+  /// is not enough: buffers on a queue start in commit order but may overlap,
+  /// so a group would otherwise read what a previous group had not finished
+  /// writing. A fence cannot express this - it does not cross command buffers.
+  id<MTLEvent> frame_event = nil;
+  u64 frame_event_value = 0;
 
   id<MTLBinaryArchive> pipeline_archive = nil;
   nx::string pipeline_archive_path;
@@ -392,12 +398,13 @@ void bind_bindless_compute(MetalDeviceState &state,
 void create_pipeline_archive(MetalDeviceState &state, nx::string_view path);
 void save_pipeline_archive(MetalDeviceState &state) noexcept;
 
-// Pass-granularity synchronisation for untracked heap resources
-// (mtl_bindless.mm). Not per-resource on purpose: a fence only orders encoders
-// within one command buffer, and open_contexts() gives each pass group its own
-// buffer, so in the parallel path there is never an earlier writer to wait on
-// (measured: 3384 begin-pass calls, 0 waits). Overlap needs a second queue, not
-// finer fences. These still carry the serial fallback.
+// Pass-granularity ordering within one command buffer (mtl_bindless.mm).
+//
+// A fence cannot reach across command buffers, and open_contexts() gives each
+// pass group its own, so these fire only in the serial fallback - measured 0
+// waits out of 3384 begin-pass calls in the parallel path. Cross-encoder
+// hazards are therefore left to Metal's own tracking, which is why the heaps
+// are created tracked.
 
 /// Waits on the fence if an earlier encoder in this command buffer updated it.
 void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
