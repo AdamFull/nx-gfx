@@ -246,6 +246,10 @@ public:
   [[nodiscard]] AcquireResult begin_frame(VulkanCommandContext &out_context);
   [[nodiscard]] bool end_frame();
 
+  [[nodiscard]] bool begin_headless_frame(VulkanCommandContext &out_context);
+
+  [[nodiscard]] bool end_headless_frame();
+
   [[nodiscard]] bool open_contexts(std::span<VulkanCommandContext> out);
 
   [[nodiscard]] TextureHandle current_backbuffer() const noexcept {
@@ -351,6 +355,8 @@ private:
   bool create_pipeline_cache(nx::string_view path);
   void save_pipeline_cache() noexcept;
   bool create_frame_contexts(u32 frames_in_flight);
+
+  bool m_headless_frame = false;
   bool build_swapchain(u32 width, u32 height);
   bool create_texture_views(VulkanTexture &texture, nx::string_view name);
   void destroy_backbuffer_views() noexcept;

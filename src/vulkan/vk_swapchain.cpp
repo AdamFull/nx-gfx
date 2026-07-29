@@ -452,6 +452,113 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   return suboptimal ? AcquireResult::Suboptimal : AcquireResult::Success;
 }
 
+bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
+  if (m_device == VK_NULL_HANDLE || m_frame_active)
+    return false;
+
+  // The frame contexts are normally made by create_swapchain. Without one they
+  // have to be made here, and the call is idempotent so a device that later
+  // gains a surface keeps the same ones.
+  if (!create_frame_contexts(2))
+    return false;
+
+  FrameContext &frame = m_frames[m_frame_index];
+  if (frame.timeline_value > 0) {
+    VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wait.semaphoreCount = 1;
+    wait.pSemaphores = &m_timeline;
+    wait.pValues = &frame.timeline_value;
+    if (NX_VK_CHECK(vkWaitSemaphores(m_device, &wait, UINT64_MAX)) !=
+        VK_SUCCESS)
+      return false;
+  }
+
+  u64 completed = 0;
+  NX_VK_CHECK(vkGetSemaphoreCounterValue(m_device, m_timeline, &completed));
+  collect_garbage(completed);
+  m_uploader.reclaim();
+
+  if (!open_slot(m_device,
+                 m_queue_families[nx::cast<usize>(QueueType::Graphics)],
+                 m_bindless.set, m_pipeline_layout, frame, 0))
+    return false;
+  frame.used_slots = 1;
+
+  const VkCommandBuffer cmd = frame.slots[0].cmd;
+  m_uploader.pump();
+  m_uploader.flush_batch();
+  m_frame_upload_wait = m_uploader.record_acquires(cmd);
+
+  out_context.m_cmd = cmd;
+  out_context.m_device = this;
+  out_context.m_in_render_pass = false;
+  m_frame_active = true;
+  m_headless_frame = true;
+  return true;
+}
+
+bool VulkanDevice::end_headless_frame() {
+  if (!m_frame_active || !m_headless_frame)
+    return false;
+  m_frame_active = false;
+  m_headless_frame = false;
+
+  FrameContext &frame = m_frames[m_frame_index];
+  for (u32 i = 0; i < frame.used_slots; ++i)
+    NX_VK_CHECK(vkEndCommandBuffer(frame.slots[i].cmd));
+
+  ++m_timeline_value;
+  frame.timeline_value = m_timeline_value;
+
+  // No acquire semaphore to wait on and no release semaphore to signal - there
+  // is no swapchain in either direction. Only the upload timeline still
+  // matters, when this frame reads something the transfer queue wrote.
+  VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  u32 wait_count = 0;
+  if (m_frame_upload_wait > 0) {
+    wait_info.semaphore = m_uploader.timeline();
+    wait_info.value = m_frame_upload_wait;
+    wait_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    wait_count = 1;
+  }
+
+  VkSemaphoreSubmitInfo signal_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  signal_info.semaphore = m_timeline;
+  signal_info.value = m_timeline_value;
+  signal_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+  nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
+  for (u32 i = 0; i < frame.used_slots; ++i) {
+    VkCommandBufferSubmitInfo info{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    info.commandBuffer = frame.slots[i].cmd;
+    cmd_infos.push_back(info);
+  }
+
+  VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  submit.waitSemaphoreInfoCount = wait_count;
+  submit.pWaitSemaphoreInfos = wait_count > 0 ? &wait_info : nullptr;
+  submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
+  submit.pCommandBufferInfos = cmd_infos.data();
+  submit.signalSemaphoreInfoCount = 1;
+  submit.pSignalSemaphoreInfos = &signal_info;
+
+  if (NX_VK_CHECK(vkQueueSubmit2(m_queues[nx::cast<usize>(QueueType::Graphics)],
+                                 1, &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
+    return false;
+
+  // Block, rather than pipelining: the caller is about to read the target.
+  VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+  wait.semaphoreCount = 1;
+  wait.pSemaphores = &m_timeline;
+  wait.pValues = &m_timeline_value;
+  if (NX_VK_CHECK(vkWaitSemaphores(m_device, &wait, UINT64_MAX)) != VK_SUCCESS)
+    return false;
+
+  m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
+  return true;
+}
+
 bool VulkanDevice::open_contexts(const std::span<VulkanCommandContext> out) {
   if (!m_frame_active || out.empty())
     return out.empty();
