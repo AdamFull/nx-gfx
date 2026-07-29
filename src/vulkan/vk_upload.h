@@ -6,24 +6,33 @@
  *
  * All GPU work - staging, batching, submitting, creating - happens on the
  * render thread, so the upload machinery (ring, batch command buffer, chunks)
- * needs no lock: it is single-owner. Uploads stage through a bounded ring buffer
- * and are *batched* - each call records its copy into a shared command buffer
- * and returns an UploadTicket, but nothing is submitted until the batch is
- * flushed (once per frame by the device, on staging backpressure, or on an
+ * needs no lock: it is single-owner. Uploads stage through a bounded ring
+ * buffer and are *batched* - each call records its copy into a shared command
+ * buffer and returns an UploadTicket, but nothing is submitted until the batch
+ * is flushed (once per frame by the device, on staging backpressure, or on an
  * explicit flush()/wait()).
  *
  * File loading is offloaded to one dedicated worker thread that does *only* the
- * slow, thread-safe part - reading bytes and decoding images - and never touches
- * the device. It talks to the render thread through lock-free queues and an
- * atomic status table, so there is not a mutex anywhere: load_texture() enqueues
- * and returns immediately; the render thread's pump() turns finished decodes
- * into textures.
+ * slow, thread-safe part - reading bytes and decoding images - and never
+ * touches the device. It talks to the render thread through lock-free queues
+ * and an atomic status table, so there is not a mutex anywhere: load_texture()
+ * enqueues and returns immediately; the render thread's pump() turns finished
+ * decodes into textures.
  *
- * When the transfer queue is a distinct hardware queue, each copy ends with a
- * queue-family release barrier; the device injects the matching acquire barrier
- * into the next graphics frame (record_acquires) and makes that frame's submit
- * wait on the batch, so a freshly uploaded resource is safe to sample from the
- * frame its acquire is recorded onward.
+ * When the transfer queue is a distinct hardware queue, images move between the
+ * two families once per frame rather than once per copy: uploads leave the
+ * image in TRANSFER_DST and copy-family-owned, and the frame hand-off
+ * (flush_batch, then record_acquires) emits the release/acquire pair that puts
+ * it in its final layout on the graphics queue. Batching the hand-off is what
+ * makes repeated partial uploads to one texture - a font atlas growing glyphs -
+ * legal: they all land while the copy family still owns the image, so nothing
+ * is written behind the other queue's back and one barrier pair covers them.
+ *
+ * Once an image has been handed over, the copy queue cannot take it back: an
+ * acquire needs a matching release, and only a graphics submit can record that.
+ * A later upload to such an image is therefore replayed into the frame's own
+ * command buffer by record_acquires, on the graphics queue, where no ownership
+ * transfer is involved at all.
  */
 
 #include "foundation/containers/concurrent_queue.h"
@@ -89,6 +98,12 @@ public:
   /// leaves it in @p final_state, ready for the graphics queue. The copy joins
   /// the current batch; the returned ticket completes when that batch is
   /// flushed and its GPU work finishes.
+  ///
+  /// On a dedicated transfer queue the texture reaches @p final_state at the
+  /// next frame hand-off rather than at once, and a texture the graphics family
+  /// already owns is uploaded by that frame instead of by the copy queue - the
+  /// copy has no place on the copy timeline then, so the ticket comes back
+  /// invalid (already complete). Wait on such an upload by presenting a frame.
   UploadTicket
   upload_texture(TextureHandle handle, std::span<const u8> src,
                  std::span<const ImageSubresource> layout,
@@ -113,8 +128,9 @@ public:
   LoadRequest load_texture(nx::string_view path,
                            TextureUsageFlags usage = DEFAULT_LOAD_USAGE);
   /// Queues a load from encoded bytes (DDS/KTX/PNG/...); the bytes are copied.
-  LoadRequest load_texture_from_memory(std::span<const u8> bytes,
-                                       TextureUsageFlags usage = DEFAULT_LOAD_USAGE);
+  LoadRequest
+  load_texture_from_memory(std::span<const u8> bytes,
+                           TextureUsageFlags usage = DEFAULT_LOAD_USAGE);
 
   [[nodiscard]] LoadStatus load_status(LoadRequest req) const noexcept;
   /// The texture for a Ready request; a null handle otherwise.
@@ -127,6 +143,12 @@ public:
   // The source must not be in concurrent use on the graphics queue - read after
   // wait_idle(), or from a resource only the copy queue touches. Readbacks
   // flush any open upload batch and submit on their own.
+  //
+  // With a dedicated transfer queue the copy family must also still *own* the
+  // image, which it does until the next frame hands it over: read back before
+  // presenting a frame, as the tests and offline tools do. read_texture warns
+  // and reads anyway once graphics owns it, because taking ownership back would
+  // need a release only a graphics submit can record.
 
   ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
   ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
@@ -164,15 +186,19 @@ private:
     VmaAllocation alloc = VK_NULL_HANDLE;
     u8 *mapped = nullptr;
     u64 capacity = 0;
-    u64 value = 0;
+    u64 value = 0;     ///< Copy-timeline value that frees it; 0 when free.
+    u64 gfx_value = 0; ///< Same, on the *device* timeline (graphics replays).
     bool host_read = false;
   };
 
   /// Marks how far the ring head had advanced when a batch was submitted; the
-  /// tail may pass this point once `value` completes on the GPU.
+  /// tail may pass this point once `value` completes on the GPU. Bytes a
+  /// graphics replay reads are held by `gfx_value` on the device timeline too,
+  /// since the copy timeline says nothing about when the frame has run.
   struct Marker {
     u64 head = 0;
     u64 value = 0;
+    u64 gfx_value = 0;
   };
 
   struct ImageAcquire {
@@ -180,6 +206,29 @@ private:
     VkImageAspectFlags aspect = 0;
     VkImageLayout old_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     ResourceState new_state = ResourceState::ShaderReadOnly;
+  };
+  /// An image the copy queue still owns and must hand to graphics at the next
+  /// frame hand-off. One record per image however many copies touched it, so
+  /// the release/acquire pair is emitted once and always names the layout the
+  /// image is actually in.
+  struct ImageRelease {
+    TextureHandle handle;
+    VkImage image = VK_NULL_HANDLE;
+    VkImageAspectFlags aspect = 0;
+    ResourceState old_state = ResourceState::CopyDst;
+    ResourceState new_state = ResourceState::ShaderReadOnly;
+  };
+  /// A copy into an image the graphics family owns, waiting to be replayed into
+  /// the next frame's command buffer (see m_graphics_hold for how its staging
+  /// bytes are kept alive until that frame has run).
+  struct GraphicsCopy {
+    TextureHandle handle;
+    VkImage image = VK_NULL_HANDLE;
+    VkImageAspectFlags aspect = 0;
+    ResourceState old_state = ResourceState::ShaderReadOnly;
+    ResourceState new_state = ResourceState::ShaderReadOnly;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    nx::small_vector<VkBufferImageCopy, 4> regions;
   };
   struct BufferAcquire {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -209,6 +258,9 @@ private:
   static constexpr u32 MAX_LOADS = 1024;
 
   [[nodiscard]] u64 completed_value() const noexcept;
+  /// Completed value of the *device's* graphics timeline, which is what says a
+  /// frame - and so any copy replayed into it - has finished.
+  [[nodiscard]] u64 graphics_completed() const noexcept;
   [[nodiscard]] bool needs_ownership_transfer() const noexcept {
     return m_copy_family != m_graphics_family;
   }
@@ -221,6 +273,17 @@ private:
   VkCommandBuffer begin_cmd();
   void submit_signal(VkCommandBuffer cmd, u64 value);
   void wait_value(u64 value) noexcept;
+  void wait_graphics(u64 value) noexcept;
+
+  /// Finds or starts the pending hand-off record for @p image, so several
+  /// copies into one texture share a single release/acquire pair.
+  ImageRelease &pending_release(TextureHandle handle, VkImage image,
+                                VkImageAspectFlags aspect, ResourceState state);
+  /// Emits the copy-side half of the hand-off into the open batch and turns
+  /// each record into the acquire record_acquires() will emit.
+  void record_releases();
+  /// Replays the copies that must run on the graphics queue into @p cmd.
+  void replay_graphics_copies(VkCommandBuffer cmd);
 
   void worker_main();
   LoadRequest enqueue_load(LoadPayload *payload);
@@ -259,8 +322,14 @@ private:
   nx::small_vector<Chunk, 8> m_chunks;
 
   nx::small_vector<ImageAcquire, 32> m_image_acquires;
+  nx::small_vector<ImageRelease, 32> m_image_releases;
   nx::small_vector<BufferAcquire, 16> m_buffer_acquires;
+  nx::small_vector<GraphicsCopy, 8> m_graphics_copies;
   u64 m_pending_wait = 0;
+  /// Device-timeline value the frame that will replay m_graphics_copies is
+  /// going to signal. Every ring marker pushed while copies are pending carries
+  /// it, so the tail cannot walk over bytes that frame has yet to read.
+  u64 m_graphics_hold = 0;
 
   // Async loader. The worker touches only the queues, the status table and the
   // heap payloads - never the device or the machinery above.

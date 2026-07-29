@@ -477,24 +477,14 @@ bool VulkanDevice::create_allocator() {
 
 bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
   // Idempotent: the swapchain is rebuilt whenever the OS hands us a new
-  // surface (every Android resume), but the frame contexts and the timeline
-  // outlive it and must not be recreated underneath in-flight work.
+  // surface (every Android resume), but the frame contexts outlive it and must
+  // not be recreated underneath in-flight work. The timeline they signal is
+  // older still - init() makes it, since headless submits need it too.
   if (!m_frames.empty())
     return true;
 
   m_frames_in_flight =
       frames_in_flight < 1 ? 1 : (frames_in_flight > 3 ? 3 : frames_in_flight);
-
-  VkSemaphoreTypeCreateInfo type_info{
-      VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
-  type_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-  type_info.initialValue = 0;
-
-  VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-  semaphore_info.pNext = &type_info;
-  NX_VK_TRY(vkCreateSemaphore(m_device, &semaphore_info, nullptr, &m_timeline));
-  set_object_name(vk_handle_value(m_timeline), VK_OBJECT_TYPE_SEMAPHORE,
-                  "frame timeline");
 
   m_frames.clear();
   for (u32 i = 0; i < m_frames_in_flight; ++i) {
@@ -537,6 +527,20 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
     return false;
   if (!create_pipeline_cache(desc.pipeline_cache_path))
     return false;
+
+  // Device-scoped, not swapchain-scoped: it is what says a graphics submit has
+  // finished, and a headless device (a test, an asset tool) makes those too -
+  // flush_uploads() signals it with no frame contexts anywhere in sight.
+  VkSemaphoreTypeCreateInfo type_info{
+      VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+  type_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+  type_info.initialValue = 0;
+  VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+  semaphore_info.pNext = &type_info;
+  NX_VK_TRY(vkCreateSemaphore(m_device, &semaphore_info, nullptr, &m_timeline));
+  set_object_name(vk_handle_value(m_timeline), VK_OBJECT_TYPE_SEMAPHORE,
+                  "frame timeline");
+
   if (!m_uploader.init(this))
     return false;
 
@@ -628,6 +632,81 @@ void VulkanDevice::shutdown() noexcept {
 void VulkanDevice::wait_idle() noexcept {
   if (m_device != VK_NULL_HANDLE)
     NX_VK_CHECK(vkDeviceWaitIdle(m_device));
+}
+
+void VulkanDevice::flush_uploads() noexcept {
+  if (m_device == VK_NULL_HANDLE || m_frame_active)
+    return;
+
+  m_uploader.flush_batch();
+
+  // One-shot pool: this is an offline path, not something a frame runs, so
+  // there is nothing to amortise a persistent pool over.
+  VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+  pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+  pool_info.queueFamilyIndex =
+      m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+  VkCommandPool pool = VK_NULL_HANDLE;
+  if (NX_VK_CHECK(vkCreateCommandPool(m_device, &pool_info, nullptr, &pool)) !=
+      VK_SUCCESS)
+    return;
+
+  VkCommandBufferAllocateInfo alloc{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  alloc.commandPool = pool;
+  alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc.commandBufferCount = 1;
+  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  if (NX_VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc, &cmd)) !=
+      VK_SUCCESS) {
+    vkDestroyCommandPool(m_device, pool, nullptr);
+    return;
+  }
+
+  VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cmd, &begin);
+  // Bumping the timeline only *after* this call keeps the uploader's view of
+  // "the frame about to be recorded" the same as it is under begin_frame,
+  // which is what its staging holds are pinned to.
+  const u64 upload_wait = m_uploader.record_acquires(cmd);
+  NX_VK_CHECK(vkEndCommandBuffer(cmd));
+
+  ++m_timeline_value;
+  const u64 value = m_timeline_value;
+
+  VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  wait_info.semaphore = m_uploader.timeline();
+  wait_info.value = upload_wait;
+  wait_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+  VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  signal.semaphore = m_timeline;
+  signal.value = value;
+  signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+  VkCommandBufferSubmitInfo cmd_info{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+  cmd_info.commandBuffer = cmd;
+
+  VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  submit.waitSemaphoreInfoCount = upload_wait > 0 ? 1u : 0u;
+  submit.pWaitSemaphoreInfos = &wait_info;
+  submit.commandBufferInfoCount = 1;
+  submit.pCommandBufferInfos = &cmd_info;
+  submit.signalSemaphoreInfoCount = 1;
+  submit.pSignalSemaphoreInfos = &signal;
+  NX_VK_CHECK(vkQueueSubmit2(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
+                             &submit, VK_NULL_HANDLE));
+
+  VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+  wait.semaphoreCount = 1;
+  wait.pSemaphores = &m_timeline;
+  wait.pValues = &value;
+  NX_VK_CHECK(vkWaitSemaphores(m_device, &wait, UINT64_MAX));
+
+  vkDestroyCommandPool(m_device, pool, nullptr);
+  m_uploader.reclaim();
 }
 
 void VulkanDevice::set_object_name(const u64 object, const VkObjectType type,

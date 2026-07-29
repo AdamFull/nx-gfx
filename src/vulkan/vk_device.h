@@ -41,6 +41,16 @@ struct DeviceDesc {
   nx::string_view pipeline_cache_path;
 };
 
+/// Which queue family owns an image, as far as the uploader's dedicated-
+/// transfer path is concerned. An image the uploader has never written stays
+/// Unknown and takes no part in ownership transfers - the graphics queue is
+/// the only one that ever touches it, so there is nothing to hand over.
+enum class ImageOwner : u8 {
+  Unknown, ///< The uploader has not written this image.
+  Copy,    ///< Written, and not yet handed to graphics: the copy queue owns it.
+  Graphics, ///< Released to the graphics family by a frame's hand-off.
+};
+
 /// One VkImage, several views: a sampled view spans the whole mip chain, but an
 /// attachment or storage view must address exactly one mip.
 ///   - srv: sampling; its bindless slot is the texture's handle index.
@@ -61,6 +71,7 @@ struct VulkanTexture {
   u32 layers = 1;
   TextureUsageFlags usage = TextureUsage::None;
   ResourceState state = ResourceState::Undefined;
+  ImageOwner owner = ImageOwner::Unknown;
   bool owns_image = true;
 };
 
@@ -207,6 +218,15 @@ public:
   /// The async upload / readback service. Its copies run on the transfer queue
   /// and are handed off to the graphics queue at frame boundaries.
   [[nodiscard]] VulkanUploader &uploader() noexcept { return m_uploader; }
+
+  /// Runs the uploader's queue hand-off outside a frame and blocks until it is
+  /// done, leaving everything staged so far usable by the graphics queue.
+  ///
+  /// begin_frame does this as part of drawing; a caller with no swapchain - a
+  /// test, an asset tool - otherwise has no way to reach the graphics queue at
+  /// all, and its uploads stay stranded on the transfer family. Does nothing
+  /// inside a frame, which is already handling it.
+  void flush_uploads() noexcept;
 
   // Swapchain
 
