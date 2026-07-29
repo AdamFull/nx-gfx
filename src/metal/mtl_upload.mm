@@ -206,7 +206,7 @@ bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
                   toTexture:texture.texture
            destinationSlice:sub.layer
            destinationLevel:sub.mip
-          destinationOrigin:MTLOriginMake(0, 0, 0)];
+          destinationOrigin:MTLOriginMake(sub.x, sub.y, sub.z)];
 
     cursor += sub.size;
   }

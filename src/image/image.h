@@ -46,6 +46,10 @@ struct ImageSubresource {
   u32 height = 0;
   u32 depth = 1;
   u32 row_pitch = 0; ///< Bytes per block-row.
+
+  u32 x = 0;
+  u32 y = 0;
+  u32 z = 0;
 };
 
 /// A fully decoded image, ready to hand to the uploader.

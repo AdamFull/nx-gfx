@@ -54,12 +54,18 @@ whole_image_barrier(const VkImage image,
 
 nx::string_view to_string(const LoadStatus status) noexcept {
   switch (status) {
-  case LoadStatus::Pending: return "pending";
-  case LoadStatus::Decoding: return "decoding";
-  case LoadStatus::Uploading: return "uploading";
-  case LoadStatus::Ready: return "ready";
-  case LoadStatus::Failed: return "failed";
-  default: return "none";
+  case LoadStatus::Pending:
+    return "pending";
+  case LoadStatus::Decoding:
+    return "decoding";
+  case LoadStatus::Uploading:
+    return "uploading";
+  case LoadStatus::Ready:
+    return "ready";
+  case LoadStatus::Failed:
+    return "failed";
+  default:
+    return "none";
   }
 }
 
@@ -125,8 +131,9 @@ bool VulkanUploader::init(VulkanDevice *device) {
     return false;
   }
 
-  nx::logi(log_up, "uploader: transfer queue family {} ({}), {} MiB ring, "
-                   "loader thread up",
+  nx::logi(log_up,
+           "uploader: transfer queue family {} ({}), {} MiB ring, "
+           "loader thread up",
            m_copy_family,
            needs_ownership_transfer() ? "dedicated" : "shared with graphics",
            RING_CAPACITY / (1024 * 1024));
@@ -348,9 +355,9 @@ VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
     return nullptr;
   }
   chunk.mapped = nx::cast<u8 *>(alloc_info.pMappedData);
-  m_device->set_object_name(vk_handle_value(chunk.buffer),
-                            VK_OBJECT_TYPE_BUFFER,
-                            host_read ? "readback staging" : "oversized upload");
+  m_device->set_object_name(
+      vk_handle_value(chunk.buffer), VK_OBJECT_TYPE_BUFFER,
+      host_read ? "readback staging" : "oversized upload");
 
   m_chunks.push_back(chunk);
   return &m_chunks.back();
@@ -403,6 +410,8 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     VkBufferImageCopy copy{};
     copy.bufferOffset = base_offset + offset;
     copy.imageSubresource = {aspect, sr.mip, sr.layer, 1};
+    copy.imageOffset = {nx::cast<i32>(sr.x), nx::cast<i32>(sr.y),
+                        nx::cast<i32>(sr.z)};
     copy.imageExtent = {sr.width, sr.height, sr.depth == 0 ? 1u : sr.depth};
     copies.push_back(copy);
     offset += sr.size;
@@ -449,8 +458,9 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     m_pending_wait = m_batch_value;
   tex->state = final_state;
   if (qfot)
-    m_image_acquires.push_back(
-        {tex->image, aspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, final_state});
+    m_image_acquires.push_back({tex->image, aspect,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                final_state});
 
   return {m_batch_value};
 }
@@ -580,8 +590,8 @@ LoadStatus VulkanUploader::load_status(const LoadRequest req) const noexcept {
   return m_load_state[s].load(std::memory_order_acquire);
 }
 
-TextureHandle VulkanUploader::loaded_texture(const LoadRequest req) const
-    noexcept {
+TextureHandle
+VulkanUploader::loaded_texture(const LoadRequest req) const noexcept {
   if (!req.valid() || req.id > MAX_LOADS)
     return {};
   const u32 s = req.id - 1;
@@ -618,11 +628,10 @@ void VulkanUploader::worker_main() {
     if (m_load_gen[s].load(std::memory_order_acquire) == cmd.generation)
       m_load_state[s].store(LoadStatus::Decoding, std::memory_order_release);
 
-    auto decoded =
-        pl->path.empty()
-            ? load_image_from_memory(
-                  std::span<const u8>(pl->bytes.data(), pl->bytes.size()))
-            : load_image(pl->path);
+    auto decoded = pl->path.empty()
+                       ? load_image_from_memory(std::span<const u8>(
+                             pl->bytes.data(), pl->bytes.size()))
+                       : load_image(pl->path);
     const TextureUsageFlags usage = pl->usage;
     nx::release(pl);
 
@@ -708,9 +717,8 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
     return {};
 
   if (offset > buf->size || size > buf->size - offset) {
-    nx::logw(log_up,
-             "read_buffer: {}..{} is outside the {}-byte buffer", offset,
-             offset + size, buf->size);
+    nx::logw(log_up, "read_buffer: {}..{} is outside the {}-byte buffer",
+             offset, offset + size, buf->size);
     return {};
   }
 
