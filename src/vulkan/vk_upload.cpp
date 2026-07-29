@@ -418,8 +418,14 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   }
 
   const VkStateInfo from = to_vk_state(tex->state);
+  const bool qfot = needs_ownership_transfer();
   VkImageMemoryBarrier2 pre = whole_image_barrier(tex->image, aspect);
-  pre.srcStageMask = from.stage;
+  // A re-upload finds the texture in its previous state, whose stages are the
+  // *graphics* queue's (shader stages, for ShaderReadOnly) - not something a
+  // dedicated transfer family accepts. Nothing is lost: a stage mask cannot
+  // order work on another queue anyway, so the src half stays empty and the
+  // release/acquire pair below carries the hand-off.
+  pre.srcStageMask = qfot ? VK_PIPELINE_STAGE_2_NONE : from.stage;
   pre.srcAccessMask = VK_ACCESS_2_NONE;
   pre.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   pre.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -435,7 +441,6 @@ VulkanUploader::upload_texture(const TextureHandle handle,
                          nx::cast<u32>(copies.size()), copies.data());
 
   const VkStateInfo fin = to_vk_state(final_state);
-  const bool qfot = needs_ownership_transfer();
   VkImageMemoryBarrier2 post = whole_image_barrier(tex->image, aspect);
   post.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   post.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -784,9 +789,14 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
     return {};
 
   const VkStateInfo from = to_vk_state(tex->state);
+  const bool qfot = needs_ownership_transfer();
   VkImageMemoryBarrier2 to_src = whole_image_barrier(tex->image, aspect);
-  to_src.srcStageMask = from.stage;
-  to_src.srcAccessMask = from.access;
+  // As in upload_texture: the source state's stages belong to whichever queue
+  // last used the texture, so they are not recordable on a dedicated transfer
+  // family. Readback callers already have to fence the graphics work off
+  // themselves (see the header), which is the dependency that actually counts.
+  to_src.srcStageMask = qfot ? VK_PIPELINE_STAGE_2_NONE : from.stage;
+  to_src.srcAccessMask = qfot ? VK_ACCESS_2_NONE : from.access;
   to_src.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   to_src.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
   to_src.oldLayout = from.layout;
