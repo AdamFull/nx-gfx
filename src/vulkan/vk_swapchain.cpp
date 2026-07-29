@@ -70,6 +70,24 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
          caps.currentExtent.height != current.height;
 }
 
+[[nodiscard]] VkCompositeAlphaFlagBitsKHR
+pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported) noexcept {
+  constexpr VkCompositeAlphaFlagBitsKHR order[] = {
+      VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+      VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+      VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+      VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+  };
+  for (const VkCompositeAlphaFlagBitsKHR bit : order) {
+    if ((supported & nx::cast<VkCompositeAlphaFlagsKHR>(bit)) != 0)
+      return bit;
+  }
+  // A surface supporting none of the four is not a thing the spec allows.
+  nx::logw(log_rhi,
+           "surface reports no composite alpha mode; asking for opaque");
+  return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+}
+
 /// Creates a VkSurfaceKHR from whatever the PAL handed us. This is the one
 /// place in the RHI that knows about window systems.
 VkSurfaceKHR create_surface(VkInstance instance,
@@ -269,7 +287,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
       (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
           ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
           : caps.currentTransform;
-  info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+  info.compositeAlpha = pick_composite_alpha(caps.supportedCompositeAlpha);
   info.presentMode = m_present_mode;
   info.clipped = VK_TRUE;
   // Handing the old swapchain over lets the driver reuse its allocations and
