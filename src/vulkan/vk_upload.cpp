@@ -407,8 +407,10 @@ VulkanUploader::upload_texture(const TextureHandle handle,
                                const std::span<const ImageSubresource> layout,
                                const ResourceState final_state) {
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
-  if (tex == nullptr || tex->image == VK_NULL_HANDLE || layout.empty())
+  if (tex == nullptr || tex->image == VK_NULL_HANDLE || layout.empty()) {
+    nx::loge(log_up, "upload_texture: nothing to upload into");
     return {};
+  }
 
   const VkImageAspectFlags aspect = to_vk_aspect(tex->format);
   const u64 align = copy_alignment(tex->format);
@@ -437,15 +439,19 @@ VulkanUploader::upload_texture(const TextureHandle handle,
       staging_buf = oversized->buffer;
     }
   }
-  if (staging == nullptr)
+  if (staging == nullptr) {
+    nx::loge(log_up, "upload_texture: no staging for {} bytes", staging_size);
     return {};
+  }
 
   // A replayed copy needs no batch of its own, and opening one here would make
   // flush_batch() submit an empty command buffer every frame the gui patches
   // its atlas.
   const VkCommandBuffer cmd = on_graphics ? VK_NULL_HANDLE : ensure_batch();
-  if (!on_graphics && cmd == VK_NULL_HANDLE)
+  if (!on_graphics && cmd == VK_NULL_HANDLE) {
+    nx::loge(log_up, "upload_texture: no command batch to record into");
     return {};
+  }
 
   nx::small_vector<VkBufferImageCopy, 16> copies;
   u64 offset = 0;
@@ -578,8 +584,12 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
                                            const std::span<const u8> src,
                                            const ResourceState final_state) {
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
-  if (buf == nullptr || buf->buffer == VK_NULL_HANDLE || src.empty())
+  if (src.empty())
     return {};
+  if (buf == nullptr || buf->buffer == VK_NULL_HANDLE) {
+    nx::loge(log_up, "upload_buffer: nothing to upload into");
+    return {};
+  }
 
   VkBuffer staging_buf = VK_NULL_HANDLE;
   u8 *staging = nullptr;
@@ -595,13 +605,17 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
       staging_buf = oversized->buffer;
     }
   }
-  if (staging == nullptr)
+  if (staging == nullptr) {
+    nx::loge(log_up, "upload_buffer: no staging for {} bytes", src.size());
     return {};
+  }
   std::memcpy(staging, src.data(), src.size());
 
   const VkCommandBuffer cmd = ensure_batch();
-  if (cmd == VK_NULL_HANDLE)
+  if (cmd == VK_NULL_HANDLE) {
+    nx::loge(log_up, "upload_buffer: no command batch to record into");
     return {};
+  }
 
   VkBufferCopy region{};
   region.srcOffset = base_offset;

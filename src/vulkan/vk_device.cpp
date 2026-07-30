@@ -544,6 +544,9 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
   if (!m_uploader.init(this))
     return false;
 
+  if (!create_frame_contexts(desc.frames_in_flight))
+    return false;
+
   return true;
 }
 

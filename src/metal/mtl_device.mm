@@ -264,6 +264,20 @@ bool MetalDevice::init(const DeviceDesc &desc) {
 
     create_pipeline_archive(*state, desc.pipeline_cache_path);
 
+    // Before any swapchain, so that frames_in_flight() is the truth from here
+    // on and everything cycling per-frame buffers can size itself off it at
+    // construction rather than guessing. The pacing semaphore goes with it.
+    state->frames_in_flight = nx::clamp<u32>(desc.frames_in_flight, 1, 3);
+    state->frame_semaphore =
+        dispatch_semaphore_create(state->frames_in_flight);
+    if (state->frame_semaphore == nil) {
+      nx::loge(log_rhi, "init: could not create the frame pacing semaphore");
+      delete state;
+      m_caps = {};
+      m_device_name.clear();
+      return false;
+    }
+
     state->owner = this;
     m_state = state;
     m_uploader.m_state = state;
@@ -509,17 +523,8 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
     return false;
   }
 
-  // The pacing semaphore is normally made by create_swapchain. Without one it
-  // has to be made here, and it is kept afterwards so a device that later
-  // gains a surface does not end up with two.
-  if (s->frame_semaphore == nil) {
-    if (s->frames_in_flight == 0)
-      s->frames_in_flight = 2;
-    // Same call create_swapchain makes; the count is the frames in flight.
-    s->frame_semaphore = dispatch_semaphore_create(s->frames_in_flight);
-    if (s->frame_semaphore == nil)
-      return false;
-  }
+  if (s->frame_semaphore == nil)
+    return false;
 
   dispatch_semaphore_wait(s->frame_semaphore, DISPATCH_TIME_FOREVER);
 

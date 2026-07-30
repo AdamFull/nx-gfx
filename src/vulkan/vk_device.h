@@ -39,6 +39,7 @@ struct DeviceDesc {
   /// File the pipeline cache is loaded from and saved to. Empty keeps the cache
   /// in memory only (recompiled every run).
   nx::string_view pipeline_cache_path;
+  u32 frames_in_flight = 2;
 };
 
 /// Which queue family owns an image, as far as the uploader's dedicated-
@@ -214,6 +215,10 @@ public:
   void shutdown() noexcept;
 
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
+
+  [[nodiscard]] u32 frames_in_flight() const noexcept {
+    return m_frames_in_flight;
+  }
 
   /// The async upload / readback service. Its copies run on the transfer queue
   /// and are handed off to the graphics queue at frame boundaries.

@@ -40,6 +40,7 @@ struct DeviceDesc {
   /// in memory only (recompiled every run). Metal's equivalent is an
   /// MTLBinaryArchive; unused until pipelines land.
   nx::string_view pipeline_cache_path;
+  u32 frames_in_flight = 2;
 };
 
 /// In-flight readback. `data` is valid once the ticket completes, and only
@@ -200,6 +201,8 @@ public:
   void shutdown() noexcept;
 
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
+
+  [[nodiscard]] u32 frames_in_flight() const noexcept;
 
   [[nodiscard]] MetalUploader &uploader() noexcept { return m_uploader; }
 

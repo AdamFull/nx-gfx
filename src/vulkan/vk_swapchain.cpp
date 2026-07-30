@@ -230,9 +230,6 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
              nx::cast<i32>(chosen.format));
   }
 
-  if (!create_frame_contexts(desc.frames_in_flight))
-    return false;
-
   return build_swapchain(desc.width, desc.height);
 }
 
@@ -456,10 +453,7 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   if (m_device == VK_NULL_HANDLE || m_frame_active)
     return false;
 
-  // The frame contexts are normally made by create_swapchain. Without one they
-  // have to be made here, and the call is idempotent so a device that later
-  // gains a surface keeps the same ones.
-  if (!create_frame_contexts(2))
+  if (m_frames.empty())
     return false;
 
   FrameContext &frame = m_frames[m_frame_index];

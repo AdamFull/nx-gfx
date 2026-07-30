@@ -19,3 +19,4 @@
 #include "rendering/rhi/image/image.h"
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/upload.h"
+#include "rendering/rhi/upload_ring.h"

@@ -14,14 +14,16 @@ set(NX_RHI_HEADERS
         rhi.h
         shader_reflect.h
         types.h
-        upload.h)
+        upload.h
+        upload_ring.h)
 
 set(NX_RHI_SOURCES
         image/image.cpp
         image/stb_image_impl.cpp
         shader_reflect.cpp
         shader_reflect_json.cpp
-        types.cpp)
+        types.cpp
+        upload_ring.cpp)
 
 # Vulkan everywhere except Apple platforms, which get Metal. Note this is not
 # the same split as the PAL uses: macOS is GLFW for windowing but Metal for

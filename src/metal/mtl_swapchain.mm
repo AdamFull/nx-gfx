@@ -133,7 +133,9 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
     return false;
   }
 
-  const u32 frames_in_flight = nx::clamp<u32>(desc.frames_in_flight, 1, 3);
+  // Fixed at device init; the swapchain only reads it to size the drawable
+  // pool.
+  const u32 frames_in_flight = s->frames_in_flight;
 
   @autoreleasepool {
     layer.drawableSize = CGSizeMake(desc.width, desc.height);
@@ -156,8 +158,6 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
   s->swapchain_format = from_mtl_format(pixel_format);
   s->extent = {desc.width, desc.height};
   s->present_mode = desc.present_mode;
-  s->frames_in_flight = frames_in_flight;
-  s->frame_semaphore = dispatch_semaphore_create(frames_in_flight);
 
   // One handle for the backbuffer, valid for the swapchain's lifetime. Its
   // MTLTexture is filled in per frame from the drawable.
@@ -258,6 +258,10 @@ void MetalDevice::destroy_swapchain() noexcept {
   s->frame_semaphore = nil;
   s->swapchain_format = Format::Unknown;
   s->extent = {};
+}
+
+u32 MetalDevice::frames_in_flight() const noexcept {
+  return m_state != nullptr ? m_state->frames_in_flight : 0u;
 }
 
 Format MetalDevice::swapchain_format() const noexcept {

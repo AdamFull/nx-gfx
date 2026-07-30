@@ -165,9 +165,6 @@ struct SwapchainDesc {
   /// Preferred backbuffer format; the backend picks the closest supported one
   /// and reports the result via Swapchain::format().
   Format preferred_format = Format::BGRA8_UNORM;
-  /// How many frames the CPU may run ahead of the GPU. 2 on mobile, 2-3 on
-  /// desktop; more costs latency for little throughput.
-  u32 frames_in_flight = 2;
 };
 
 #if defined(NX_RHI_METAL)
