@@ -426,6 +426,12 @@ bool MetalDevice::end_frame() {
   MetalDeviceState *s = m_state;
   if (s == nullptr || !s->frame_active)
     return false;
+  // The mirror of the check in end_headless_frame: crossing the two would
+  // present a drawable that was never acquired.
+  if (s->headless_frame) {
+    nx::loge(log_rhi, "end_frame on a headless frame; use end_headless_frame");
+    return false;
+  }
 
   @autoreleasepool {
     // A caller that forgot to end a pass would otherwise hit an assertion
@@ -490,6 +496,131 @@ bool MetalDevice::end_frame() {
   if (MetalTexture *backbuffer = s->textures.try_get(s->backbuffer))
     backbuffer->texture = nil;
 
+  return true;
+}
+
+bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
+  if (m_state == nullptr || m_state->queue == nil)
+    return false;
+
+  MetalDeviceState *s = m_state;
+  if (s->frame_active) {
+    nx::loge(log_rhi, "begin_headless_frame with a frame already open");
+    return false;
+  }
+
+  // The pacing semaphore is normally made by create_swapchain. Without one it
+  // has to be made here, and it is kept afterwards so a device that later
+  // gains a surface does not end up with two.
+  if (s->frame_semaphore == nil) {
+    if (s->frames_in_flight == 0)
+      s->frames_in_flight = 2;
+    // Same call create_swapchain makes; the count is the frames in flight.
+    s->frame_semaphore = dispatch_semaphore_create(s->frames_in_flight);
+    if (s->frame_semaphore == nil)
+      return false;
+  }
+
+  dispatch_semaphore_wait(s->frame_semaphore, DISPATCH_TIME_FOREVER);
+
+  collect_garbage(*s, s->frames_submitted >= s->frames_in_flight
+                          ? s->frames_submitted - s->frames_in_flight
+                          : 0);
+  uploader_reclaim(*s);
+  uploader_pump(*s);
+
+  @autoreleasepool {
+    s->contexts.resize(MetalDeviceState::MAX_CONTEXTS);
+    for (MetalContextSlot &slot : s->contexts)
+      slot.in_use = false;
+    s->used_contexts = 1;
+
+    MetalContextSlot &slot = s->contexts[0];
+    slot = MetalContextSlot{};
+    slot.cmd = [s->queue commandBuffer];
+    if (slot.cmd == nil) {
+      dispatch_semaphore_signal(s->frame_semaphore);
+      return false;
+    }
+    slot.cmd.label = @"nx2d headless frame";
+    slot.in_use = true;
+
+    begin_command_buffer(slot);
+    if (s->upload.submitted > 0) {
+      [slot.cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
+    }
+    s->frame_event_base = s->frame_event_value;
+  }
+
+  s->frame_active = true;
+  s->headless_frame = true;
+  out_context.m_state = s;
+  out_context.m_slot = 0;
+  out_context.m_in_render_pass = false;
+  return true;
+}
+
+bool MetalDevice::end_headless_frame() {
+  MetalDeviceState *s = m_state;
+  if (s == nullptr || !s->frame_active || !s->headless_frame)
+    return false;
+
+  id<MTLCommandBuffer> last_cmd = nil;
+
+  @autoreleasepool {
+    for (usize i = 0; i < s->used_contexts; ++i) {
+      MetalContextSlot &slot = s->contexts[i];
+      if (slot.encoder != nil) {
+        nx::logw(log_rhi, "end_headless_frame with a render pass still open");
+        encoder_update_fence(*s, slot, slot.encoder);
+        [slot.encoder endEncoding];
+        slot.encoder = nil;
+      }
+      if (slot.compute_encoder != nil) {
+        nx::logw(log_rhi, "end_headless_frame with a compute pass still open");
+        encoder_update_fence(*s, slot, slot.compute_encoder);
+        [slot.compute_encoder endEncoding];
+        slot.compute_encoder = nil;
+      }
+    }
+
+    // The same event chain end_frame builds, minus the present: commit order
+    // alone does not order execution, so a later group could read transients an
+    // earlier one had not finished writing.
+    const usize last = s->used_contexts - 1;
+    const u64 base = s->frame_event_base;
+    s->frame_event_value = base + s->used_contexts;
+    for (usize i = 0; i < s->used_contexts; ++i) {
+      MetalContextSlot &slot = s->contexts[i];
+      if (slot.cmd == nil)
+        continue;
+
+      [slot.cmd encodeSignalEvent:s->frame_event value:base + i + 1];
+
+      if (i == last) {
+        dispatch_semaphore_t semaphore = s->frame_semaphore;
+        [slot.cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+          dispatch_semaphore_signal(semaphore);
+        }];
+        // Retained past the pool drain: the wait below happens after it.
+        last_cmd = slot.cmd;
+      }
+      [slot.cmd commit];
+      slot.cmd = nil;
+      slot.in_use = false;
+    }
+  }
+
+  // Block, rather than pipelining: the caller is about to read the target.
+  // Waiting on the last buffer covers the whole chain, since the events order
+  // the earlier ones ahead of it.
+  if (last_cmd != nil)
+    [last_cmd waitUntilCompleted];
+
+  s->used_contexts = 0;
+  s->frame_active = false;
+  s->headless_frame = false;
+  ++s->frames_submitted;
   return true;
 }
 

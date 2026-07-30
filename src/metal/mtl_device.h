@@ -217,6 +217,10 @@ public:
   [[nodiscard]] AcquireResult begin_frame(MetalCommandContext &out_context);
   [[nodiscard]] bool end_frame();
 
+  [[nodiscard]] bool begin_headless_frame(MetalCommandContext &out_context);
+
+  [[nodiscard]] bool end_headless_frame();
+
   /// Always fails for now: every MetalCommandContext shares the device's one
   /// command buffer and encoder, so there is nothing to hand out. Parallel
   /// encoding needs a command buffer per context, ordered with -enqueue.

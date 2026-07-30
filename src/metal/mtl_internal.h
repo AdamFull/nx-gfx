@@ -296,6 +296,7 @@ struct MetalDeviceState {
   // the outer pool, so every .mm entry point wraps its body in
   // @autoreleasepool; the strong members are what survive the drain.
   bool frame_active = false;
+  bool headless_frame = false;
 
   /// Slot 0 is the context begin_frame hands back; open_contexts() lends out
   /// the rest. They are committed in slot order at end_frame, which is the
