@@ -73,7 +73,7 @@ add_library(nx::rhi ALIAS nx_rhi)
 # NativeWindowHandle, which exists precisely to be handed to a surface-creation
 # call.
 target_link_libraries(nx_rhi
-        PUBLIC nx::foundation nx::runtime
+        PUBLIC nx::foundation
         PRIVATE nx::compile_options nx::stb)
 
 # stb_image's implementation TU is third-party code; its warnings are not ours

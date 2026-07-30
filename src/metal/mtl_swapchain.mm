@@ -71,7 +71,7 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
   @autoreleasepool {
     switch (desc.window.kind) {
 #if TARGET_OS_OSX
-    case rt::NativeWindowKind::Cocoa: {
+    case nx::NativeWindowKind::Cocoa: {
       NSWindow *window = (__bridge NSWindow *)desc.window.window;
       if (window == nil) {
         nx::loge(log_rhi, "create_swapchain: null NSWindow");
@@ -105,7 +105,7 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
       break;
     }
 #else
-    case rt::NativeWindowKind::UIKit: {
+    case nx::NativeWindowKind::UIKit: {
       // The iOS backend owns a CAMetalLayer-backed UIView already and hands the
       // layer straight over.
       layer = (__bridge CAMetalLayer *)desc.window.window;

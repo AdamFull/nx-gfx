@@ -91,12 +91,12 @@ pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported) noexcept {
 /// Creates a VkSurfaceKHR from whatever the PAL handed us. This is the one
 /// place in the RHI that knows about window systems.
 VkSurfaceKHR create_surface(VkInstance instance,
-                            const rt::NativeWindowHandle &window) noexcept {
+                            const nx::NativeWindowHandle &window) noexcept {
   VkSurfaceKHR surface = VK_NULL_HANDLE;
 
   switch (window.kind) {
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
-  case rt::NativeWindowKind::Win32: {
+  case nx::NativeWindowKind::Win32: {
     VkWin32SurfaceCreateInfoKHR info{
         VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     info.hinstance = nx::cast<HINSTANCE>(GetModuleHandleW(nullptr));
@@ -106,7 +106,7 @@ VkSurfaceKHR create_surface(VkInstance instance,
   }
 #endif
 #if defined(VK_USE_PLATFORM_ANDROID_KHR)
-  case rt::NativeWindowKind::Android: {
+  case nx::NativeWindowKind::Android: {
     VkAndroidSurfaceCreateInfoKHR info{
         VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
     info.window = nx::cast<ANativeWindow *>(window.window);
@@ -115,7 +115,7 @@ VkSurfaceKHR create_surface(VkInstance instance,
   }
 #endif
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
-  case rt::NativeWindowKind::Xlib: {
+  case nx::NativeWindowKind::Xlib: {
     VkXlibSurfaceCreateInfoKHR info{
         VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
     info.dpy = nx::cast<Display *>(window.display);
@@ -125,7 +125,7 @@ VkSurfaceKHR create_surface(VkInstance instance,
   }
 #endif
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
-  case rt::NativeWindowKind::Wayland: {
+  case nx::NativeWindowKind::Wayland: {
     VkWaylandSurfaceCreateInfoKHR info{
         VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR};
     info.display = nx::cast<wl_display *>(window.display);
@@ -135,8 +135,8 @@ VkSurfaceKHR create_surface(VkInstance instance,
   }
 #endif
 #if defined(VK_USE_PLATFORM_METAL_EXT)
-  case rt::NativeWindowKind::UIKit:
-  case rt::NativeWindowKind::Cocoa: {
+  case nx::NativeWindowKind::UIKit:
+  case nx::NativeWindowKind::Cocoa: {
     VkMetalSurfaceCreateInfoEXT info{
         VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT};
     info.pLayer = nx::cast<const CAMetalLayer *>(window.window);
@@ -155,7 +155,7 @@ VkSurfaceKHR create_surface(VkInstance instance,
 } // namespace
 
 bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
-  if (desc.window.kind == rt::NativeWindowKind::None ||
+  if (desc.window.kind == nx::NativeWindowKind::None ||
       desc.window.window == nullptr) {
     // No surface yet. Normal on Android and iOS, where the OS only hands one
     // over after the activity is resumed; the caller retries next frame.

@@ -7,10 +7,10 @@
  */
 
 #include "foundation/core/foundation.h"
+#include "foundation/platform/native_window.h"
 #include "foundation/strings/utf8_string_view.h"
 #include "rendering/rhi/handles.h"
 #include "rendering/rhi/types.h"
-#include "runtime/window.h"
 
 namespace nxe::rhi {
 
@@ -155,10 +155,8 @@ struct RenderPassDesc {
 
 /// Swapchain creation / recreation parameters.
 struct SwapchainDesc {
-  /// Native surface, straight from IWindow::native_handle(). The RHI depends
-  /// on the PAL for exactly this one type - it exists to be handed to
-  /// vkCreate*SurfaceKHR.
-  rt::NativeWindowHandle window;
+  /// Native surface, straight from IWindow::native_handle().
+  nx::NativeWindowHandle window;
   u32 width = 0;
   u32 height = 0;
   PresentMode present_mode = PresentMode::Fifo;
