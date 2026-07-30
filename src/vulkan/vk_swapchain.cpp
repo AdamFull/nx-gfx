@@ -588,6 +588,12 @@ bool VulkanDevice::open_contexts(const std::span<VulkanCommandContext> out) {
 bool VulkanDevice::end_frame() {
   if (!m_frame_active)
     return true;
+  // Crossing the two kinds of frame would wait on an acquire semaphore nothing
+  // ever signals, which hangs the GPU rather than failing.
+  if (m_headless_frame) {
+    nx::loge(log_rhi, "end_frame on a headless frame; use end_headless_frame");
+    return false;
+  }
   m_frame_active = false;
 
   FrameContext &frame = m_frames[m_frame_index];
