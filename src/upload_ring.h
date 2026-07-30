@@ -28,13 +28,13 @@ public:
   [[nodiscard]] bool ensure(Device &device, u64 bytes, BufferDesc desc);
   void release(Device &device) noexcept;
 
-  [[nodiscard]] BufferHandle handle() const noexcept { return handle_; }
-  [[nodiscard]] u64 capacity() const noexcept { return capacity_; }
-  [[nodiscard]] bool valid() const noexcept { return handle_.valid(); }
+  [[nodiscard]] BufferHandle handle() const noexcept { return m_handle; }
+  [[nodiscard]] u64 capacity() const noexcept { return m_capacity; }
+  [[nodiscard]] bool valid() const noexcept { return m_handle.valid(); }
 
 private:
-  BufferHandle handle_;
-  u64 capacity_ = 0;
+  BufferHandle m_handle;
+  u64 m_capacity = 0;
 };
 
 class UploadRing {
@@ -64,21 +64,21 @@ public:
   /// zero address would fault where an empty buffer just reads no elements.
   [[nodiscard]] u64 reserve(u32 array, u64 bytes);
 
-  [[nodiscard]] bool valid() const noexcept { return device_ != nullptr; }
-  [[nodiscard]] u32 frame_count() const noexcept { return frames_; }
+  [[nodiscard]] bool valid() const noexcept { return m_device != nullptr; }
+  [[nodiscard]] u32 frame_count() const noexcept { return m_frames; }
 
 private:
   [[nodiscard]] GrowableBuffer *acquire(u32 array, u64 bytes);
 
-  Device *device_ = nullptr;
-  /// Frame-major: frame * arrays_ + array.
-  nx::vector<GrowableBuffer> buffers_;
+  Device *m_device = nullptr;
+  /// Frame-major: frame * m_arrays + array.
+  nx::vector<GrowableBuffer> m_buffers;
   /// Built once at init. Formatting these per frame would be a heap allocation
   /// per array per frame to name a buffer that almost always already exists.
-  nx::vector<nx::string> names_;
-  u32 arrays_ = 0;
-  u32 frames_ = 0;
-  u32 frame_ = 0;
+  nx::vector<nx::string> m_names;
+  u32 m_arrays = 0;
+  u32 m_frames = 0;
+  u32 m_frame = 0;
 };
 
 } // namespace nxe::rhi
