@@ -7,8 +7,6 @@
  * The uploader records copies on the transfer queue and returns immediately;
  * an UploadTicket names the point on the uploader's timeline at which that work
  * is done. Poll it with Uploader::is_complete() or block on Uploader::wait().
- * A default-constructed (value 0) ticket is "nothing to wait for" and reports
- * complete.
  */
 
 #include "foundation/core/foundation.h"
@@ -18,7 +16,13 @@ namespace nxe::rhi {
 
 struct UploadTicket {
   u64 value = 0;
+  bool failed = false;
+
   [[nodiscard]] bool valid() const noexcept { return value != 0; }
+  [[nodiscard]] bool ok() const noexcept { return !failed; }
+
+  /// The ticket a failed upload returns.
+  [[nodiscard]] static UploadTicket failure() noexcept { return {0, true}; }
 };
 
 /// Lifecycle of an asynchronous load (see Uploader::load_texture).

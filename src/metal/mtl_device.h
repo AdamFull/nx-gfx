@@ -80,14 +80,14 @@ public:
   static constexpr TextureUsageFlags DEFAULT_LOAD_USAGE =
       TextureUsage::Sampled | TextureUsage::CopyDst;
 
-  UploadTicket
+  [[nodiscard]] UploadTicket
   upload_texture(TextureHandle handle, std::span<const u8> src,
                  std::span<const ImageSubresource> layout,
                  ResourceState final_state = ResourceState::ShaderReadOnly);
-  UploadTicket
+  [[nodiscard]] UploadTicket
   upload_texture(TextureHandle handle, const ImageData &image,
                  ResourceState final_state = ResourceState::ShaderReadOnly);
-  UploadTicket
+  [[nodiscard]] UploadTicket
   upload_buffer(BufferHandle handle, u64 dst_offset, std::span<const u8> src,
                 ResourceState final_state = ResourceState::ShaderReadOnly);
 

@@ -401,10 +401,20 @@ void uploader_pump(MetalDeviceState &state) {
       continue;
     }
 
-    slot.texture = handle;
-    (void)device->uploader().upload_texture(handle, slot.decoded);
+    const bool uploaded =
+        device->uploader().upload_texture(handle, slot.decoded).ok();
     // The pixels are on their way to the GPU; the CPU copy is dead weight.
     slot.decoded = {};
+    // Without this the load reaches Ready and hands out a texture holding
+    // whatever was in that memory, which is worse than reporting the failure.
+    if (!uploaded) {
+      device->destroy_texture(handle);
+      slot.status.store(LoadStatus::Failed, std::memory_order_release);
+      ++up.loads_failed;
+      continue;
+    }
+
+    slot.texture = handle;
     slot.status.store(LoadStatus::Ready, std::memory_order_release);
     ++up.loads_ready;
   }
@@ -422,19 +432,19 @@ UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
                                            const std::span<const ImageSubresource> layout,
                                            const ResourceState final_state) {
   if (m_state == nullptr || layout.empty())
-    return {};
+    return UploadTicket::failure();
 
   MetalTexture *texture = m_state->textures.try_get(handle);
   if (texture == nullptr || texture->texture == nil) {
     nx::loge(log_rhi, "upload_texture: handle is not live");
-    return {};
+    return UploadTicket::failure();
   }
 
   if (!ensure_batch(*m_state))
-    return {};
+    return UploadTicket::failure();
 
   if (!record_texture_copies(*m_state, *texture, src, layout))
-    return {};
+    return UploadTicket::failure();
 
   texture->state = final_state;
 
@@ -460,27 +470,27 @@ UploadTicket MetalUploader::upload_buffer(const BufferHandle handle,
   (void)final_state; // Buffers carry no tracked state in this backend.
 
   if (m_state == nullptr || src.empty())
-    return {};
+    return UploadTicket::failure();
 
   const MetalBuffer *buffer = m_state->buffers.try_get(handle);
   if (buffer == nullptr || buffer->buffer == nil) {
     nx::loge(log_rhi, "upload_buffer: handle is not live");
-    return {};
+    return UploadTicket::failure();
   }
   if (dst_offset + src.size() > buffer->size) {
     nx::loge(log_rhi, "upload_buffer: {} bytes at offset {} overruns a {} byte "
                       "buffer",
              src.size(), dst_offset, buffer->size);
-    return {};
+    return UploadTicket::failure();
   }
 
   if (!ensure_batch(*m_state))
-    return {};
+    return UploadTicket::failure();
 
   MetalUploadState &up = m_state->upload;
   Staging staging = acquire_staging(*m_state, src.size());
   if (staging.buffer == nil)
-    return {};
+    return UploadTicket::failure();
 
   std::memcpy([staging.buffer contents], src.data(), src.size());
   [up.blit copyFromBuffer:staging.buffer

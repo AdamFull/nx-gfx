@@ -103,18 +103,19 @@ public:
   /// next frame hand-off rather than at once, and a texture the graphics family
   /// already owns is uploaded by that frame instead of by the copy queue - the
   /// copy has no place on the copy timeline then, so the ticket comes back
-  /// invalid (already complete). Wait on such an upload by presenting a frame.
-  UploadTicket
+  /// complete but not valid. Wait on such an upload by presenting a frame.
+  /// Check ok() to tell that apart from an upload that did not happen.
+  [[nodiscard]] UploadTicket
   upload_texture(TextureHandle handle, std::span<const u8> src,
                  std::span<const ImageSubresource> layout,
                  ResourceState final_state = ResourceState::ShaderReadOnly);
 
   /// Convenience: upload a whole decoded image.
-  UploadTicket
+  [[nodiscard]] UploadTicket
   upload_texture(TextureHandle handle, const ImageData &image,
                  ResourceState final_state = ResourceState::ShaderReadOnly);
 
-  UploadTicket
+  [[nodiscard]] UploadTicket
   upload_buffer(BufferHandle handle, u64 dst_offset, std::span<const u8> src,
                 ResourceState final_state = ResourceState::ShaderReadOnly);
 

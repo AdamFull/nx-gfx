@@ -409,7 +409,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
   if (tex == nullptr || tex->image == VK_NULL_HANDLE || layout.empty()) {
     nx::loge(log_up, "upload_texture: nothing to upload into");
-    return {};
+    return UploadTicket::failure();
   }
 
   const VkImageAspectFlags aspect = to_vk_aspect(tex->format);
@@ -441,7 +441,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   }
   if (staging == nullptr) {
     nx::loge(log_up, "upload_texture: no staging for {} bytes", staging_size);
-    return {};
+    return UploadTicket::failure();
   }
 
   // A replayed copy needs no batch of its own, and opening one here would make
@@ -450,7 +450,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   const VkCommandBuffer cmd = on_graphics ? VK_NULL_HANDLE : ensure_batch();
   if (!on_graphics && cmd == VK_NULL_HANDLE) {
     nx::loge(log_up, "upload_texture: no command batch to record into");
-    return {};
+    return UploadTicket::failure();
   }
 
   nx::small_vector<VkBufferImageCopy, 16> copies;
@@ -588,7 +588,7 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
     return {};
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE) {
     nx::loge(log_up, "upload_buffer: nothing to upload into");
-    return {};
+    return UploadTicket::failure();
   }
 
   VkBuffer staging_buf = VK_NULL_HANDLE;
@@ -607,14 +607,14 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   }
   if (staging == nullptr) {
     nx::loge(log_up, "upload_buffer: no staging for {} bytes", src.size());
-    return {};
+    return UploadTicket::failure();
   }
   std::memcpy(staging, src.data(), src.size());
 
   const VkCommandBuffer cmd = ensure_batch();
   if (cmd == VK_NULL_HANDLE) {
     nx::loge(log_up, "upload_buffer: no command batch to record into");
-    return {};
+    return UploadTicket::failure();
   }
 
   VkBufferCopy region{};
@@ -731,7 +731,8 @@ void VulkanUploader::worker_main() {
   while (!m_worker_stop.load(std::memory_order_acquire)) {
     LoadCommand cmd;
     if (!m_load_requests.try_pop(cmd)) {
-      m_worker_wake.try_acquire_for(std::chrono::milliseconds(100));
+      // Timing out and being woken lead to the same place: round the loop.
+      (void)m_worker_wake.try_acquire_for(std::chrono::milliseconds(100));
       continue;
     }
 
@@ -792,6 +793,15 @@ void VulkanUploader::pump() {
     }
     const UploadTicket ticket = upload_texture(handle, *res.image);
     nx::release(res.image);
+
+    // Without this the load reaches Ready and hands out a texture holding
+    // whatever was in that memory, which is worse than reporting the failure.
+    if (!ticket.ok()) {
+      m_device->destroy_texture(handle);
+      m_load_state[s].store(LoadStatus::Failed, std::memory_order_release);
+      m_loads_failed.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
 
     m_load_handle[s] = handle;
     m_load_ticket[s] = ticket;
