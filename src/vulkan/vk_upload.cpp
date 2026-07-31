@@ -12,6 +12,7 @@
 #include "rendering/rhi/vulkan/vk_device.h"
 
 #include "foundation/diagnostics/log.h"
+#include "foundation/diagnostics/profiler.h"
 
 #include <chrono>
 #include <cstring>
@@ -406,6 +407,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
                                const std::span<const u8> src,
                                const std::span<const ImageSubresource> layout,
                                const ResourceState final_state) {
+  NX_PROFILE_ZONE("vk::upload_texture");
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
   if (tex == nullptr || tex->image == VK_NULL_HANDLE || layout.empty()) {
     nx::loge(log_up, "upload_texture: nothing to upload into");
@@ -583,6 +585,7 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
                                            const u64 dst_offset,
                                            const std::span<const u8> src,
                                            const ResourceState final_state) {
+  NX_PROFILE_ZONE("vk::upload_buffer");
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (src.empty())
     return {};
@@ -979,6 +982,7 @@ void VulkanUploader::wait(const UploadTicket ticket) noexcept {
 }
 
 void VulkanUploader::flush() noexcept {
+  NX_PROFILE_ZONE("vk::upload_flush");
   flush_locked();
   wait_value(m_value);
   reclaim_locked();

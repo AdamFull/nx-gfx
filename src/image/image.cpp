@@ -12,6 +12,7 @@
 #include "rendering/rhi/image/image.h"
 
 #include "foundation/diagnostics/log.h"
+#include "foundation/diagnostics/profiler.h"
 
 #include <stb_image.h>
 
@@ -530,6 +531,7 @@ ImageData::texture_desc(const nx::string_view name,
 }
 
 Result load_image_from_memory(const std::span<const u8> bytes) {
+  NX_PROFILE_ZONE("image::decode");
   if (bytes.empty())
     return nx::err(ImageError::Empty);
 
