@@ -8,9 +8,9 @@
  * these types carry no graphics API types and mean the same thing on both.
  */
 
-#include "foundation/containers/small_vector.h"
-#include "foundation/strings/id_string.h"
-#include "rendering/rhi/types.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/strings/id_string.h"
+#include "core/rendering/rhi/types.h"
 
 #include <span>
 

@@ -7,12 +7,12 @@
  * communicating through lock-free queues and an atomic status table.
  */
 
-#include "rendering/rhi/vulkan/vk_upload.h"
+#include "core/rendering/rhi/vulkan/vk_upload.h"
 
-#include "rendering/rhi/vulkan/vk_device.h"
+#include "core/rendering/rhi/vulkan/vk_device.h"
 
-#include "foundation/diagnostics/log.h"
-#include "foundation/diagnostics/profiler.h"
+#include "core/foundation/diagnostics/log.h"
+#include "core/foundation/diagnostics/profiler.h"
 
 #include <chrono>
 #include <cstring>

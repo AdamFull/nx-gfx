@@ -5,17 +5,17 @@
  * @brief Vulkan 1.3 device, swapchain and bindless heap.
  */
 
-#include "foundation/containers/fixed_vector.h"
-#include "foundation/containers/slot_map.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/strings/utf8_string.h"
-#include "rendering/rhi/bindless.h"
-#include "rendering/rhi/descs.h"
-#include "rendering/rhi/handles.h"
-#include "rendering/rhi/shader_reflect.h"
-#include "rendering/rhi/types.h"
-#include "rendering/rhi/vulkan/vk_common.h"
-#include "rendering/rhi/vulkan/vk_upload.h"
+#include "core/foundation/containers/fixed_vector.h"
+#include "core/foundation/containers/slot_map.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/rendering/rhi/bindless.h"
+#include "core/rendering/rhi/descs.h"
+#include "core/rendering/rhi/handles.h"
+#include "core/rendering/rhi/shader_reflect.h"
+#include "core/rendering/rhi/types.h"
+#include "core/rendering/rhi/vulkan/vk_common.h"
+#include "core/rendering/rhi/vulkan/vk_upload.h"
 
 #include <vk_mem_alloc.h>
 

@@ -7,9 +7,9 @@
  * of it and bind_pipeline applies the lot.
  */
 
-#include "rendering/rhi/metal/mtl_internal.h"
+#include "core/rendering/rhi/metal/mtl_internal.h"
 
-#include "foundation/platform/filesystem.h"
+#include "core/foundation/platform/filesystem.h"
 
 namespace nxe::rhi {
 namespace {

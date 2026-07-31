@@ -12,11 +12,11 @@
  * See docs/design.md section 5.
  */
 
-#include "rendering/rhi/bindless.h"
-#include "rendering/rhi/descs.h"
-#include "rendering/rhi/device.h"
-#include "rendering/rhi/handles.h"
-#include "rendering/rhi/image/image.h"
-#include "rendering/rhi/types.h"
-#include "rendering/rhi/upload.h"
-#include "rendering/rhi/upload_ring.h"
+#include "core/rendering/rhi/bindless.h"
+#include "core/rendering/rhi/descs.h"
+#include "core/rendering/rhi/device.h"
+#include "core/rendering/rhi/handles.h"
+#include "core/rendering/rhi/image/image.h"
+#include "core/rendering/rhi/types.h"
+#include "core/rendering/rhi/upload.h"
+#include "core/rendering/rhi/upload_ring.h"

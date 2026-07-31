@@ -17,7 +17,7 @@
  * will not silently pass where a TextureHandle is wanted.
  */
 
-#include "foundation/core/handle.h"
+#include "core/foundation/core/handle.h"
 
 namespace nxe::rhi {
 

@@ -16,13 +16,13 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
-#include "foundation/containers/concurrent_queue.h"
-#include "foundation/containers/slot_map.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/diagnostics/log.h"
-#include "foundation/threading/sync.h"
-#include "foundation/threading/thread.h"
-#include "rendering/rhi/metal/mtl_device.h"
+#include "core/foundation/containers/concurrent_queue.h"
+#include "core/foundation/containers/slot_map.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/diagnostics/log.h"
+#include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
+#include "core/rendering/rhi/metal/mtl_device.h"
 
 #include <atomic>
 

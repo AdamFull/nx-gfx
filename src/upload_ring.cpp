@@ -1,7 +1,7 @@
-#include "rendering/rhi/upload_ring.h"
+#include "core/rendering/rhi/upload_ring.h"
 
-#include "foundation/diagnostics/log.h"
-#include "foundation/strings/format.h"
+#include "core/foundation/diagnostics/log.h"
+#include "core/foundation/strings/format.h"
 
 #include <cstring>
 

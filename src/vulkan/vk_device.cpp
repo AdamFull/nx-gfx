@@ -1,8 +1,8 @@
-#include "rendering/rhi/vulkan/vk_device.h"
+#include "core/rendering/rhi/vulkan/vk_device.h"
 
-#include "foundation/core/scope_guard.h"
-#include "foundation/diagnostics/diagnostic.h"
-#include "foundation/diagnostics/log.h"
+#include "core/foundation/core/scope_guard.h"
+#include "core/foundation/diagnostics/diagnostic.h"
+#include "core/foundation/diagnostics/log.h"
 
 #include <cstring>
 

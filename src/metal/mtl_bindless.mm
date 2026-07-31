@@ -13,7 +13,7 @@
  * the heaps and `resident` list are for.
  */
 
-#include "rendering/rhi/metal/mtl_internal.h"
+#include "core/rendering/rhi/metal/mtl_internal.h"
 
 namespace nxe::rhi {
 namespace {

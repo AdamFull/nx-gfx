@@ -1,6 +1,6 @@
-#include "rendering/rhi/shader_reflect.h"
+#include "core/rendering/rhi/shader_reflect.h"
 
-#include "foundation/diagnostics/log.h"
+#include "core/foundation/diagnostics/log.h"
 
 #include <cstring>
 

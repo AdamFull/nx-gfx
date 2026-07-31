@@ -9,10 +9,10 @@
  * is self-describing, so the uploader does not care which produced it.
  */
 
-#include "rendering/rhi/image/image.h"
+#include "core/rendering/rhi/image/image.h"
 
-#include "foundation/diagnostics/log.h"
-#include "foundation/diagnostics/profiler.h"
+#include "core/foundation/diagnostics/log.h"
+#include "core/foundation/diagnostics/profiler.h"
 
 #include <stb_image.h>
 

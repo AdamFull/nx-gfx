@@ -35,17 +35,17 @@
  * transfer is involved at all.
  */
 
-#include "foundation/containers/concurrent_queue.h"
-#include "foundation/containers/small_vector.h"
-#include "foundation/core/foundation.h"
-#include "foundation/strings/utf8_string.h"
-#include "foundation/threading/sync.h"
-#include "foundation/threading/thread.h"
-#include "rendering/rhi/handles.h"
-#include "rendering/rhi/image/image.h"
-#include "rendering/rhi/types.h"
-#include "rendering/rhi/upload.h"
-#include "rendering/rhi/vulkan/vk_common.h"
+#include "core/foundation/containers/concurrent_queue.h"
+#include "core/foundation/containers/small_vector.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
+#include "core/rendering/rhi/handles.h"
+#include "core/rendering/rhi/image/image.h"
+#include "core/rendering/rhi/types.h"
+#include "core/rendering/rhi/upload.h"
+#include "core/rendering/rhi/vulkan/vk_common.h"
 
 #include <vk_mem_alloc.h>
 

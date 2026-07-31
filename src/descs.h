@@ -6,11 +6,11 @@
  *
  */
 
-#include "foundation/core/foundation.h"
-#include "foundation/platform/native_window.h"
-#include "foundation/strings/utf8_string_view.h"
-#include "rendering/rhi/handles.h"
-#include "rendering/rhi/types.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/platform/native_window.h"
+#include "core/foundation/strings/utf8_string_view.h"
+#include "core/rendering/rhi/handles.h"
+#include "core/rendering/rhi/types.h"
 
 namespace nxe::rhi {
 

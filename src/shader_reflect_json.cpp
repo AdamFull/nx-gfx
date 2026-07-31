@@ -9,11 +9,11 @@
  * the sidecar generated for its own target, so that difference is correct.
  */
 
-#include "rendering/rhi/shader_reflect.h"
+#include "core/rendering/rhi/shader_reflect.h"
 
-#include "foundation/diagnostics/log.h"
-#include "foundation/serialization/json.h"
-#include "foundation/serialization/json_util.h"
+#include "core/foundation/diagnostics/log.h"
+#include "core/foundation/serialization/json.h"
+#include "core/foundation/serialization/json_util.h"
 
 namespace nxe::rhi {
 namespace {

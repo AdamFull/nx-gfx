@@ -9,14 +9,14 @@
  * MetalDeviceState, defined only in mtl_internal.h.
  */
 
-#include "foundation/strings/utf8_string.h"
-#include "rendering/rhi/bindless.h"
-#include "rendering/rhi/descs.h"
-#include "rendering/rhi/handles.h"
-#include "rendering/rhi/image/image.h"
-#include "rendering/rhi/shader_reflect.h"
-#include "rendering/rhi/types.h"
-#include "rendering/rhi/upload.h"
+#include "core/foundation/strings/utf8_string.h"
+#include "core/rendering/rhi/bindless.h"
+#include "core/rendering/rhi/descs.h"
+#include "core/rendering/rhi/handles.h"
+#include "core/rendering/rhi/image/image.h"
+#include "core/rendering/rhi/shader_reflect.h"
+#include "core/rendering/rhi/types.h"
+#include "core/rendering/rhi/upload.h"
 
 #include <span>
 

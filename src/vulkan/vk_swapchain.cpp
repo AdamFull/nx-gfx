@@ -3,9 +3,9 @@
  * @brief Surface, swapchain, and the per-frame acquire/submit/present cycle.
  */
 
-#include "rendering/rhi/vulkan/vk_device.h"
+#include "core/rendering/rhi/vulkan/vk_device.h"
 
-#include "foundation/diagnostics/log.h"
+#include "core/foundation/diagnostics/log.h"
 
 namespace nxe::rhi {
 namespace {

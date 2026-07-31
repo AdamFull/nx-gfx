@@ -3,9 +3,9 @@
  * @brief Metal device creation, resources, the frame loop and command recording.
  */
 
-#include "rendering/rhi/metal/mtl_internal.h"
+#include "core/rendering/rhi/metal/mtl_internal.h"
 
-#include "foundation/strings/format.h"
+#include "core/foundation/strings/format.h"
 
 #include <cstdlib>
 

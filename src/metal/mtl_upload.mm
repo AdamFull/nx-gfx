@@ -12,10 +12,10 @@
  * and talks to the render thread through lock-free queues and an atomic status.
  */
 
-#include "rendering/rhi/metal/mtl_internal.h"
+#include "core/rendering/rhi/metal/mtl_internal.h"
 
-#include "foundation/core/scope_guard.h"
-#include "foundation/vfs/vfs.h"
+#include "core/foundation/core/scope_guard.h"
+#include "core/foundation/vfs/vfs.h"
 
 namespace nxe::rhi {
 namespace {

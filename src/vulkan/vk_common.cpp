@@ -1,6 +1,6 @@
-#include "rendering/rhi/vulkan/vk_common.h"
+#include "core/rendering/rhi/vulkan/vk_common.h"
 
-#include "foundation/diagnostics/log.h"
+#include "core/foundation/diagnostics/log.h"
 
 namespace nxe::rhi {
 namespace {

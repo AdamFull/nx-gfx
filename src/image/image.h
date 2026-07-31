@@ -12,13 +12,13 @@
  *
  */
 
-#include "foundation/containers/blob.h"
-#include "foundation/core/foundation.h"
-#include "foundation/core/result.h"
-#include "foundation/platform/filesystem.h"
-#include "foundation/strings/utf8_string_view.h"
-#include "rendering/rhi/descs.h"
-#include "rendering/rhi/types.h"
+#include "core/foundation/containers/blob.h"
+#include "core/foundation/core/foundation.h"
+#include "core/foundation/core/result.h"
+#include "core/foundation/platform/filesystem.h"
+#include "core/foundation/strings/utf8_string_view.h"
+#include "core/rendering/rhi/descs.h"
+#include "core/rendering/rhi/types.h"
 
 #include <span>
 

@@ -5,9 +5,9 @@
  * @brief Device buffers that resize themselves (namespace nxe::rhi).
  */
 
-#include "rendering/rhi/device.h"
+#include "core/rendering/rhi/device.h"
 
-#include "foundation/strings/utf8_string.h"
+#include "core/foundation/strings/utf8_string.h"
 
 #include <span>
 

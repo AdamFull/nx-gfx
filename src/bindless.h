@@ -9,7 +9,7 @@
  * Shaders must mirror these set/binding numbers. See docs/design.md section 5.
  */
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 namespace nxe::rhi {
 

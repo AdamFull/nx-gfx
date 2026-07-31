@@ -6,7 +6,7 @@
  *
  */
 
-#include "foundation/core/enum.h"
+#include "core/foundation/core/enum.h"
 
 namespace nxe::rhi {
 

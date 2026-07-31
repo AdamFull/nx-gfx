@@ -3,9 +3,9 @@
  * @brief Translation between the portable RHI enums and Metal's.
  */
 
-#include "rendering/rhi/metal/mtl_internal.h"
+#include "core/rendering/rhi/metal/mtl_internal.h"
 
-#include "foundation/core/foundation.h"
+#include "core/foundation/core/foundation.h"
 
 namespace nxe::rhi {
 

@@ -6,9 +6,9 @@
  *
  */
 
-#include "foundation/core/foundation.h"
-#include "rendering/rhi/descs.h"
-#include "rendering/rhi/types.h"
+#include "core/foundation/core/foundation.h"
+#include "core/rendering/rhi/descs.h"
+#include "core/rendering/rhi/types.h"
 
 #include <volk.h>
 

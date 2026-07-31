@@ -3,9 +3,9 @@
  * @brief The single bindless descriptor set and the global pipeline layout.
  */
 
-#include "rendering/rhi/vulkan/vk_device.h"
+#include "core/rendering/rhi/vulkan/vk_device.h"
 
-#include "foundation/diagnostics/log.h"
+#include "core/foundation/diagnostics/log.h"
 
 namespace nxe::rhi {
 namespace {
