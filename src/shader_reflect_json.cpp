@@ -13,26 +13,12 @@
 
 #include "foundation/diagnostics/log.h"
 #include "foundation/serialization/json.h"
+#include "foundation/serialization/json_util.h"
 
 namespace nxe::rhi {
 namespace {
 
 const nx::log::Category log_rhi = nx::log::category("rhi");
-
-[[nodiscard]] u32 uint_or(const nx::json::value &v, const nx::string_view key,
-                          const u32 fallback) noexcept {
-  if (!v.is_object())
-    return fallback;
-  return nx::cast<u32>(v[key].get_u64(fallback));
-}
-
-[[nodiscard]] nx::string_view str_or(const nx::json::value &v,
-                                     const nx::string_view key,
-                                     const nx::string_view fallback) noexcept {
-  if (!v.is_object())
-    return fallback;
-  return v[key].get_string(fallback);
-}
 
 /// Slang names the same concept differently per target: a push block is
 /// "pushConstantBuffer" for SPIR-V but "constantBuffer" for Metal.
@@ -61,14 +47,14 @@ void read_fields(const nx::json::value &element_type, ReflectBlock &out) {
 
   for (usize i = 0; i < fields.size(); ++i) {
     const nx::json::value &field = fields[i];
-    const nx::string_view name = str_or(field, "name", {});
+    const nx::string_view name = nx::json::string_or(field, "name", {});
     if (name.empty())
       continue;
     const nx::json::value &binding = field["binding"];
     out.members.push_back(ReflectMember{
         .name = nx::id_string(name),
-        .offset = uint_or(binding, "offset", 0),
-        .size = uint_or(binding, "size", 0),
+        .offset = nx::json::u32_or(binding, "offset", 0),
+        .size = nx::json::u32_or(binding, "size", 0),
         .array_count = 1,
     });
   }
@@ -91,17 +77,18 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
   if (params.is_array()) {
     for (usize i = 0; i < params.size(); ++i) {
       const nx::json::value &param = params[i];
-      const nx::string_view name = str_or(param, "name", "parameter");
+      const nx::string_view name =
+          nx::json::string_or(param, "name", "parameter");
       const nx::json::value &binding = param["binding"];
 
       ReflectBlock block;
       block.name = nx::id_string(name);
-      block.kind = to_kind(str_or(binding, "kind", {}), name);
-      block.binding = uint_or(binding, "index", 0);
-      block.set = uint_or(binding, "space", 0);
+      block.kind = to_kind(nx::json::string_or(binding, "kind", {}), name);
+      block.binding = nx::json::u32_or(binding, "index", 0);
+      block.set = nx::json::u32_or(binding, "space", 0);
 
       const nx::json::value &element = param["type"]["elementType"];
-      block.size = uint_or(element, "size", 0);
+      block.size = nx::json::u32_or(element, "size", 0);
       read_fields(element, block);
       // Slang states a block's size on its fields rather than on the block for
       // a push constant buffer, so derive it when it is not given.
@@ -118,11 +105,11 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
   if (entries.is_array()) {
     for (usize i = 0; i < entries.size(); ++i) {
       const nx::json::value &entry = entries[i];
-      if (str_or(entry, "stage", {}) != "compute")
+      if (nx::json::string_or(entry, "stage", {}) != "compute")
         continue;
 
       ReflectComputeEntry out_entry;
-      out_entry.name = nx::id_string(str_or(entry, "name", {}));
+      out_entry.name = nx::id_string(nx::json::string_or(entry, "name", {}));
       const nx::json::value &tgs = entry["threadGroupSize"];
       if (tgs.is_array() && tgs.size() == 3)
         for (usize axis = 0; axis < 3; ++axis)
