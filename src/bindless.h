@@ -23,7 +23,7 @@ inline constexpr u32 BINDLESS_BINDING_RW_TEXTURES = 2; ///< storage image[]
 /// TEXTURES must exceed the peak count of simultaneously live textures because
 /// a texture's SRV slot is its handle index.
 inline constexpr u32 MAX_BINDLESS_SAMPLERS = 1024;
-inline constexpr u32 MAX_BINDLESS_TEXTURES = 65536;
+inline constexpr u32 MAX_BINDLESS_TEXTURES = 65535;
 inline constexpr u32 MAX_BINDLESS_RW_TEXTURES = 8192;
 
 /// Guaranteed on both Vulkan and Metal.
