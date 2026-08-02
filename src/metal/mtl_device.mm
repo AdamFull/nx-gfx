@@ -248,9 +248,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     // Synchronisation for the untracked bindless heaps.
     state->pass_fence = [device newFence];
     state->upload_event = [device newEvent];
-    state->frame_event = [device newEvent];
-    if (state->pass_fence == nil || state->upload_event == nil ||
-        state->frame_event == nil) {
+    if (state->pass_fence == nil || state->upload_event == nil) {
       nx::loge(log_rhi, "init: could not create the heap synchronisation "
                         "primitives");
       delete state;
@@ -260,7 +258,6 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     }
     state->pass_fence.label = @"nx2d pass";
     state->upload_event.label = @"nx2d uploads";
-    state->frame_event.label = @"nx2d frame groups";
 
     create_pipeline_archive(*state, desc.pipeline_cache_path);
 
@@ -404,8 +401,6 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     if (s->upload.submitted > 0) {
       [slot.cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
     }
-    // Slot 0 waits for nothing, so frames stay free to overlap.
-    s->frame_event_base = s->frame_event_value;
   }
 
   // Re-point the backbuffer handle at this frame's drawable. The handle is
@@ -465,22 +460,12 @@ bool MetalDevice::end_frame() {
       }
     }
 
-    // Commit in slot order, and make the GPU honour that order with an event
-    // chain. Commit order alone is not enough: buffers on a queue may overlap
-    // execution, so a later group could read transients an earlier one had not
-    // finished writing. Present and the completion signal go on the *last*
-    // buffer - on slot 0 they would fire before the later groups ran.
+    // Present and the completion signal go on the last buffer.
     const usize last = s->used_contexts - 1;
-    const u64 base = s->frame_event_base;
-    s->frame_event_value = base + s->used_contexts;
     for (usize i = 0; i < s->used_contexts; ++i) {
       MetalContextSlot &slot = s->contexts[i];
       if (slot.cmd == nil)
         continue;
-
-      // Signal only - the matching wait was encoded when the buffer was
-      // created, the only position from which it can order anything.
-      [slot.cmd encodeSignalEvent:s->frame_event value:base + i + 1];
 
       if (i == last) {
         // Captured by the block rather than reaching through `s`, so the
@@ -553,7 +538,6 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
     if (s->upload.submitted > 0) {
       [slot.cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
     }
-    s->frame_event_base = s->frame_event_value;
   }
 
   s->frame_active = true;
@@ -588,18 +572,11 @@ bool MetalDevice::end_headless_frame() {
       }
     }
 
-    // The same event chain end_frame builds, minus the present: commit order
-    // alone does not order execution, so a later group could read transients an
-    // earlier one had not finished writing.
     const usize last = s->used_contexts - 1;
-    const u64 base = s->frame_event_base;
-    s->frame_event_value = base + s->used_contexts;
     for (usize i = 0; i < s->used_contexts; ++i) {
       MetalContextSlot &slot = s->contexts[i];
       if (slot.cmd == nil)
         continue;
-
-      [slot.cmd encodeSignalEvent:s->frame_event value:base + i + 1];
 
       if (i == last) {
         dispatch_semaphore_t semaphore = s->frame_semaphore;

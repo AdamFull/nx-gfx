@@ -14,10 +14,8 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
 
 [[nodiscard]] bool open_slot(VkDevice device, const u32 queue_family,
                              VkDescriptorSet bindless, VkPipelineLayout layout,
-                             FrameContext &frame, const u32 index) {
-  while (frame.slots.size() <= index)
-    frame.slots.push_back(CommandSlot{});
-  CommandSlot &slot = frame.slots[index];
+                             FrameContext &frame) {
+  CommandSlot &slot = frame.slot;
 
   if (slot.pool == VK_NULL_HANDLE) {
     VkCommandPoolCreateInfo pool_info{
@@ -424,11 +422,10 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
 
   if (!open_slot(m_device,
                  m_queue_families[nx::cast<usize>(QueueType::Graphics)],
-                 m_bindless.set, m_pipeline_layout, frame, 0))
+                 m_bindless.set, m_pipeline_layout, frame))
     return AcquireResult::SurfaceLost;
-  frame.used_slots = 1;
 
-  const VkCommandBuffer cmd = frame.slots[0].cmd;
+  const VkCommandBuffer cmd = frame.slot.cmd;
 
   // Turn finished async decodes into textures, submit the batch of uploads
   // accumulated since the last frame, then take ownership of everything it
@@ -474,11 +471,10 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
 
   if (!open_slot(m_device,
                  m_queue_families[nx::cast<usize>(QueueType::Graphics)],
-                 m_bindless.set, m_pipeline_layout, frame, 0))
+                 m_bindless.set, m_pipeline_layout, frame))
     return false;
-  frame.used_slots = 1;
 
-  const VkCommandBuffer cmd = frame.slots[0].cmd;
+  const VkCommandBuffer cmd = frame.slot.cmd;
   m_uploader.pump();
   m_uploader.flush_batch();
   m_frame_upload_wait = m_uploader.record_acquires(cmd);
@@ -498,8 +494,7 @@ bool VulkanDevice::end_headless_frame() {
   m_headless_frame = false;
 
   FrameContext &frame = m_frames[m_frame_index];
-  for (u32 i = 0; i < frame.used_slots; ++i)
-    NX_VK_CHECK(vkEndCommandBuffer(frame.slots[i].cmd));
+  NX_VK_CHECK(vkEndCommandBuffer(frame.slot.cmd));
 
   ++m_timeline_value;
   frame.timeline_value = m_timeline_value;
@@ -521,19 +516,15 @@ bool VulkanDevice::end_headless_frame() {
   signal_info.value = m_timeline_value;
   signal_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
-  nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
-  for (u32 i = 0; i < frame.used_slots; ++i) {
-    VkCommandBufferSubmitInfo info{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-    info.commandBuffer = frame.slots[i].cmd;
-    cmd_infos.push_back(info);
-  }
+  VkCommandBufferSubmitInfo cmd_info{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+  cmd_info.commandBuffer = frame.slot.cmd;
 
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
   submit.waitSemaphoreInfoCount = wait_count;
   submit.pWaitSemaphoreInfos = wait_count > 0 ? &wait_info : nullptr;
-  submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
-  submit.pCommandBufferInfos = cmd_infos.data();
+  submit.commandBufferInfoCount = 1;
+  submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal_info;
 
@@ -565,8 +556,7 @@ bool VulkanDevice::end_frame() {
   m_frame_active = false;
 
   FrameContext &frame = m_frames[m_frame_index];
-  // The last slot executes last, so this stays the final backbuffer write.
-  const VkCommandBuffer cmd = frame.slots[frame.used_slots - 1].cmd;
+  const VkCommandBuffer cmd = frame.slot.cmd;
 
   // The image must be in PRESENT_SRC before handing it to the present engine.
   if (VulkanTexture *backbuffer =
@@ -596,8 +586,7 @@ bool VulkanDevice::end_frame() {
     }
   }
 
-  for (u32 i = 0; i < frame.used_slots; ++i)
-    NX_VK_CHECK(vkEndCommandBuffer(frame.slots[i].cmd));
+  NX_VK_CHECK(vkEndCommandBuffer(frame.slot.cmd));
 
   ++m_timeline_value;
   frame.timeline_value = m_timeline_value;
@@ -626,21 +615,15 @@ bool VulkanDevice::end_frame() {
   signal_infos[1].value = m_timeline_value;
   signal_infos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
-  // Buffers in one submit execute in array order, so a dependent group needs
-  // only a later position - no semaphores, no second submit.
-  nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
-  for (u32 i = 0; i < frame.used_slots; ++i) {
-    VkCommandBufferSubmitInfo info{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-    info.commandBuffer = frame.slots[i].cmd;
-    cmd_infos.push_back(info);
-  }
+  VkCommandBufferSubmitInfo cmd_info{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+  cmd_info.commandBuffer = frame.slot.cmd;
 
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
   submit.waitSemaphoreInfoCount = wait_count;
   submit.pWaitSemaphoreInfos = wait_infos;
-  submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
-  submit.pCommandBufferInfos = cmd_infos.data();
+  submit.commandBufferInfoCount = 1;
+  submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 2;
   submit.pSignalSemaphoreInfos = signal_infos;
 

@@ -196,9 +196,7 @@ struct CommandSlot {
 };
 
 struct FrameContext {
-  /// The first `used_slots` are open this frame, and submit in this order.
-  nx::small_vector<CommandSlot, 8> slots;
-  u32 used_slots = 0;
+  CommandSlot slot;
   VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
   u64 timeline_value = 0;
 };

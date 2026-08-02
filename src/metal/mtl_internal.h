@@ -318,15 +318,6 @@ struct MetalDeviceState {
   //    which a fence cannot span.
   id<MTLFence> pass_fence = nil;
   id<MTLEvent> upload_event = nil;
-  /// Orders the frame's command buffers against each other. Committing in order
-  /// is not enough: buffers on a queue start in commit order but may overlap,
-  /// so a group would otherwise read what a previous group had not finished
-  /// writing. A fence cannot express this - it does not cross command buffers.
-  id<MTLEvent> frame_event = nil;
-  u64 frame_event_value = 0;
-  /// This frame's base value, fixed at begin_frame. Slot i waits on base + i
-  /// and signals base + i + 1, so the groups run in order.
-  u64 frame_event_base = 0;
 
   id<MTLBinaryArchive> pipeline_archive = nil;
   nx::string pipeline_archive_path;
