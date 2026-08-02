@@ -501,12 +501,18 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
     // texture knows where it actually is, which avoids a whole class of
     // mismatched-layout validation errors.
     const ResourceState from =
-        desc.from == ResourceState::Undefined ? texture->state : desc.from;
-    if (from == desc.to)
+        desc.discard ? ResourceState::Undefined
+        : desc.from == ResourceState::Undefined ? texture->state
+                                                : desc.from;
+    if (!desc.discard && from == desc.to)
       continue;
 
-    const VkStateInfo src = to_vk_state(from);
+    VkStateInfo src = to_vk_state(from);
     const VkStateInfo dst = to_vk_state(desc.to);
+    if (desc.discard) {
+      src.stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+      src.access = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    }
 
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     barrier.srcStageMask = src.stage;
