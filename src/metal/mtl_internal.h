@@ -298,9 +298,8 @@ struct MetalDeviceState {
   bool frame_active = false;
   bool headless_frame = false;
 
-  /// Slot 0 is the context begin_frame hands back; open_contexts() lends out
-  /// the rest. They are committed in slot order at end_frame, which is the
-  /// order the render graph expects its groups to execute in.
+  /// Slot 0 is the context begin_frame hands back, and currently the only one
+  /// used. Slots are committed in order at end_frame.
   static constexpr usize MAX_CONTEXTS = 8;
   nx::vector<MetalContextSlot> contexts;
   usize used_contexts = 0;
@@ -404,11 +403,8 @@ void save_pipeline_archive(MetalDeviceState &state) noexcept;
 
 // Pass-granularity ordering within one command buffer (mtl_bindless.mm).
 //
-// A fence cannot reach across command buffers, and open_contexts() gives each
-// pass group its own, so these fire only in the serial fallback - measured 0
-// waits out of 3384 begin-pass calls in the parallel path. Cross-encoder
-// hazards are therefore left to Metal's own tracking, which is why the heaps
-// are created tracked.
+// A fence cannot reach across command buffers. Cross-encoder hazards are left
+// to Metal's own tracking, which is why the heaps are created tracked.
 
 /// Waits on the fence if an earlier encoder in this command buffer updated it.
 void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,

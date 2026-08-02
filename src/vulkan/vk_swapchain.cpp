@@ -553,32 +553,6 @@ bool VulkanDevice::end_headless_frame() {
   return true;
 }
 
-bool VulkanDevice::open_contexts(const std::span<VulkanCommandContext> out) {
-  if (!m_frame_active || out.empty())
-    return out.empty();
-
-  FrameContext &frame = m_frames[m_frame_index];
-  const u32 first = frame.used_slots;
-  const u32 queue_family =
-      m_queue_families[nx::cast<usize>(QueueType::Graphics)];
-
-  for (usize i = 0; i < out.size(); ++i) {
-    const u32 index = first + nx::cast<u32>(i);
-    if (!open_slot(m_device, queue_family, m_bindless.set, m_pipeline_layout,
-                   frame, index)) {
-      // Keep whatever opened cleanly; end_frame still submits those in order.
-      frame.used_slots = index;
-      return false;
-    }
-    out[i].m_cmd = frame.slots[index].cmd;
-    out[i].m_device = this;
-    out[i].m_in_render_pass = false;
-  }
-
-  frame.used_slots = first + nx::cast<u32>(out.size());
-  return true;
-}
-
 bool VulkanDevice::end_frame() {
   if (!m_frame_active)
     return true;

@@ -255,8 +255,6 @@ public:
 
   [[nodiscard]] bool end_headless_frame();
 
-  [[nodiscard]] bool open_contexts(std::span<VulkanCommandContext> out);
-
   [[nodiscard]] TextureHandle current_backbuffer() const noexcept {
     return m_backbuffers.empty() ? TextureHandle{}
                                  : m_backbuffers[m_image_index];

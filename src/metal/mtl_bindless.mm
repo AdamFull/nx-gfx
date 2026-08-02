@@ -43,10 +43,9 @@ id<MTLHeap> grow_heaps(MetalDeviceState &state, const u64 required) noexcept {
   info.storageMode = MTLStorageModePrivate;
   info.type = MTLHeapTypeAutomatic;
   // Tracked, deliberately. Untracked would need the backend to place every
-  // cross-encoder dependency itself, and it cannot: a fence only reaches within
-  // one command buffer, while open_contexts() gives each pass group its own.
-  // That left heap resources with no synchronisation at all - survivable on an
-  // immediate-mode desktop GPU, but it corrupts on a tile-based one.
+  // cross-encoder dependency itself, and getting that wrong left heap resources
+  // with no synchronisation at all - survivable on an immediate-mode desktop
+  // GPU, but it corrupts on a tile-based one.
   info.hazardTrackingMode = MTLHazardTrackingModeTracked;
 
   id<MTLHeap> heap = [state.device newHeapWithDescriptor:info];

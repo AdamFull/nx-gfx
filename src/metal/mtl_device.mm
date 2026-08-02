@@ -404,8 +404,7 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     if (s->upload.submitted > 0) {
       [slot.cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
     }
-    // Slot 0 opens the chain and waits for nothing, so frames stay free to
-    // overlap; open_contexts() encodes the waits for the later groups.
+    // Slot 0 waits for nothing, so frames stay free to overlap.
     s->frame_event_base = s->frame_event_value;
   }
 
@@ -1036,49 +1035,6 @@ void MetalDevice::destroy_sampler(const SamplerHandle handle) noexcept {
 // sampler's slot are their handle indices; storage-image slots come from a
 // free list because a texture owns one per mip.
 
-bool MetalDevice::open_contexts(const std::span<MetalCommandContext> out) {
-  if (m_state == nullptr || !m_state->frame_active || out.empty())
-    return out.empty();
-
-  MetalDeviceState *s = m_state;
-  if (s->used_contexts + out.size() > MetalDeviceState::MAX_CONTEXTS) {
-    nx::logw(log_rhi, "open_contexts: {} more would exceed the {} slot limit; "
-                      "recording serially instead",
-             out.size(), MetalDeviceState::MAX_CONTEXTS);
-    return false;
-  }
-
-  const usize first = s->used_contexts;
-  @autoreleasepool {
-    for (usize i = 0; i < out.size(); ++i) {
-      MetalContextSlot &slot = s->contexts[first + i];
-      slot = MetalContextSlot{};
-      slot.cmd = [s->queue commandBuffer];
-      if (slot.cmd == nil) {
-        // Keep whatever opened cleanly; end_frame still commits those in order.
-        s->used_contexts = first + i;
-        return false;
-      }
-      slot.cmd.label = @"nx2d frame (parallel)";
-      slot.in_use = true;
-      begin_command_buffer(slot);
-
-      // Encoded here, not at commit time: a wait only orders the commands that
-      // follow it in the buffer, so one encoded after the encoders orders
-      // nothing. This is what makes group i run after group i-1.
-      [slot.cmd encodeWaitForEvent:s->frame_event
-                             value:s->frame_event_base + first + i];
-
-      out[i].m_state = s;
-      out[i].m_slot = nx::cast<u32>(first + i);
-      out[i].m_in_render_pass = false;
-    }
-  }
-
-  s->used_contexts = first + out.size();
-  return true;
-}
-
 void MetalDevice::set_texture_state(const TextureHandle handle,
                                     const ResourceState state) noexcept {
   if (m_state == nullptr)
@@ -1139,9 +1095,9 @@ u64 MetalDevice::buffer_address(const BufferHandle handle) const noexcept {
 
 // MetalCommandContext
 
-/// The recording slot this context owns. Contexts are handed out by
-/// begin_frame and open_contexts and never outlive the frame, so the index is
-/// always in range while one is valid.
+/// The recording slot this context owns. Contexts come from begin_frame and
+/// never outlive the frame, so the index is always in range while one is
+/// valid.
 MetalContextSlot &MetalCommandContext::ctx_slot() const noexcept {
   return m_state->contexts[m_slot];
 }

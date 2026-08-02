@@ -291,7 +291,6 @@ struct DeviceCaps {
   /// Lazily-allocated / memoryless attachments; free transient targets on
   /// tile-based mobile GPUs.
   bool memoryless_attachments = false;
-  bool parallel_command_recording = true;
 
   u32 max_texture_2d = 0;
   u32 max_bindless_sampled_images = 0;

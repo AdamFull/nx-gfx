@@ -228,8 +228,6 @@ public:
   /// command buffer and encoder, so there is nothing to hand out. Parallel
   /// encoding needs a command buffer per context, ordered with -enqueue.
   /// Callers fall back to recording serially.
-  [[nodiscard]] bool open_contexts(std::span<MetalCommandContext> out);
-
   [[nodiscard]] TextureHandle current_backbuffer() const noexcept;
 
   void wait_idle() noexcept;

@@ -13,9 +13,6 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
 
 constexpr u32 REQUIRED_API_VERSION = VK_API_VERSION_1_3;
 
-/// PCI vendor id for Imagination Technologies (PowerVR).
-constexpr u32 VENDOR_IMAGINATION = 0x1010;
-
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT /*types*/,
@@ -283,8 +280,6 @@ bool VulkanDevice::select_physical_device() {
   m_caps.api_version = props.properties.apiVersion;
   m_caps.driver_version = props.properties.driverVersion;
   m_caps.vendor_id = props.properties.vendorID;
-  m_caps.parallel_command_recording =
-      props.properties.vendorID != VENDOR_IMAGINATION;
   m_caps.discrete =
       props.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
   m_caps.descriptor_indexing = true;
