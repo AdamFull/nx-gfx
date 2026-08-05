@@ -3,6 +3,7 @@
  * @brief Surface, swapchain, and the per-frame acquire/submit/present cycle.
  */
 
+#include "core/foundation/diagnostics/profiler.h"
 #include "core/rendering/rhi/vulkan/vk_device.h"
 
 #include "core/foundation/diagnostics/log.h"
@@ -384,6 +385,7 @@ void VulkanDevice::destroy_swapchain() noexcept {
 // Frame
 
 AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
+  NX_PROFILE_ZONE("vk::begin_frame");
   if (m_swapchain == VK_NULL_HANDLE || m_swapchain_extent.width == 0)
     return AcquireResult::SurfaceLost;
 
@@ -393,6 +395,9 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   // A timeline semaphore replaces the classic fence-per-frame: one object,
   // and the completed value is queryable without blocking.
   if (frame.timeline_value > 0) {
+    // Waiting on the GPU to finish the frame that used this slot. On a
+    // GPU-bound scene this is where the wall clock goes.
+    NX_PROFILE_ZONE_COLOR("vk::wait_gpu", 0x604040);
     VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wait.semaphoreCount = 1;
     wait.pSemaphores = &m_timeline;
@@ -407,9 +412,15 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   collect_garbage(completed);
   m_uploader.reclaim();
 
-  const VkResult acquired = vkAcquireNextImageKHR(
-      m_device, m_swapchain, UINT64_MAX, frame.acquire_semaphore,
-      VK_NULL_HANDLE, &m_image_index);
+  VkResult acquired = VK_SUCCESS;
+  {
+    // Blocks until the presentation engine has an image free, which under
+    // FIFO is the vsync wait.
+    NX_PROFILE_ZONE_COLOR("vk::acquire", 0x604040);
+    acquired = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
+                                     frame.acquire_semaphore, VK_NULL_HANDLE,
+                                     &m_image_index);
+  }
 
   if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
     return AcquireResult::OutOfDate;
@@ -455,6 +466,9 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
 
   FrameContext &frame = m_frames[m_frame_index];
   if (frame.timeline_value > 0) {
+    // Waiting on the GPU to finish the frame that used this slot. On a
+    // GPU-bound scene this is where the wall clock goes.
+    NX_PROFILE_ZONE_COLOR("vk::wait_gpu", 0x604040);
     VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wait.semaphoreCount = 1;
     wait.pSemaphores = &m_timeline;
@@ -637,8 +651,12 @@ bool VulkanDevice::end_frame() {
   present.pSwapchains = &m_swapchain;
   present.pImageIndices = &m_image_index;
 
-  const VkResult presented = vkQueuePresentKHR(
-      m_queues[nx::cast<usize>(QueueType::Graphics)], &present);
+  VkResult presented = VK_SUCCESS;
+  {
+    NX_PROFILE_ZONE("vk::present");
+    presented = vkQueuePresentKHR(
+        m_queues[nx::cast<usize>(QueueType::Graphics)], &present);
+  }
 
   m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
 
