@@ -4,35 +4,24 @@
  * @file vk_upload.h
  * @brief Asynchronous GPU upload, readback, and file/decode streaming.
  *
- * All GPU work - staging, batching, submitting, creating - happens on the
- * render thread, so the upload machinery (ring, batch command buffer, chunks)
- * needs no lock: it is single-owner. Uploads stage through a bounded ring
- * buffer and are *batched* - each call records its copy into a shared command
- * buffer and returns an UploadTicket, but nothing is submitted until the batch
- * is flushed (once per frame by the device, on staging backpressure, or on an
- * explicit flush()/wait()).
+ * All GPU work happens on the render thread, so the machinery needs no lock.
+ * Uploads stage through a bounded ring and are *batched*: each call records
+ * its copy and returns an UploadTicket, but nothing is submitted until the
+ * batch flushes - once per frame, on staging backpressure, or explicitly.
  *
- * File loading is offloaded to one dedicated worker thread that does *only* the
- * slow, thread-safe part - reading bytes and decoding images - and never
- * touches the device. It talks to the render thread through lock-free queues
- * and an atomic status table, so there is not a mutex anywhere: load_texture()
- * enqueues and returns immediately; the render thread's pump() turns finished
- * decodes into textures.
+ * File loading runs on one worker that does only the slow, thread-safe part
+ * and never touches the device. It talks to the render thread through
+ * lock-free queues and an atomic status table, so there is no mutex anywhere.
  *
- * When the transfer queue is a distinct hardware queue, images move between the
- * two families once per frame rather than once per copy: uploads leave the
- * image in TRANSFER_DST and copy-family-owned, and the frame hand-off
- * (flush_batch, then record_acquires) emits the release/acquire pair that puts
- * it in its final layout on the graphics queue. Batching the hand-off is what
- * makes repeated partial uploads to one texture - a font atlas growing glyphs -
- * legal: they all land while the copy family still owns the image, so nothing
- * is written behind the other queue's back and one barrier pair covers them.
+ * With a distinct transfer queue, images move between the two families once
+ * per frame rather than once per copy: uploads leave the image in TRANSFER_DST
+ * and copy-family-owned, and the frame hand-off emits the release/acquire
+ * pair. Batching the hand-off is what makes repeated partial uploads to one
+ * texture - a font atlas growing glyphs - legal.
  *
- * Once an image has been handed over, the copy queue cannot take it back: an
- * acquire needs a matching release, and only a graphics submit can record that.
- * A later upload to such an image is therefore replayed into the frame's own
- * command buffer by record_acquires, on the graphics queue, where no ownership
- * transfer is involved at all.
+ * Once handed over, the copy queue cannot take an image back: an acquire needs
+ * a release, and only a graphics submit can record one. A later upload to such
+ * an image is replayed into the frame's own command buffer by record_acquires.
  */
 
 #include "core/foundation/containers/concurrent_queue.h"
@@ -99,12 +88,10 @@ public:
   /// the current batch; the returned ticket completes when that batch is
   /// flushed and its GPU work finishes.
   ///
-  /// On a dedicated transfer queue the texture reaches @p final_state at the
-  /// next frame hand-off rather than at once, and a texture the graphics family
-  /// already owns is uploaded by that frame instead of by the copy queue - the
-  /// copy has no place on the copy timeline then, so the ticket comes back
-  /// complete but not valid. Wait on such an upload by presenting a frame.
-  /// Check ok() to tell that apart from an upload that did not happen.
+  /// On a dedicated transfer queue @p final_state is reached at the next frame
+  /// hand-off, and a texture graphics already owns is uploaded by that frame
+  /// instead - so the ticket comes back complete but not valid. Wait on such
+  /// an upload by presenting a frame; ok() tells it from one that failed.
   [[nodiscard]] UploadTicket
   upload_texture(TextureHandle handle, std::span<const u8> src,
                  std::span<const ImageSubresource> layout,
@@ -140,16 +127,13 @@ public:
   /// keep or destroy; only call once the request is Ready or Failed.
   void release(LoadRequest req) noexcept;
 
-  // Readbacks (render thread)
-  // The source must not be in concurrent use on the graphics queue - read after
-  // wait_idle(), or from a resource only the copy queue touches. Readbacks
-  // flush any open upload batch and submit on their own.
+  // Readbacks (render thread). The source must not be in concurrent use on the
+  // graphics queue - read after wait_idle(), or from a resource only the copy
+  // queue touches. Readbacks flush any open batch and submit on their own.
   //
   // With a dedicated transfer queue the copy family must also still *own* the
   // image, which it does until the next frame hands it over: read back before
-  // presenting a frame, as the tests and offline tools do. read_texture warns
-  // and reads anyway once graphics owns it, because taking ownership back would
-  // need a release only a graphics submit can record.
+  // presenting. read_texture warns and reads anyway once graphics owns it.
 
   ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
   ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
