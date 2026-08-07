@@ -115,6 +115,23 @@ if (APPLE)
 else ()
     target_compile_definitions(nx_rhi PUBLIC NX_RHI_VULKAN=1)
 
+    # Vulkan's canonical C initialization is `VkThing{sType}`: the first field
+    # is named and every remaining field is deliberately zero-initialized.
+    # Clang's aggregate warning treats all 112 of those as omissions, so scope
+    # the exception to our Vulkan implementation files rather than weakening
+    # warnings for the rest of the engine.
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set_source_files_properties(
+                vulkan/vk_bindless.cpp
+                vulkan/vk_common.cpp
+                vulkan/vk_device.cpp
+                vulkan/vk_pipeline.cpp
+                vulkan/vk_resources.cpp
+                vulkan/vk_swapchain.cpp
+                vulkan/vk_upload.cpp
+                PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
+    endif ()
+
     # volk owns entry-point loading, so VMA must not link Vulkan statically
     # (STATIC=0). DYNAMIC=1 then tells VMA to resolve the rest of the API for
     # itself through the vkGetInstanceProcAddr/vkGetDeviceProcAddr pair the
