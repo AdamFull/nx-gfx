@@ -76,11 +76,21 @@ to_vk_blend(const BlendState &state) noexcept {
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
     out.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     break;
+  case BlendMode::PremultipliedAdditive:
+    out.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    out.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    break;
   case BlendMode::Multiply:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
-    out.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     break;
-  default: // Opaque
+  case BlendMode::Screen:
+    out.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    break;
+  case BlendMode::Opaque:
+  case BlendMode::Count:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
     break;
@@ -457,8 +467,7 @@ void VulkanCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
 }
 
 void VulkanCommandContext::draw_indirect(const BufferHandle buffer,
-                                         const u64 offset,
-                                         const u32 draw_count,
+                                         const u64 offset, const u32 draw_count,
                                          const u32 stride) {
   const VulkanBuffer *buf = m_device->buffer(buffer);
   if (buf == nullptr)
@@ -477,8 +486,7 @@ void VulkanCommandContext::draw_indexed_indirect(const BufferHandle buffer,
     return;
   vkCmdDrawIndexedIndirect(
       m_cmd, buf->buffer, offset, draw_count,
-      stride != 0 ? stride
-                  : nx::cast<u32>(sizeof(DrawIndexedIndirectCommand)));
+      stride != 0 ? stride : nx::cast<u32>(sizeof(DrawIndexedIndirectCommand)));
 }
 
 void VulkanCommandContext::dispatch_indirect(const BufferHandle buffer,

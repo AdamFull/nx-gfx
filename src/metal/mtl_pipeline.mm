@@ -110,11 +110,23 @@ void apply_blend(MTLRenderPipelineColorAttachmentDescriptor *attachment,
     attachment.sourceAlphaBlendFactor = MTLBlendFactorZero;
     attachment.destinationAlphaBlendFactor = MTLBlendFactorOne;
     break;
+  case BlendMode::PremultipliedAdditive:
+    attachment.sourceRGBBlendFactor = MTLBlendFactorOne;
+    attachment.destinationRGBBlendFactor = MTLBlendFactorOne;
+    attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
+    attachment.destinationAlphaBlendFactor = MTLBlendFactorOne;
+    break;
+  case BlendMode::Screen:
+    attachment.sourceRGBBlendFactor = MTLBlendFactorOne;
+    attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
+    attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    break;
   case BlendMode::Multiply:
     attachment.sourceRGBBlendFactor = MTLBlendFactorDestinationColor;
-    attachment.destinationRGBBlendFactor = MTLBlendFactorZero;
-    attachment.sourceAlphaBlendFactor = MTLBlendFactorDestinationAlpha;
-    attachment.destinationAlphaBlendFactor = MTLBlendFactorZero;
+    attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
+    attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     break;
   case BlendMode::Opaque:
   default:

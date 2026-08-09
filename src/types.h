@@ -222,8 +222,10 @@ enum class BlendMode : u8 {
   Opaque,        ///< No blending.
   AlphaBlend,    ///< src.a over dst (straight alpha).
   Premultiplied, ///< src over dst, src colour already alpha-weighted.
-  Additive,      ///< src + dst.
-  Multiply,      ///< src * dst.
+  Additive,      ///< src.a * src + dst (straight alpha).
+  PremultipliedAdditive,
+  Multiply,
+  Screen,
   Count
 };
 
