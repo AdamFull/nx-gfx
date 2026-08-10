@@ -114,10 +114,70 @@ const FormatInfo &info_of(const Format format) noexcept {
   return FORMAT_TABLE[i < nx::cast<usize>(Format::Count) ? i : 0];
 }
 
+[[nodiscard]] bool same_ignoring_case(const nx::string_view a,
+                                      const nx::string_view b) noexcept {
+  if (a.size() != b.size())
+    return false;
+  for (usize i = 0; i < a.size(); ++i) {
+    const char x = a[i] | ('a' - 'A');
+    const char y = b[i] | ('a' - 'A');
+    if (x != y)
+      return false;
+  }
+  return true;
+}
+
+struct UsageName {
+  nx::string_view name;
+  u16 bit;
+};
+
+constexpr UsageName TEXTURE_USAGE_NAMES[] = {
+    {"sampled", nx::cast<u16>(TextureUsage::Sampled)},
+    {"storage", nx::cast<u16>(TextureUsage::Storage)},
+    {"render_target", nx::cast<u16>(TextureUsage::RenderTarget)},
+    {"depth_stencil", nx::cast<u16>(TextureUsage::DepthStencil)},
+    {"copy_src", nx::cast<u16>(TextureUsage::CopySrc)},
+    {"copy_dst", nx::cast<u16>(TextureUsage::CopyDst)},
+    {"transient", nx::cast<u16>(TextureUsage::Transient)},
+};
+
+constexpr UsageName BUFFER_USAGE_NAMES[] = {
+    {"vertex", nx::cast<u16>(BufferUsage::Vertex)},
+    {"index", nx::cast<u16>(BufferUsage::Index)},
+    {"uniform", nx::cast<u16>(BufferUsage::Uniform)},
+    {"storage", nx::cast<u16>(BufferUsage::Storage)},
+    {"indirect", nx::cast<u16>(BufferUsage::Indirect)},
+    {"copy_src", nx::cast<u16>(BufferUsage::CopySrc)},
+    {"copy_dst", nx::cast<u16>(BufferUsage::CopyDst)},
+    {"device_address", nx::cast<u16>(BufferUsage::DeviceAddress)},
+};
+
 } // namespace
 
 nx::string_view to_string(const Format format) noexcept {
   return info_of(format).name;
+}
+
+Format format_from_string(const nx::string_view name) noexcept {
+  for (usize i = 0; i < nx::cast<usize>(Format::Count); ++i)
+    if (same_ignoring_case(FORMAT_TABLE[i].name, name))
+      return nx::cast<Format>(i);
+  return Format::Unknown;
+}
+
+TextureUsage texture_usage_from_string(const nx::string_view name) noexcept {
+  for (const UsageName &one : TEXTURE_USAGE_NAMES)
+    if (same_ignoring_case(one.name, name))
+      return nx::cast<TextureUsage>(one.bit);
+  return TextureUsage::None;
+}
+
+BufferUsage buffer_usage_from_string(const nx::string_view name) noexcept {
+  for (const UsageName &one : BUFFER_USAGE_NAMES)
+    if (same_ignoring_case(one.name, name))
+      return nx::cast<BufferUsage>(one.bit);
+  return BufferUsage::None;
 }
 
 nx::string_view to_string(const ResourceState state) noexcept {

@@ -262,6 +262,12 @@ enum class AcquireResult : u8 {
 };
 
 [[nodiscard]] nx::string_view to_string(Format format) noexcept;
+/// The format @p name spells, case-insensitively, or Unknown. The names are
+/// to_string's, so a config and a log say the same thing.
+[[nodiscard]] Format format_from_string(nx::string_view name) noexcept;
+/// One flag by name ("sampled", "render_target"), or None. Callers combine.
+[[nodiscard]] TextureUsage texture_usage_from_string(nx::string_view name) noexcept;
+[[nodiscard]] BufferUsage buffer_usage_from_string(nx::string_view name) noexcept;
 [[nodiscard]] nx::string_view to_string(ResourceState state) noexcept;
 [[nodiscard]] nx::string_view to_string(QueueType queue) noexcept;
 
