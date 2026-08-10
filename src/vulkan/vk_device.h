@@ -89,6 +89,11 @@ struct VulkanSampler {
   VkSampler sampler = VK_NULL_HANDLE;
 };
 
+struct VulkanQueryPool {
+  VkQueryPool pool = VK_NULL_HANDLE;
+  u32 count = 0;
+};
+
 /// A VMA allocation the caller sub-allocates by hand. Aliased images are bound
 /// into it at an offset and own their VkImage but not the memory under it.
 struct VulkanHeap {
@@ -144,6 +149,12 @@ public:
 
   void set_viewport(const Viewport &viewport);
   void set_scissor(const Rect2D &rect);
+
+  /// Clears @p count slots. Every slot written must be reset first, and a reset
+  /// is invalid inside a render pass - so this belongs at the top of a frame.
+  void reset_queries(QueryPoolHandle pool, u32 first, u32 count);
+  /// Records the GPU's clock into @p index once everything before it has run.
+  void write_timestamp(QueryPoolHandle pool, u32 index);
 
   void bind_pipeline(PipelineHandle pipeline);
   /// Sets the whole 128-byte push block. Offset/size in bytes.
@@ -273,6 +284,15 @@ public:
 
   [[nodiscard]] SamplerHandle create_sampler(const SamplerDesc &desc);
   void destroy_sampler(SamplerHandle handle) noexcept;
+
+  [[nodiscard]] QueryPoolHandle create_timestamp_pool(u32 count);
+  void destroy_query_pool(QueryPoolHandle handle) noexcept;
+  [[nodiscard]] bool read_timestamps(QueryPoolHandle handle,
+                                     std::span<u64> out) const;
+  [[nodiscard]] const VulkanQueryPool *
+  query_pool(QueryPoolHandle handle) const noexcept {
+    return m_query_pools.try_get(handle);
+  }
 
   // Memory aliasing
   //
@@ -410,6 +430,7 @@ private:
   nx::slot_map<VulkanTexture, TextureHandle> m_textures;
   nx::slot_map<VulkanBuffer, BufferHandle> m_buffers;
   nx::slot_map<VulkanSampler, SamplerHandle> m_samplers;
+  nx::slot_map<VulkanQueryPool, QueryPoolHandle> m_query_pools;
   nx::slot_map<VulkanHeap, HeapHandle> m_heaps;
   nx::slot_map<VulkanShader, ShaderHandle> m_shaders;
   nx::slot_map<VulkanPipeline, PipelineHandle> m_pipelines;

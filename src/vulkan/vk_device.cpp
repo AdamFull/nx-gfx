@@ -290,6 +290,8 @@ bool VulkanDevice::select_physical_device() {
   m_caps.max_texture_2d = props.properties.limits.maxImageDimension2D;
   m_caps.max_push_constant_size = props.properties.limits.maxPushConstantsSize;
   m_caps.timestamp_period_ns = props.properties.limits.timestampPeriod;
+  m_caps.timestamps = m_caps.timestamp_period_ns > 0.f &&
+                      props.properties.limits.timestampComputeAndGraphics;
   m_caps.max_bindless_sampled_images =
       indexing.maxDescriptorSetUpdateAfterBindSampledImages;
   m_caps.max_bindless_storage_images =
@@ -574,6 +576,10 @@ void VulkanDevice::shutdown() noexcept {
     if (sampler.sampler != VK_NULL_HANDLE)
       vkDestroySampler(m_device, sampler.sampler, nullptr);
   m_samplers.clear();
+  for (VulkanQueryPool &queries : m_query_pools)
+    if (queries.pool != VK_NULL_HANDLE)
+      vkDestroyQueryPool(m_device, queries.pool, nullptr);
+  m_query_pools.clear();
   for (VulkanShader &shader : m_shaders)
     if (shader.module != VK_NULL_HANDLE)
       vkDestroyShaderModule(m_device, shader.module, nullptr);

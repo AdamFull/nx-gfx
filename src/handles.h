@@ -33,6 +33,7 @@ using HeapHandle = nx::basic_handle<u32, 24, struct HeapTag>;
 using SamplerHandle = nx::basic_handle<u32, 24, struct SamplerTag>;
 using PipelineHandle = nx::basic_handle<u32, 24, struct PipelineTag>;
 using ShaderHandle = nx::basic_handle<u32, 24, struct ShaderTag>;
+using QueryPoolHandle = nx::basic_handle<u32, 24, struct QueryPoolTag>;
 
 /// Bindless descriptor slot for a resource, for putting in a push block.
 /// Only meaningful for classes that live in a bindless heap (sampled images,

@@ -141,6 +141,11 @@ public:
   void set_viewport(const Viewport &viewport);
   void set_scissor(const Rect2D &rect);
 
+  /// See MetalDevice::create_timestamp_pool: no pool is ever handed out, so
+  /// these are only ever called with an invalid one.
+  void reset_queries(QueryPoolHandle, u32, u32) {}
+  void write_timestamp(QueryPoolHandle, u32) {}
+
   void bind_pipeline(PipelineHandle pipeline);
   /// Sets the whole 128-byte push block. Offset/size in bytes.
   void push_constants(const void *data, u32 size, u32 offset = 0);
@@ -251,6 +256,12 @@ public:
 
   [[nodiscard]] SamplerHandle create_sampler(const SamplerDesc &desc);
   void destroy_sampler(SamplerHandle handle) noexcept;
+
+  [[nodiscard]] QueryPoolHandle create_timestamp_pool(u32) { return {}; }
+  void destroy_query_pool(QueryPoolHandle) noexcept {}
+  [[nodiscard]] bool read_timestamps(QueryPoolHandle, std::span<u64>) const {
+    return false;
+  }
 
   // Shaders and pipelines. NOT IMPLEMENTED YET: these return null handles, so
   // callers skip the draw and fall back to the clear-only path.

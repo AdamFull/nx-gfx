@@ -447,6 +447,46 @@ void VulkanDevice::destroy_sampler(const SamplerHandle handle) noexcept {
   m_pending_deletes.push_back({m_timeline_value, {}, {}, handle});
 }
 
+QueryPoolHandle VulkanDevice::create_timestamp_pool(const u32 count) {
+  if (!m_caps.timestamps || count == 0)
+    return {};
+
+  VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+  info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  info.queryCount = count;
+
+  VulkanQueryPool queries;
+  queries.count = count;
+  if (NX_VK_CHECK(vkCreateQueryPool(m_device, &info, nullptr, &queries.pool)) !=
+      VK_SUCCESS)
+    return {};
+  return m_query_pools.insert(queries);
+}
+
+void VulkanDevice::destroy_query_pool(const QueryPoolHandle handle) noexcept {
+  VulkanQueryPool *const queries = m_query_pools.try_get(handle);
+  if (queries == nullptr)
+    return;
+  if (queries->pool != VK_NULL_HANDLE)
+    vkDestroyQueryPool(m_device, queries->pool, nullptr);
+  m_query_pools.erase(handle);
+}
+
+bool VulkanDevice::read_timestamps(const QueryPoolHandle handle,
+                                   const std::span<u64> out) const {
+  const VulkanQueryPool *const queries = m_query_pools.try_get(handle);
+  if (queries == nullptr || out.empty())
+    return false;
+  const u32 count = nx::min(queries->count, nx::cast<u32>(out.size()));
+
+  // No WAIT bit: a pool the GPU has not finished with answers NOT_READY, and
+  // the caller reads an older one rather than stalling the frame to time it.
+  return vkGetQueryPoolResults(m_device, queries->pool, 0, count,
+                               nx::cast<usize>(count) * sizeof(u64), out.data(),
+                               sizeof(u64), VK_QUERY_RESULT_64_BIT) ==
+         VK_SUCCESS;
+}
+
 u32 VulkanDevice::texture_index(const TextureHandle handle) const noexcept {
   const VulkanTexture *texture = m_textures.try_get(handle);
   if (texture == nullptr || texture->srv == VK_NULL_HANDLE)
@@ -682,6 +722,35 @@ void VulkanCommandContext::set_scissor(const Rect2D &rect) {
   const VkRect2D vk{{rect.offset.x, rect.offset.y},
                     {rect.extent.width, rect.extent.height}};
   vkCmdSetScissor(m_cmd, 0, 1, &vk);
+}
+
+void VulkanCommandContext::reset_queries(const QueryPoolHandle pool,
+                                         const u32 first, const u32 count) {
+  if (m_cmd == VK_NULL_HANDLE || m_device == nullptr || count == 0)
+    return;
+  const VulkanQueryPool *const queries = m_device->query_pool(pool);
+  if (queries == nullptr)
+    return;
+  if (m_in_render_pass) {
+    nx::loge(log_rhi, "reset_queries inside a render pass");
+    return;
+  }
+  vkCmdResetQueryPool(m_cmd, queries->pool, first,
+                      nx::min(count, queries->count));
+}
+
+void VulkanCommandContext::write_timestamp(const QueryPoolHandle pool,
+                                           const u32 index) {
+  if (m_cmd == VK_NULL_HANDLE || m_device == nullptr)
+    return;
+  const VulkanQueryPool *const queries = m_device->query_pool(pool);
+  if (queries == nullptr || index >= queries->count)
+    return;
+  // BOTTOM_OF_PIPE: the stamp lands once everything recorded before it has
+  // finished, which is what makes the gap between two of them a pass's time
+  // rather than the time it took to record.
+  vkCmdWriteTimestamp2(m_cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                       queries->pool, index);
 }
 
 void VulkanCommandContext::push_debug_group(const nx::string_view name,
