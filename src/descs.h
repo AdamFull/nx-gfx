@@ -293,6 +293,8 @@ struct DeviceCaps {
   bool memoryless_attachments = false;
   bool timestamps = false;
 
+  u32 max_msaa_samples = 1;
+
   u32 max_texture_2d = 0;
   u32 max_bindless_sampled_images = 0;
   u32 max_bindless_storage_images = 0;

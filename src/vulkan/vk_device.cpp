@@ -288,6 +288,14 @@ bool VulkanDevice::select_physical_device() {
   m_caps.synchronization2 = true;
   m_caps.timeline_semaphores = true;
   m_caps.max_texture_2d = props.properties.limits.maxImageDimension2D;
+  const VkSampleCountFlags color_samples =
+      props.properties.limits.framebufferColorSampleCounts &
+      props.properties.limits.sampledImageColorSampleCounts;
+  for (u32 count = 64; count >= 1; count >>= 1)
+    if ((color_samples & nx::cast<VkSampleCountFlags>(count)) != 0) {
+      m_caps.max_msaa_samples = count;
+      break;
+    }
   m_caps.max_push_constant_size = props.properties.limits.maxPushConstantsSize;
   m_caps.timestamp_period_ns = props.properties.limits.timestampPeriod;
   m_caps.timestamps = m_caps.timestamp_period_ns > 0.f &&
