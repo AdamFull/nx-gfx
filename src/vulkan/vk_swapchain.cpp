@@ -402,13 +402,13 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     wait.semaphoreCount = 1;
     wait.pSemaphores = &m_timeline;
     wait.pValues = &frame.timeline_value;
-    if (NX_VK_CHECK(vkWaitSemaphores(m_device, &wait, UINT64_MAX)) !=
+    if (NX_VK_CHECK(vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
         VK_SUCCESS)
       return AcquireResult::SurfaceLost;
   }
 
   u64 completed = 0;
-  NX_VK_CHECK(vkGetSemaphoreCounterValue(m_device, m_timeline, &completed));
+  NX_VK_CHECK(vkGetSemaphoreCounterValueKHR(m_device, m_timeline, &completed));
   collect_garbage(completed);
   m_uploader.reclaim();
 
@@ -473,13 +473,13 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
     wait.semaphoreCount = 1;
     wait.pSemaphores = &m_timeline;
     wait.pValues = &frame.timeline_value;
-    if (NX_VK_CHECK(vkWaitSemaphores(m_device, &wait, UINT64_MAX)) !=
+    if (NX_VK_CHECK(vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
         VK_SUCCESS)
       return false;
   }
 
   u64 completed = 0;
-  NX_VK_CHECK(vkGetSemaphoreCounterValue(m_device, m_timeline, &completed));
+  NX_VK_CHECK(vkGetSemaphoreCounterValueKHR(m_device, m_timeline, &completed));
   collect_garbage(completed);
   m_uploader.reclaim();
 
@@ -542,7 +542,7 @@ bool VulkanDevice::end_headless_frame() {
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal_info;
 
-  if (NX_VK_CHECK(vkQueueSubmit2(m_queues[nx::cast<usize>(QueueType::Graphics)],
+  if (NX_VK_CHECK(vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
                                  1, &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
     return false;
 
@@ -551,7 +551,7 @@ bool VulkanDevice::end_headless_frame() {
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
   wait.pValues = &m_timeline_value;
-  if (NX_VK_CHECK(vkWaitSemaphores(m_device, &wait, UINT64_MAX)) != VK_SUCCESS)
+  if (NX_VK_CHECK(vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) != VK_SUCCESS)
     return false;
 
   m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
@@ -594,7 +594,7 @@ bool VulkanDevice::end_frame() {
       VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
       dependency.imageMemoryBarrierCount = 1;
       dependency.pImageMemoryBarriers = &barrier;
-      vkCmdPipelineBarrier2(cmd, &dependency);
+      vkCmdPipelineBarrier2KHR(cmd, &dependency);
 
       backbuffer->state = ResourceState::Present;
     }
@@ -641,7 +641,7 @@ bool VulkanDevice::end_frame() {
   submit.signalSemaphoreInfoCount = 2;
   submit.pSignalSemaphoreInfos = signal_infos;
 
-  NX_VK_CHECK(vkQueueSubmit2(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
+  NX_VK_CHECK(vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
                              &submit, VK_NULL_HANDLE));
 
   VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};

@@ -130,6 +130,16 @@ struct BindlessHeap {
   u32 rw_high_water = 0;
 };
 
+struct DeviceRoutes {
+  bool core_12 = false;
+  bool core_13 = false;
+  /// Optional, and core from 1.2 up; below that it is an extension of its own.
+  bool draw_indirect_count = false;
+  /// Empty when the device can do everything the engine needs, and the first
+  /// thing it could not when it cannot.
+  nx::string_view missing;
+};
+
 class VulkanCommandContext {
 public:
   VulkanCommandContext() = default;
@@ -216,6 +226,10 @@ class VulkanDevice {
 public:
   VulkanDevice() = default;
   ~VulkanDevice();
+
+  [[nodiscard]] static DeviceRoutes
+  probe_routes(VkPhysicalDevice candidate,
+               const VkPhysicalDeviceProperties &props);
 
   VulkanDevice(const VulkanDevice &) = delete;
   VulkanDevice &operator=(const VulkanDevice &) = delete;
@@ -395,6 +409,7 @@ private:
   VkInstance m_instance = VK_NULL_HANDLE;
   VkDebugUtilsMessengerEXT m_messenger = VK_NULL_HANDLE;
   VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
+  DeviceRoutes m_routes;
   VkDevice m_device = VK_NULL_HANDLE;
   VmaAllocator m_allocator = VK_NULL_HANDLE;
   DeviceCaps m_caps;

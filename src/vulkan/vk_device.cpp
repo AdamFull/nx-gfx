@@ -1,5 +1,7 @@
 #include "core/rendering/rhi/vulkan/vk_device.h"
 
+#include <cstring>
+
 #include "core/foundation/core/scope_guard.h"
 #include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
@@ -11,7 +13,7 @@ namespace {
 
 const nx::log::Category log_rhi = nx::log::category("rhi");
 
-constexpr u32 REQUIRED_API_VERSION = VK_API_VERSION_1_3;
+constexpr u32 REQUIRED_API_VERSION = VK_API_VERSION_1_1;
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -55,7 +57,153 @@ constexpr const char *platform_surface_extension() noexcept {
 #endif
 }
 
+[[nodiscard]] bool listed(const nx::small_vector<VkExtensionProperties, 128> &all,
+                         const char *name) {
+  for (const VkExtensionProperties &one : all)
+    if (std::strcmp(one.extensionName, name) == 0)
+      return true;
+  return false;
+}
+
 } // namespace
+
+/// Which road each capability takes on this device: core where its version has
+/// it, an extension where one carries it, and neither is a device we skip.
+DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
+                                        const VkPhysicalDeviceProperties &props) {
+  DeviceRoutes out;
+  out.core_12 = props.apiVersion >= VK_API_VERSION_1_2;
+  out.core_13 = props.apiVersion >= VK_API_VERSION_1_3;
+
+  u32 count = 0;
+  vkEnumerateDeviceExtensionProperties(candidate, nullptr, &count, nullptr);
+  nx::small_vector<VkExtensionProperties, 128> available(count);
+  vkEnumerateDeviceExtensionProperties(candidate, nullptr, &count,
+                                       available.data());
+
+  const bool has_swapchain =
+      listed(available, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+
+  const bool ext_buffer_device_address =
+      listed(available, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+  const bool ext_timeline_semaphore =
+      listed(available, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+  const bool ext_synchronization2 =
+      listed(available, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+  const bool ext_dynamic_rendering =
+      listed(available, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+  // Feature-only: no entry point of ours, so these are wanted by extension
+  // solely where the version does not carry them.
+  const bool ext_descriptor_indexing =
+      listed(available, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+  const bool ext_scalar_block_layout =
+      listed(available, VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
+  const bool ext_draw_indirect_count =
+      listed(available, VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+  // Dynamic rendering is defined in terms of these two; below 1.2 they are
+  // extensions of their own and have to be enabled with it.
+  const bool ext_render_pass2 =
+      listed(available, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+  const bool ext_depth_stencil_resolve =
+      listed(available, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+
+  // A feature struct may only be chained when the version or the extension that
+  // defines it is there, so the chain is built from what this device has.
+  VkPhysicalDeviceFeatures2 features{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  void **tail = &features.pNext;
+  const auto chain = [&tail](auto &block) {
+    *tail = &block;
+    tail = const_cast<void **>(&block.pNext);
+  };
+
+  VkPhysicalDeviceVulkan12Features features12{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+  VkPhysicalDeviceVulkan13Features features13{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+  VkPhysicalDeviceDescriptorIndexingFeatures indexing{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
+  VkPhysicalDeviceBufferDeviceAddressFeatures address{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+  VkPhysicalDeviceTimelineSemaphoreFeatures timeline{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+  VkPhysicalDeviceDynamicRenderingFeatures dynamic{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
+  VkPhysicalDeviceSynchronization2Features sync2{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
+  VkPhysicalDeviceScalarBlockLayoutFeatures scalar{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES};
+
+  if (out.core_12) {
+    chain(features12);
+  } else {
+    if (ext_descriptor_indexing)
+      chain(indexing);
+    if (ext_buffer_device_address)
+      chain(address);
+    if (ext_timeline_semaphore)
+      chain(timeline);
+    if (ext_scalar_block_layout)
+      chain(scalar);
+  }
+
+  if (out.core_13) {
+    chain(features13);
+  } else {
+    if (ext_dynamic_rendering)
+      chain(dynamic);
+    if (ext_synchronization2)
+      chain(sync2);
+  }
+
+  vkGetPhysicalDeviceFeatures2(candidate, &features);
+
+  const bool has_indexing =
+      out.core_12 ? features12.descriptorIndexing &&
+                        features12.runtimeDescriptorArray &&
+                        features12.descriptorBindingPartiallyBound &&
+                        features12.descriptorBindingSampledImageUpdateAfterBind &&
+                        features12.shaderSampledImageArrayNonUniformIndexing
+                  : ext_descriptor_indexing && indexing.runtimeDescriptorArray &&
+                        indexing.descriptorBindingPartiallyBound &&
+                        indexing.descriptorBindingSampledImageUpdateAfterBind &&
+                        indexing.shaderSampledImageArrayNonUniformIndexing;
+  const bool has_scalar_layout =
+      out.core_12 ? features12.scalarBlockLayout != 0
+                  : ext_scalar_block_layout && scalar.scalarBlockLayout != 0;
+  // The four that carry an entry point need the extension as well as the
+  // feature, because the engine calls the KHR name and only an enabled
+  // extension resolves it.
+  const bool has_address =
+      ext_buffer_device_address && (out.core_12 ? features12.bufferDeviceAddress != 0
+                                                : address.bufferDeviceAddress != 0);
+  const bool has_timeline =
+      ext_timeline_semaphore && (out.core_12 ? features12.timelineSemaphore != 0
+                                             : timeline.timelineSemaphore != 0);
+  const bool has_dynamic =
+      ext_dynamic_rendering &&
+      (out.core_12 || (ext_render_pass2 && ext_depth_stencil_resolve)) &&
+      (out.core_13 ? features13.dynamicRendering != 0
+                   : dynamic.dynamicRendering != 0);
+  const bool has_sync2 =
+      ext_synchronization2 && (out.core_13 ? features13.synchronization2 != 0
+                                           : sync2.synchronization2 != 0);
+
+  const auto require = [&out](const bool have, const nx::string_view what) {
+    if (!have && out.missing.empty())
+      out.missing = what;
+  };
+  require(has_swapchain, "VK_KHR_swapchain");
+  require(has_indexing, "descriptor indexing");
+  require(has_address, "buffer device address");
+  require(has_timeline, "timeline semaphores");
+  require(has_scalar_layout, "scalar block layout");
+  require(has_dynamic, "dynamic rendering");
+  require(has_sync2, "synchronization2");
+
+  out.draw_indirect_count = out.core_12 || ext_draw_indirect_count;
+  return out;
+}
 
 VulkanDevice::~VulkanDevice() { shutdown(); }
 
@@ -80,7 +228,7 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   app_info.applicationVersion = desc.application_version;
   app_info.pEngineName = "nx2d";
   app_info.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-  app_info.apiVersion = REQUIRED_API_VERSION;
+  app_info.apiVersion = available_version;
 
   u32 ext_count = 0;
   NX_VK_TRY(
@@ -211,30 +359,23 @@ bool VulkanDevice::select_physical_device() {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     vkGetPhysicalDeviceProperties2(candidate, &props);
 
-    // Chained feature query: everything the bindless model needs is core in
-    // 1.2/1.3, so this is one call rather than an extension hunt.
-    VkPhysicalDeviceVulkan13Features features13{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    VkPhysicalDeviceVulkan12Features features12{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-    features12.pNext = &features13;
-    VkPhysicalDeviceFeatures2 features{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    features.pNext = &features12;
-    vkGetPhysicalDeviceFeatures2(candidate, &features);
+    if (props.properties.apiVersion < REQUIRED_API_VERSION) {
+      nx::logd(log_rhi, "skipping {}: Vulkan {}.{}, below the {}.{} floor",
+               props.properties.deviceName,
+               VK_API_VERSION_MAJOR(props.properties.apiVersion),
+               VK_API_VERSION_MINOR(props.properties.apiVersion),
+               VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
+               VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
+      continue;
+    }
 
-    const bool usable =
-        props.properties.apiVersion >= REQUIRED_API_VERSION &&
-        features13.dynamicRendering && features13.synchronization2 &&
-        features12.timelineSemaphore && features12.bufferDeviceAddress &&
-        features12.descriptorIndexing && features12.runtimeDescriptorArray &&
-        features12.descriptorBindingPartiallyBound &&
-        features12.descriptorBindingSampledImageUpdateAfterBind &&
-        features12.shaderSampledImageArrayNonUniformIndexing;
-
-    if (!usable) {
-      nx::logd(log_rhi, "skipping {}: missing required 1.3 features",
-               props.properties.deviceName);
+    const DeviceRoutes routes = probe_routes(candidate, props.properties);
+    if (!routes.missing.empty()) {
+      nx::logd(log_rhi, "skipping {} (Vulkan {}.{}): no {}",
+               props.properties.deviceName,
+               VK_API_VERSION_MAJOR(props.properties.apiVersion),
+               VK_API_VERSION_MINOR(props.properties.apiVersion),
+               routes.missing);
       continue;
     }
 
@@ -255,6 +396,7 @@ bool VulkanDevice::select_physical_device() {
     if (score > best_score) {
       best_score = score;
       best = candidate;
+      m_routes = routes;
     }
   }
 
@@ -394,39 +536,102 @@ bool VulkanDevice::create_logical_device() {
     queue_infos.push_back(info);
   }
 
-  VkPhysicalDeviceVulkan13Features features13{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-  features13.dynamicRendering = VK_TRUE;
-  features13.synchronization2 = VK_TRUE;
-  features13.maintenance4 = VK_TRUE;
+  VkPhysicalDeviceFeatures2 features{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  void **tail = &features.pNext;
+  const auto chain = [&tail](auto &block) {
+    *tail = &block;
+    tail = const_cast<void **>(&block.pNext);
+  };
 
-  VkPhysicalDeviceVulkan11Features features11{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
-  features11.pNext = &features13;
-  // Slang emits the DrawParameters capability for SV_VertexID / SV_InstanceID.
-  features11.shaderDrawParameters = VK_TRUE;
+  // Core at the floor, so it needs no road of its own. Slang emits the
+  // DrawParameters capability for SV_VertexID / SV_InstanceID.
+  VkPhysicalDeviceShaderDrawParametersFeatures draw_params{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES};
+  draw_params.shaderDrawParameters = VK_TRUE;
+  chain(draw_params);
 
   VkPhysicalDeviceVulkan12Features features12{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-  features12.pNext = &features11;
-  features12.timelineSemaphore = VK_TRUE;
-  features12.bufferDeviceAddress = VK_TRUE;
-  features12.descriptorIndexing = VK_TRUE;
-  features12.runtimeDescriptorArray = VK_TRUE;
-  features12.descriptorBindingPartiallyBound = VK_TRUE;
-  features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
-  features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-  features12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
-  features12.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
-  features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-  features12.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
-  features12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
-  features12.drawIndirectCount = VK_TRUE;
-  features12.scalarBlockLayout = VK_TRUE;
+  VkPhysicalDeviceVulkan13Features features13{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+  VkPhysicalDeviceDescriptorIndexingFeatures indexing{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
+  VkPhysicalDeviceBufferDeviceAddressFeatures address{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+  VkPhysicalDeviceTimelineSemaphoreFeatures timeline{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+  VkPhysicalDeviceScalarBlockLayoutFeatures scalar{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES};
+  VkPhysicalDeviceDynamicRenderingFeatures dynamic{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
+  VkPhysicalDeviceSynchronization2Features sync2{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
 
-  VkPhysicalDeviceFeatures2 features{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-  features.pNext = &features12;
+  nx::small_vector<const char *, 12> device_extensions;
+  device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+  // Enabled whatever the version, because the engine calls the KHR entry points
+  // and only an enabled extension resolves them. Where the version has these in
+  // core the enable is a formality; where it does not, it is the whole point.
+  device_extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+  device_extensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+  device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+  device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+
+  if (m_routes.core_12) {
+    features12.timelineSemaphore = VK_TRUE;
+    features12.bufferDeviceAddress = VK_TRUE;
+    features12.descriptorIndexing = VK_TRUE;
+    features12.runtimeDescriptorArray = VK_TRUE;
+    features12.descriptorBindingPartiallyBound = VK_TRUE;
+    features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    features12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+    features12.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    features12.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+    features12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+    features12.drawIndirectCount = m_routes.draw_indirect_count ? VK_TRUE : VK_FALSE;
+    features12.scalarBlockLayout = VK_TRUE;
+    chain(features12);
+  } else {
+    indexing.runtimeDescriptorArray = VK_TRUE;
+    indexing.descriptorBindingPartiallyBound = VK_TRUE;
+    indexing.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    indexing.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    indexing.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+    indexing.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+    indexing.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    indexing.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+    indexing.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+    address.bufferDeviceAddress = VK_TRUE;
+    timeline.timelineSemaphore = VK_TRUE;
+    scalar.scalarBlockLayout = VK_TRUE;
+    chain(indexing);
+    chain(address);
+    chain(timeline);
+    chain(scalar);
+    // Feature-only below 1.2, so wanted here and nowhere else.
+    device_extensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+    device_extensions.push_back(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
+    if (m_routes.draw_indirect_count)
+      device_extensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+    // What dynamic rendering is defined in terms of. Core from 1.2 up.
+    device_extensions.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+  }
+
+  if (m_routes.core_13) {
+    features13.dynamicRendering = VK_TRUE;
+    features13.synchronization2 = VK_TRUE;
+    chain(features13);
+  } else {
+    dynamic.dynamicRendering = VK_TRUE;
+    sync2.synchronization2 = VK_TRUE;
+    chain(dynamic);
+    chain(sync2);
+  }
+
   features.features.samplerAnisotropy = VK_TRUE;
   features.features.multiDrawIndirect = VK_TRUE;
   features.features.shaderInt16 = VK_TRUE;
@@ -436,14 +641,12 @@ bool VulkanDevice::create_logical_device() {
   features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
-  const char *device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-
   VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   info.pNext = &features;
   info.queueCreateInfoCount = nx::cast<u32>(queue_infos.size());
   info.pQueueCreateInfos = queue_infos.data();
-  info.enabledExtensionCount = 1;
-  info.ppEnabledExtensionNames = device_extensions;
+  info.enabledExtensionCount = nx::cast<u32>(device_extensions.size());
+  info.ppEnabledExtensionNames = device_extensions.data();
 
   NX_VK_TRY(vkCreateDevice(m_physical_device, &info, nullptr, &m_device));
 
@@ -454,7 +657,7 @@ bool VulkanDevice::create_logical_device() {
   for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i)
     vkGetDeviceQueue(m_device, m_queue_families[i], 0, &m_queues[i]);
 
-  m_caps.draw_indirect_count = true;
+  m_caps.draw_indirect_count = m_routes.draw_indirect_count;
 
   nx::logi(log_rhi, "queues: graphics={} compute={}{} copy={}{}", graphics,
            compute, m_caps.async_compute ? " (async)" : " (aliased)", copy,

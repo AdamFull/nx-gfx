@@ -388,7 +388,7 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
     VkBufferDeviceAddressInfo address_info{
         VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     address_info.buffer = buffer.buffer;
-    buffer.device_address = vkGetBufferDeviceAddress(m_device, &address_info);
+    buffer.device_address = vkGetBufferDeviceAddressKHR(m_device, &address_info);
   }
 
   const BufferHandle handle = m_buffers.insert(buffer);
@@ -607,7 +607,7 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
   dependency.pImageMemoryBarriers = image_barriers.data();
   dependency.bufferMemoryBarrierCount = nx::cast<u32>(buffer_barriers.size());
   dependency.pBufferMemoryBarriers = buffer_barriers.data();
-  vkCmdPipelineBarrier2(m_cmd, &dependency);
+  vkCmdPipelineBarrier2KHR(m_cmd, &dependency);
 }
 
 void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
@@ -681,7 +681,7 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
   info.pColorAttachments = colors.data();
   info.pDepthAttachment = has_depth ? &depth : nullptr;
 
-  vkCmdBeginRendering(m_cmd, &info);
+  vkCmdBeginRenderingKHR(m_cmd, &info);
   m_in_render_pass = true;
 
   // Dynamic rendering leaves viewport and scissor unset; defaulting them to
@@ -696,7 +696,7 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
 void VulkanCommandContext::end_render_pass() {
   if (!m_in_render_pass)
     return;
-  vkCmdEndRendering(m_cmd);
+  vkCmdEndRenderingKHR(m_cmd);
   m_in_render_pass = false;
   pop_debug_group();
 }
@@ -749,7 +749,7 @@ void VulkanCommandContext::write_timestamp(const QueryPoolHandle pool,
   // BOTTOM_OF_PIPE: the stamp lands once everything recorded before it has
   // finished, which is what makes the gap between two of them a pass's time
   // rather than the time it took to record.
-  vkCmdWriteTimestamp2(m_cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+  vkCmdWriteTimestamp2KHR(m_cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                        queries->pool, index);
 }
 

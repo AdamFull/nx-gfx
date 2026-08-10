@@ -189,14 +189,14 @@ void VulkanUploader::shutdown() noexcept {
 u64 VulkanUploader::completed_value() const noexcept {
   u64 value = 0;
   if (m_timeline != VK_NULL_HANDLE)
-    NX_VK_CHECK(vkGetSemaphoreCounterValue(m_vk, m_timeline, &value));
+    NX_VK_CHECK(vkGetSemaphoreCounterValueKHR(m_vk, m_timeline, &value));
   return value;
 }
 
 u64 VulkanUploader::graphics_completed() const noexcept {
   u64 value = 0;
   if (m_device != nullptr && m_device->m_timeline != VK_NULL_HANDLE)
-    NX_VK_CHECK(vkGetSemaphoreCounterValue(m_vk, m_device->m_timeline, &value));
+    NX_VK_CHECK(vkGetSemaphoreCounterValueKHR(m_vk, m_device->m_timeline, &value));
   return value;
 }
 
@@ -208,7 +208,7 @@ void VulkanUploader::wait_value(const u64 value) noexcept {
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
   wait.pValues = &v;
-  NX_VK_CHECK(vkWaitSemaphores(m_vk, &wait, UINT64_MAX));
+  NX_VK_CHECK(vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX));
 }
 
 void VulkanUploader::wait_graphics(const u64 value) noexcept {
@@ -220,7 +220,7 @@ void VulkanUploader::wait_graphics(const u64 value) noexcept {
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_device->m_timeline;
   wait.pValues = &v;
-  NX_VK_CHECK(vkWaitSemaphores(m_vk, &wait, UINT64_MAX));
+  NX_VK_CHECK(vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX));
 }
 
 VkCommandBuffer VulkanUploader::begin_cmd() {
@@ -268,7 +268,7 @@ void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value) {
   submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal;
-  NX_VK_CHECK(vkQueueSubmit2(m_queue, 1, &submit, VK_NULL_HANDLE));
+  NX_VK_CHECK(vkQueueSubmit2KHR(m_queue, 1, &submit, VK_NULL_HANDLE));
 
   m_inflight.push_back({cmd, value});
 }
@@ -528,7 +528,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   VkDependencyInfo pre_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   pre_dep.imageMemoryBarrierCount = 1;
   pre_dep.pImageMemoryBarriers = &pre;
-  vkCmdPipelineBarrier2(cmd, &pre_dep);
+  vkCmdPipelineBarrier2KHR(cmd, &pre_dep);
 
   vkCmdCopyBufferToImage(cmd, staging_buf, tex->image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -546,7 +546,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     VkDependencyInfo post_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     post_dep.imageMemoryBarrierCount = 1;
     post_dep.pImageMemoryBarriers = &post;
-    vkCmdPipelineBarrier2(cmd, &post_dep);
+    vkCmdPipelineBarrier2KHR(cmd, &post_dep);
   }
 
   if (oversized != nullptr)
@@ -641,7 +641,7 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dep.bufferMemoryBarrierCount = 1;
   dep.pBufferMemoryBarriers = &bar;
-  vkCmdPipelineBarrier2(cmd, &dep);
+  vkCmdPipelineBarrier2KHR(cmd, &dep);
 
   if (oversized != nullptr)
     oversized->value = m_batch_value;
@@ -871,7 +871,7 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dep.memoryBarrierCount = 1;
   dep.pMemoryBarriers = &host;
-  vkCmdPipelineBarrier2(cmd, &dep);
+  vkCmdPipelineBarrier2KHR(cmd, &dep);
 
   vkEndCommandBuffer(cmd);
   const u64 value = ++m_value;
@@ -934,7 +934,7 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dep.imageMemoryBarrierCount = 1;
   dep.pImageMemoryBarriers = &to_src;
-  vkCmdPipelineBarrier2(cmd, &dep);
+  vkCmdPipelineBarrier2KHR(cmd, &dep);
 
   VkBufferImageCopy copy{};
   copy.imageSubresource = {aspect, mip, layer, 1};
@@ -960,7 +960,7 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   VkDependencyInfo host_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   host_dep.memoryBarrierCount = 1;
   host_dep.pMemoryBarriers = &host;
-  vkCmdPipelineBarrier2(cmd, &host_dep);
+  vkCmdPipelineBarrier2KHR(cmd, &host_dep);
 
   vkEndCommandBuffer(cmd);
   const u64 value = ++m_value;
@@ -1066,7 +1066,7 @@ void VulkanUploader::record_releases() {
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = nx::cast<u32>(barriers.size());
     dep.pImageMemoryBarriers = barriers.data();
-    vkCmdPipelineBarrier2(cmd, &dep);
+    vkCmdPipelineBarrier2KHR(cmd, &dep);
   }
 
   m_image_releases.clear();
@@ -1136,7 +1136,7 @@ void VulkanUploader::replay_graphics_copies(const VkCommandBuffer cmd) {
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = nx::cast<u32>(pre.size());
     dep.pImageMemoryBarriers = pre.data();
-    vkCmdPipelineBarrier2(cmd, &dep);
+    vkCmdPipelineBarrier2KHR(cmd, &dep);
 
     for (const GraphicsCopy &copy : m_graphics_copies)
       if (m_device->m_textures.try_get(copy.handle) != nullptr)
@@ -1146,7 +1146,7 @@ void VulkanUploader::replay_graphics_copies(const VkCommandBuffer cmd) {
 
     dep.imageMemoryBarrierCount = nx::cast<u32>(post.size());
     dep.pImageMemoryBarriers = post.data();
-    vkCmdPipelineBarrier2(cmd, &dep);
+    vkCmdPipelineBarrier2KHR(cmd, &dep);
   }
 
   // Hold the staging until this frame has run. flush_locked() stamps every
@@ -1202,7 +1202,7 @@ u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
     dep.pImageMemoryBarriers = images.data();
     dep.bufferMemoryBarrierCount = nx::cast<u32>(buffers.size());
     dep.pBufferMemoryBarriers = buffers.data();
-    vkCmdPipelineBarrier2(graphics_cmd, &dep);
+    vkCmdPipelineBarrier2KHR(graphics_cmd, &dep);
   }
 
   // After the acquires, so an image this frame is taking ownership of is not
