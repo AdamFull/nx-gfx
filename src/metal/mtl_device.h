@@ -104,6 +104,8 @@ public:
   // Readbacks (render thread). The source must not be in concurrent GPU use.
   // A readback flushes any open upload batch and submits on its own.
 
+  /// Reads a range from a buffer created with BufferUsage::CopySrc. Invalid
+  /// handles, usage, or ranges are rejected before GPU work is recorded.
   ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
   ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
 

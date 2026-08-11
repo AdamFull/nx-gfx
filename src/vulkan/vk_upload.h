@@ -135,6 +135,8 @@ public:
   // image, which it does until the next frame hands it over: read back before
   // presenting. read_texture warns and reads anyway once graphics owns it.
 
+  /// Reads a range from a buffer created with BufferUsage::CopySrc. Invalid
+  /// handles, usage, or ranges are rejected before GPU work is recorded.
   ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
   ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
 

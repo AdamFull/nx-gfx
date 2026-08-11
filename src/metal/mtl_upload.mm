@@ -634,7 +634,11 @@ ReadbackResult MetalUploader::read_buffer(const BufferHandle handle,
     nx::loge(log_rhi, "read_buffer: handle is not live");
     return {};
   }
-  if (offset + size > buffer->size) {
+  if (!(buffer->usage & BufferUsage::CopySrc)) {
+    nx::loge(log_rhi, "read_buffer: buffer was not created with CopySrc");
+    return {};
+  }
+  if (offset > buffer->size || size > buffer->size - offset) {
     nx::loge(log_rhi, "read_buffer: {} bytes at offset {} overruns a {} byte "
                       "buffer",
              size, offset, buffer->size);

@@ -863,6 +863,11 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE || size == 0)
     return {};
 
+  if (!(buf->usage & BufferUsage::CopySrc)) {
+    nx::loge(log_up, "read_buffer: buffer was not created with CopySrc");
+    return {};
+  }
+
   if (offset > buf->size || size > buf->size - offset) {
     nx::logw(log_up, "read_buffer: {}..{} is outside the {}-byte buffer",
              offset, offset + size, buf->size);
