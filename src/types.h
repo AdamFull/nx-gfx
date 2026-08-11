@@ -283,7 +283,6 @@ void format_block_extent(Format format, u32 &width, u32 &height) noexcept;
 [[nodiscard]] bool format_is_compressed(Format format) noexcept;
 
 [[nodiscard]] bool format_is_float(Format format) noexcept;
-[[nodiscard]] Format format_as_srgb(Format format) noexcept;
 
 /// Bytes in one row of blocks for a mip of the given width. Compressed rows are
 /// counted in whole blocks, so the width is rounded up to the block size.
