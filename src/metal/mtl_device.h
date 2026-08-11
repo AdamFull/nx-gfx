@@ -270,8 +270,8 @@ public:
     return false;
   }
 
-  // Shaders and pipelines. NOT IMPLEMENTED YET: these return null handles, so
-  // callers skip the draw and fall back to the clear-only path.
+  // Shaders and pipelines. A shader is a metallib compiled to an MTLLibrary;
+  // the reflection sidecar is parsed the same way the Vulkan backend does it.
 
   [[nodiscard]] ShaderHandle create_shader(const ShaderDesc &desc);
   void destroy_shader(ShaderHandle handle) noexcept;
@@ -282,8 +282,8 @@ public:
   create_compute_pipeline(const ComputePipelineDesc &desc);
   void destroy_pipeline(PipelineHandle handle) noexcept;
 
-  // Bindless indices, for the push block. The heap needs argument-buffer
-  // Tier 2 and is not built yet, so these report "no slot" for now.
+  // Bindless indices, for the push block. A resource with no slot answers
+  // BINDLESS_INVALID_INDEX.
 
   /// The shader's reflected interface. Empty for an unknown handle.
   [[nodiscard]] const ShaderReflection &
