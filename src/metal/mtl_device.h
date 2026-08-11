@@ -90,6 +90,11 @@ public:
   [[nodiscard]] UploadTicket
   upload_buffer(BufferHandle handle, u64 dst_offset, std::span<const u8> src,
                 ResourceState final_state = ResourceState::ShaderReadOnly);
+  /// Fills the entire buffer with zero on the GPU, consuming no staging
+  /// allocation regardless of the buffer's size.
+  [[nodiscard]] UploadTicket
+  clear_buffer(BufferHandle handle,
+               ResourceState final_state = ResourceState::ShaderReadOnly);
 
   LoadRequest load_texture(nx::string_view path,
                            TextureUsageFlags usage = DEFAULT_LOAD_USAGE);

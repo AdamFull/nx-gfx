@@ -504,6 +504,32 @@ UploadTicket MetalUploader::upload_buffer(const BufferHandle handle,
   return UploadTicket{up.submitted + 1};
 }
 
+UploadTicket MetalUploader::clear_buffer(const BufferHandle handle,
+                                         const ResourceState final_state) {
+  (void)final_state; // Buffers carry no tracked state in this backend.
+
+  if (m_state == nullptr)
+    return UploadTicket::failure();
+
+  const MetalBuffer *buffer = m_state->buffers.try_get(handle);
+  if (buffer == nullptr || buffer->buffer == nil) {
+    nx::loge(log_rhi, "clear_buffer: handle is not live");
+    return UploadTicket::failure();
+  }
+  if (!(buffer->usage & BufferUsage::CopyDst)) {
+    nx::loge(log_rhi, "clear_buffer: buffer has no copy-destination usage");
+    return UploadTicket::failure();
+  }
+  if (!ensure_batch(*m_state))
+    return UploadTicket::failure();
+
+  MetalUploadState &up = m_state->upload;
+  [up.blit fillBuffer:buffer->buffer
+                range:NSMakeRange(0, nx::cast<NSUInteger>(buffer->size))
+                value:0];
+  return UploadTicket{up.submitted + 1};
+}
+
 LoadRequest MetalUploader::load_texture(const nx::string_view path,
                                         const TextureUsageFlags usage) {
   if (m_state == nullptr)

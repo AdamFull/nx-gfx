@@ -628,7 +628,9 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
 
   VkBufferMemoryBarrier2 before_copy{
       VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-  before_copy.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  // ALL_TRANSFER also covers a preceding vkCmdFillBuffer (CLEAR in sync2), so
+  // a buffer may be cleared and patched within the same open upload batch.
+  before_copy.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
   before_copy.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   before_copy.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   before_copy.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -671,6 +673,70 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
 
   if (oversized != nullptr)
     oversized->value = m_batch_value;
+  if (m_batch_value > m_pending_wait)
+    m_pending_wait = m_batch_value;
+  return {m_batch_value};
+}
+
+UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
+                                          const ResourceState final_state) {
+  NX_PROFILE_ZONE("vk::clear_buffer");
+  VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
+  if (buf == nullptr || buf->buffer == VK_NULL_HANDLE) {
+    nx::loge(log_up, "clear_buffer: handle is not live");
+    return UploadTicket::failure();
+  }
+  if (!(buf->usage & BufferUsage::CopyDst)) {
+    nx::loge(log_up, "clear_buffer: buffer has no copy-destination usage");
+    return UploadTicket::failure();
+  }
+
+  const VkCommandBuffer cmd = ensure_batch();
+  if (cmd == VK_NULL_HANDLE) {
+    nx::loge(log_up, "clear_buffer: no command batch to record into");
+    return UploadTicket::failure();
+  }
+
+  VkBufferMemoryBarrier2 before_fill{
+      VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+  before_fill.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+  before_fill.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_fill.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+  before_fill.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_fill.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  before_fill.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  before_fill.buffer = buf->buffer;
+  before_fill.offset = 0;
+  before_fill.size = buf->size;
+  VkDependencyInfo before_fill_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  before_fill_dep.bufferMemoryBarrierCount = 1;
+  before_fill_dep.pBufferMemoryBarriers = &before_fill;
+  vkCmdPipelineBarrier2KHR(cmd, &before_fill_dep);
+
+  vkCmdFillBuffer(cmd, buf->buffer, 0, VK_WHOLE_SIZE, 0);
+
+  const bool qfot = needs_ownership_transfer();
+  if (qfot) {
+    (void)pending_release(handle, buf->buffer, 0, buf->size, final_state);
+  } else {
+    const VkStateInfo fin = to_vk_state(final_state);
+    VkBufferMemoryBarrier2 after_fill{
+        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    after_fill.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    after_fill.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    after_fill.dstStageMask = fin.stage;
+    after_fill.dstAccessMask = fin.access;
+    after_fill.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    after_fill.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    after_fill.buffer = buf->buffer;
+    after_fill.offset = 0;
+    after_fill.size = buf->size;
+    VkDependencyInfo after_fill_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    after_fill_dep.bufferMemoryBarrierCount = 1;
+    after_fill_dep.pBufferMemoryBarriers = &after_fill;
+    vkCmdPipelineBarrier2KHR(cmd, &after_fill_dep);
+  }
+
   if (m_batch_value > m_pending_wait)
     m_pending_wait = m_batch_value;
   return {m_batch_value};
@@ -1139,7 +1205,9 @@ void VulkanUploader::record_releases() {
 
     VkBufferMemoryBarrier2 barrier{
         VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    // Buffer batches may contain both vkCmdCopyBuffer and vkCmdFillBuffer;
+    // synchronization2 assigns those to COPY and CLEAR respectively.
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
     barrier.dstAccessMask = VK_ACCESS_2_NONE;

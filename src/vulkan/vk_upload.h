@@ -106,6 +106,12 @@ public:
   upload_buffer(BufferHandle handle, u64 dst_offset, std::span<const u8> src,
                 ResourceState final_state = ResourceState::ShaderReadOnly);
 
+  /// Fills the entire buffer with zero on the copy queue, without allocating
+  /// or staging a CPU-sized zero block.
+  [[nodiscard]] UploadTicket
+  clear_buffer(BufferHandle handle,
+               ResourceState final_state = ResourceState::ShaderReadOnly);
+
   // Async loading (enqueue from any thread; poll from any thread)
 
   static constexpr TextureUsageFlags DEFAULT_LOAD_USAGE =
