@@ -353,29 +353,33 @@ bool VulkanDevice::select_physical_device() {
 
   VkPhysicalDevice best = VK_NULL_HANDLE;
   u64 best_score = 0;
+  // Kept rather than logged and forgotten: while one device is acceptable these
+  // are noise, and when none is they are the whole of the bug report.
+  nx::vector<nx::string> rejected;
 
   for (VkPhysicalDevice candidate : devices) {
     VkPhysicalDeviceProperties2 props{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     vkGetPhysicalDeviceProperties2(candidate, &props);
 
-    if (props.properties.apiVersion < REQUIRED_API_VERSION) {
-      nx::logd(log_rhi, "skipping {}: Vulkan {}.{}, below the {}.{} floor",
-               props.properties.deviceName,
-               VK_API_VERSION_MAJOR(props.properties.apiVersion),
-               VK_API_VERSION_MINOR(props.properties.apiVersion),
-               VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
-               VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
+    const u32 version = props.properties.apiVersion;
+    if (version < REQUIRED_API_VERSION) {
+      rejected.push_back(nx::format(
+          "{}: Vulkan {}.{}, below the {}.{} floor", props.properties.deviceName,
+          VK_API_VERSION_MAJOR(version), VK_API_VERSION_MINOR(version),
+          VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
+          VK_API_VERSION_MINOR(REQUIRED_API_VERSION)));
+      nx::logd(log_rhi, "skipping {}", rejected.back());
       continue;
     }
 
     const DeviceRoutes routes = probe_routes(candidate, props.properties);
     if (!routes.missing.empty()) {
-      nx::logd(log_rhi, "skipping {} (Vulkan {}.{}): no {}",
-               props.properties.deviceName,
-               VK_API_VERSION_MAJOR(props.properties.apiVersion),
-               VK_API_VERSION_MINOR(props.properties.apiVersion),
-               routes.missing);
+      rejected.push_back(nx::format(
+          "{} (Vulkan {}.{}): no {}", props.properties.deviceName,
+          VK_API_VERSION_MAJOR(version), VK_API_VERSION_MINOR(version),
+          routes.missing));
+      nx::logd(log_rhi, "skipping {}", rejected.back());
       continue;
     }
 
@@ -402,9 +406,16 @@ bool VulkanDevice::select_physical_device() {
 
   if (best == VK_NULL_HANDLE) {
     nx::logc(log_rhi,
-             "no device supports the required Vulkan 1.3 feature set "
-             "(dynamic rendering, sync2, timeline semaphores, buffer device "
-             "address, descriptor indexing)");
+             "no usable Vulkan device. The floor is {}.{} with dynamic "
+             "rendering, synchronization2, timeline semaphores, buffer device "
+             "address, descriptor indexing and scalar block layout - by core "
+             "feature or by extension, whichever the device offers",
+             VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
+             VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
+    // At error rather than debug: this is the frame where the app does not
+    // start, and "which one, and what did it lack" is the only question.
+    for (const nx::string &why : rejected)
+      nx::loge(log_rhi, "  {}", why);
     return false;
   }
 
@@ -471,6 +482,11 @@ bool VulkanDevice::select_physical_device() {
            VK_API_VERSION_MINOR(m_caps.api_version),
            VK_API_VERSION_PATCH(m_caps.api_version),
            m_caps.device_local_memory / (1024 * 1024));
+  nx::logi(log_rhi, "features: {}",
+           m_routes.core_13   ? "core 1.3"
+           : m_routes.core_12 ? "core 1.2, dynamic rendering and "
+                                "synchronization2 by extension"
+                              : "1.1, everything above it by extension");
   return true;
 }
 
