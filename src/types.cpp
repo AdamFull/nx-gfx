@@ -159,6 +159,50 @@ nx::string_view to_string(const Format format) noexcept {
   return info_of(format).name;
 }
 
+bool format_is_float(const Format format) noexcept {
+  switch (format) {
+  case Format::R16_FLOAT:
+  case Format::RG16_FLOAT:
+  case Format::RGBA16_FLOAT:
+  case Format::R32_FLOAT:
+  case Format::RG32_FLOAT:
+  case Format::RGBA32_FLOAT:
+  case Format::RG11B10_FLOAT:
+    return true;
+  default:
+    return false;
+  }
+}
+
+Format format_as_srgb(const Format format) noexcept {
+  switch (format) {
+  case Format::RGBA8_UNORM:
+    return Format::RGBA8_SRGB;
+  case Format::BGRA8_UNORM:
+    return Format::BGRA8_SRGB;
+  case Format::BC1_RGBA_UNORM:
+    return Format::BC1_RGBA_SRGB;
+  case Format::BC1_RGB_UNORM:
+    return Format::BC1_RGB_SRGB;
+  case Format::BC2_RGBA_UNORM:
+    return Format::BC2_RGBA_SRGB;
+  case Format::BC3_RGBA_UNORM:
+    return Format::BC3_RGBA_SRGB;
+  case Format::BC7_RGBA_UNORM:
+    return Format::BC7_RGBA_SRGB;
+  case Format::ASTC_4x4_UNORM:
+    return Format::ASTC_4x4_SRGB;
+  case Format::ASTC_6x6_UNORM:
+    return Format::ASTC_6x6_SRGB;
+  case Format::ASTC_8x8_UNORM:
+    return Format::ASTC_8x8_SRGB;
+  default:
+    // Single-channel and two-channel formats have no sRGB twin, and would not
+    // want one: they carry coverage, a mask or data, not colour.
+    return format;
+  }
+}
+
 Format format_from_string(const nx::string_view name) noexcept {
   for (usize i = 0; i < nx::cast<usize>(Format::Count); ++i)
     if (same_ignoring_case(FORMAT_TABLE[i].name, name))
