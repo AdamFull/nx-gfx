@@ -296,6 +296,8 @@ struct DeviceCaps {
   u32 max_msaa_samples = 1;
 
   u32 max_texture_2d = 0;
+  u64 max_buffer_size = 0;
+  Extent3D max_compute_work_groups{0, 0, 0};
   u32 max_bindless_sampled_images = 0;
   u32 max_bindless_storage_images = 0;
   u32 max_bindless_samplers = 0;

@@ -204,6 +204,11 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     m_caps.memoryless_attachments = [device supportsFamily:MTLGPUFamilyApple1];
 
     m_caps.max_texture_2d = max_texture_dimension(device);
+    m_caps.max_buffer_size = nx::cast<u64>([device maxBufferLength]);
+    // Metal accepts an NSUInteger-sized grid and exposes no smaller per-axis
+    // device limit. The frame format stores u32 counts, so those are the
+    // effective limits on both 32- and 64-bit Apple platforms.
+    m_caps.max_compute_work_groups = {~0u, ~0u, ~0u};
     // Tier 2 allows 500,000 textures and 2048 samplers in one argument buffer;
     // our own ceilings are lower, and the heap is sized to the smaller of the
     // two.

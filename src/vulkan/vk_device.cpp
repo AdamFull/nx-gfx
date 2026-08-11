@@ -469,6 +469,9 @@ bool VulkanDevice::select_physical_device() {
 
   VkPhysicalDeviceDescriptorIndexingProperties indexing{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES};
+  VkPhysicalDeviceMaintenance3Properties maintenance{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
+  indexing.pNext = &maintenance;
   VkPhysicalDeviceProperties2 props{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
   props.pNext = &indexing;
@@ -487,6 +490,12 @@ bool VulkanDevice::select_physical_device() {
   m_caps.synchronization2 = true;
   m_caps.timeline_semaphores = true;
   m_caps.max_texture_2d = props.properties.limits.maxImageDimension2D;
+  m_caps.max_buffer_size = maintenance.maxMemoryAllocationSize;
+  m_caps.max_compute_work_groups = {
+      props.properties.limits.maxComputeWorkGroupCount[0],
+      props.properties.limits.maxComputeWorkGroupCount[1],
+      props.properties.limits.maxComputeWorkGroupCount[2],
+  };
   const VkSampleCountFlags color_samples =
       props.properties.limits.framebufferColorSampleCounts &
       props.properties.limits.sampledImageColorSampleCounts;
