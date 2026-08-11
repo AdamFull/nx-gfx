@@ -205,6 +205,28 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   return out;
 }
 
+bool VulkanDevice::supports(const Format format,
+                            const TextureUsageFlags usage) const {
+  if (m_physical_device == VK_NULL_HANDLE || format == Format::Unknown)
+    return false;
+
+  VkFormatProperties props{};
+  vkGetPhysicalDeviceFormatProperties(m_physical_device, to_vk_format(format),
+                                      &props);
+  const VkFormatFeatureFlags have = props.optimalTilingFeatures;
+
+  VkFormatFeatureFlags want = 0;
+  if (usage.has_any(TextureUsage::Sampled))
+    want |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+  if (usage.has_any(TextureUsage::Storage))
+    want |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+  if (usage.has_any(TextureUsage::RenderTarget))
+    want |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+  if (usage.has_any(TextureUsage::DepthStencil))
+    want |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+  return (have & want) == want;
+}
+
 VulkanDevice::~VulkanDevice() { shutdown(); }
 
 // Instance
@@ -654,6 +676,14 @@ bool VulkanDevice::create_logical_device() {
   features.features.independentBlend = VK_TRUE;
   // Lets one bindless rwTextures[] array hold images of differing formats: the
   // shader declares the type, the descriptor carries no format.
+  // RG11B10_FLOAT and friends as storage images. Optional, and asked for only
+  // where it is offered: enabling a feature a device lacks fails the create.
+  VkPhysicalDeviceFeatures2 available{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  vkGetPhysicalDeviceFeatures2(m_physical_device, &available);
+  features.features.shaderStorageImageExtendedFormats =
+      available.features.shaderStorageImageExtendedFormats;
+
   features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 

@@ -262,6 +262,8 @@ public:
   [[nodiscard]] bool resize_swapchain(u32 width, u32 height);
   void destroy_swapchain() noexcept;
 
+  [[nodiscard]] bool supports(Format format, TextureUsageFlags usage) const;
+
   [[nodiscard]] Format swapchain_format() const noexcept {
     return m_swapchain_format;
   }
