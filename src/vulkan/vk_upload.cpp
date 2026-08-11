@@ -181,6 +181,7 @@ void VulkanUploader::shutdown() noexcept {
   m_image_acquires.clear();
   m_image_releases.clear();
   m_buffer_acquires.clear();
+  m_buffer_releases.clear();
   m_graphics_copies.clear();
   m_graphics_hold = 0;
   m_vk = VK_NULL_HANDLE;
@@ -624,33 +625,54 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   region.srcOffset = base_offset;
   region.dstOffset = dst_offset;
   region.size = src.size();
+
+  VkBufferMemoryBarrier2 before_copy{
+      VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+  before_copy.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  before_copy.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_copy.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  before_copy.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_copy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  before_copy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  before_copy.buffer = buf->buffer;
+  before_copy.offset = dst_offset;
+  before_copy.size = src.size();
+  VkDependencyInfo before_copy_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  before_copy_dep.bufferMemoryBarrierCount = 1;
+  before_copy_dep.pBufferMemoryBarriers = &before_copy;
+  vkCmdPipelineBarrier2KHR(cmd, &before_copy_dep);
+
   vkCmdCopyBuffer(cmd, staging_buf, buf->buffer, 1, &region);
 
-  const VkStateInfo fin = to_vk_state(final_state);
   const bool qfot = needs_ownership_transfer();
-  VkBufferMemoryBarrier2 bar{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-  bar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-  bar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-  bar.dstStageMask = qfot ? VK_PIPELINE_STAGE_2_NONE : fin.stage;
-  bar.dstAccessMask = qfot ? VK_ACCESS_2_NONE : fin.access;
-  bar.srcQueueFamilyIndex = qfot ? m_copy_family : VK_QUEUE_FAMILY_IGNORED;
-  bar.dstQueueFamilyIndex = qfot ? m_graphics_family : VK_QUEUE_FAMILY_IGNORED;
-  bar.buffer = buf->buffer;
-  bar.offset = dst_offset;
-  bar.size = src.size();
-  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-  dep.bufferMemoryBarrierCount = 1;
-  dep.pBufferMemoryBarriers = &bar;
-  vkCmdPipelineBarrier2KHR(cmd, &dep);
+  if (qfot) {
+    // Do not release ownership after every patch: a later upload in this batch
+    // still belongs to the copy queue. record_releases() emits one hand-off
+    // after all copies have been recorded.
+    (void)pending_release(handle, buf->buffer, dst_offset, src.size(),
+                          final_state);
+  } else {
+    const VkStateInfo fin = to_vk_state(final_state);
+    VkBufferMemoryBarrier2 bar{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    bar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    bar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    bar.dstStageMask = fin.stage;
+    bar.dstAccessMask = fin.access;
+    bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bar.buffer = buf->buffer;
+    bar.offset = dst_offset;
+    bar.size = src.size();
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.bufferMemoryBarrierCount = 1;
+    dep.pBufferMemoryBarriers = &bar;
+    vkCmdPipelineBarrier2KHR(cmd, &dep);
+  }
 
   if (oversized != nullptr)
     oversized->value = m_batch_value;
   if (m_batch_value > m_pending_wait)
     m_pending_wait = m_batch_value;
-  if (qfot)
-    m_buffer_acquires.push_back(
-        {buf->buffer, dst_offset, src.size(), final_state});
-
   return {m_batch_value};
 }
 
@@ -857,6 +879,25 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   if (cmd == VK_NULL_HANDLE)
     return {};
 
+  // The source may have just been populated by an upload submission. Its
+  // shader-facing post-copy scope does not cover another transfer operation,
+  // so establish the copy-write -> copy-read dependency explicitly.
+  VkBufferMemoryBarrier2 before_read{
+      VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+  before_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  before_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_read.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  before_read.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+  before_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  before_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  before_read.buffer = buf->buffer;
+  before_read.offset = offset;
+  before_read.size = size;
+  VkDependencyInfo before_read_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  before_read_dep.bufferMemoryBarrierCount = 1;
+  before_read_dep.pBufferMemoryBarriers = &before_read;
+  vkCmdPipelineBarrier2KHR(cmd, &before_read_dep);
+
   VkBufferCopy region{};
   region.srcOffset = offset;
   region.dstOffset = 0;
@@ -1019,8 +1060,31 @@ VulkanUploader::pending_release(const TextureHandle handle, const VkImage image,
   return m_image_releases.back();
 }
 
+VulkanUploader::BufferRelease &
+VulkanUploader::pending_release(const BufferHandle handle,
+                                const VkBuffer buffer, const u64 offset,
+                                const u64 size, const ResourceState state) {
+  for (BufferRelease &release : m_buffer_releases) {
+    if (release.buffer != buffer)
+      continue;
+
+    const u64 begin = release.offset < offset ? release.offset : offset;
+    const u64 old_end = release.offset + release.size;
+    const u64 new_end = offset + size;
+    release.offset = begin;
+    release.size = (old_end > new_end ? old_end : new_end) - begin;
+    // Resource state is tracked for a buffer as a whole; the last upload names
+    // the state in which the completed batch is handed to graphics.
+    release.new_state = state;
+    return release;
+  }
+
+  m_buffer_releases.push_back({handle, buffer, offset, size, state});
+  return m_buffer_releases.back();
+}
+
 void VulkanUploader::record_releases() {
-  if (m_image_releases.empty())
+  if (m_image_releases.empty() && m_buffer_releases.empty())
     return;
 
   const VkCommandBuffer cmd = ensure_batch();
@@ -1062,14 +1126,40 @@ void VulkanUploader::record_releases() {
     tex->owner = ImageOwner::Graphics;
   }
 
-  if (!barriers.empty()) {
+  nx::small_vector<VkBufferMemoryBarrier2, 16> buffer_barriers;
+  for (const BufferRelease &release : m_buffer_releases) {
+    const VulkanBuffer *buf = m_device->m_buffers.try_get(release.handle);
+    if (buf == nullptr || buf->buffer != release.buffer)
+      continue;
+
+    VkBufferMemoryBarrier2 barrier{
+        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+    barrier.dstAccessMask = VK_ACCESS_2_NONE;
+    barrier.srcQueueFamilyIndex = m_copy_family;
+    barrier.dstQueueFamilyIndex = m_graphics_family;
+    barrier.buffer = release.buffer;
+    barrier.offset = release.offset;
+    barrier.size = release.size;
+    buffer_barriers.push_back(barrier);
+
+    m_buffer_acquires.push_back({release.buffer, release.offset, release.size,
+                                 release.new_state});
+  }
+
+  if (!barriers.empty() || !buffer_barriers.empty()) {
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = nx::cast<u32>(barriers.size());
     dep.pImageMemoryBarriers = barriers.data();
+    dep.bufferMemoryBarrierCount = nx::cast<u32>(buffer_barriers.size());
+    dep.pBufferMemoryBarriers = buffer_barriers.data();
     vkCmdPipelineBarrier2KHR(cmd, &dep);
   }
 
   m_image_releases.clear();
+  m_buffer_releases.clear();
   if (m_batch_value > m_pending_wait)
     m_pending_wait = m_batch_value;
 }

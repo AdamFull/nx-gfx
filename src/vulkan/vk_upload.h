@@ -221,6 +221,13 @@ private:
     u64 size = 0;
     ResourceState new_state = ResourceState::ShaderReadOnly;
   };
+  struct BufferRelease {
+    BufferHandle handle;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    u64 offset = 0;
+    u64 size = 0;
+    ResourceState new_state = ResourceState::ShaderReadOnly;
+  };
 
   // Loader plumbing. The queue elements carry owning heap pointers so they stay
   // trivially movable (a requirement of the lock-free queues).
@@ -263,7 +270,9 @@ private:
   /// Finds or starts the pending hand-off record for @p image, so several
   /// copies into one texture share a single release/acquire pair.
   ImageRelease &pending_release(TextureHandle handle, VkImage image,
-                                VkImageAspectFlags aspect, ResourceState state);
+                                 VkImageAspectFlags aspect, ResourceState state);
+  BufferRelease &pending_release(BufferHandle handle, VkBuffer buffer,
+                                  u64 offset, u64 size, ResourceState state);
   /// Emits the copy-side half of the hand-off into the open batch and turns
   /// each record into the acquire record_acquires() will emit.
   void record_releases();
@@ -309,6 +318,7 @@ private:
   nx::small_vector<ImageAcquire, 32> m_image_acquires;
   nx::small_vector<ImageRelease, 32> m_image_releases;
   nx::small_vector<BufferAcquire, 16> m_buffer_acquires;
+  nx::small_vector<BufferRelease, 16> m_buffer_releases;
   nx::small_vector<GraphicsCopy, 8> m_graphics_copies;
   u64 m_pending_wait = 0;
   /// Device-timeline value the frame that will replay m_graphics_copies is
