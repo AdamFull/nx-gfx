@@ -135,6 +135,9 @@ struct DeviceRoutes {
   bool core_13 = false;
   /// Optional, and core from 1.2 up; below that it is an extension of its own.
   bool draw_indirect_count = false;
+  /// Optional: used when available so uncommon storage formats remain usable,
+  /// but the bindless storage-image model does not require it.
+  bool storage_image_extended_formats = false;
   /// Empty when the device can do everything the engine needs, and the first
   /// thing it could not when it cannot.
   nx::string_view missing;
@@ -387,6 +390,7 @@ private:
   bool create_instance(const DeviceDesc &desc);
   bool select_physical_device();
   bool create_logical_device();
+  void route_promoted_entry_points() const noexcept;
   bool create_allocator();
   bool create_bindless_heap();
   bool create_pipeline_cache(nx::string_view path);

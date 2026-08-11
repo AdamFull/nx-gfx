@@ -81,8 +81,7 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   vkEnumerateDeviceExtensionProperties(candidate, nullptr, &count,
                                        available.data());
 
-  const bool has_swapchain =
-      listed(available, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+  const bool has_swapchain = listed(available, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
   const bool ext_buffer_device_address =
       listed(available, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
@@ -133,6 +132,11 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
   VkPhysicalDeviceScalarBlockLayoutFeatures scalar{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES};
+  VkPhysicalDeviceShaderDrawParametersFeatures draw_params{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES};
+
+  // Core at the 1.1 floor. It still lives in a feature block of its own.
+  chain(draw_params);
 
   if (out.core_12) {
     chain(features12);
@@ -159,35 +163,44 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   vkGetPhysicalDeviceFeatures2(candidate, &features);
 
   const bool has_indexing =
-      out.core_12 ? features12.descriptorIndexing &&
-                        features12.runtimeDescriptorArray &&
-                        features12.descriptorBindingPartiallyBound &&
-                        features12.descriptorBindingSampledImageUpdateAfterBind &&
-                        features12.shaderSampledImageArrayNonUniformIndexing
-                  : ext_descriptor_indexing && indexing.runtimeDescriptorArray &&
-                        indexing.descriptorBindingPartiallyBound &&
-                        indexing.descriptorBindingSampledImageUpdateAfterBind &&
-                        indexing.shaderSampledImageArrayNonUniformIndexing;
+      out.core_12
+          ? features12.descriptorIndexing &&
+                features12.runtimeDescriptorArray &&
+                features12.descriptorBindingPartiallyBound &&
+                features12.descriptorBindingVariableDescriptorCount &&
+                features12.descriptorBindingSampledImageUpdateAfterBind &&
+                features12.descriptorBindingStorageImageUpdateAfterBind &&
+                features12.descriptorBindingStorageBufferUpdateAfterBind &&
+                features12.shaderSampledImageArrayNonUniformIndexing &&
+                features12.shaderStorageImageArrayNonUniformIndexing &&
+                features12.shaderStorageBufferArrayNonUniformIndexing
+          : ext_descriptor_indexing && indexing.runtimeDescriptorArray &&
+                indexing.descriptorBindingPartiallyBound &&
+                indexing.descriptorBindingVariableDescriptorCount &&
+                indexing.descriptorBindingSampledImageUpdateAfterBind &&
+                indexing.descriptorBindingStorageImageUpdateAfterBind &&
+                indexing.descriptorBindingStorageBufferUpdateAfterBind &&
+                indexing.shaderSampledImageArrayNonUniformIndexing &&
+                indexing.shaderStorageImageArrayNonUniformIndexing &&
+                indexing.shaderStorageBufferArrayNonUniformIndexing;
   const bool has_scalar_layout =
       out.core_12 ? features12.scalarBlockLayout != 0
                   : ext_scalar_block_layout && scalar.scalarBlockLayout != 0;
-  // The four that carry an entry point need the extension as well as the
-  // feature, because the engine calls the KHR name and only an enabled
-  // extension resolves it.
-  const bool has_address =
-      ext_buffer_device_address && (out.core_12 ? features12.bufferDeviceAddress != 0
-                                                : address.bufferDeviceAddress != 0);
+  const bool has_address = out.core_12 ? features12.bufferDeviceAddress != 0
+                                       : ext_buffer_device_address &&
+                                             address.bufferDeviceAddress != 0;
   const bool has_timeline =
-      ext_timeline_semaphore && (out.core_12 ? features12.timelineSemaphore != 0
-                                             : timeline.timelineSemaphore != 0);
+      out.core_12 ? features12.timelineSemaphore != 0
+                  : ext_timeline_semaphore && timeline.timelineSemaphore != 0;
   const bool has_dynamic =
-      ext_dynamic_rendering &&
-      (out.core_12 || (ext_render_pass2 && ext_depth_stencil_resolve)) &&
-      (out.core_13 ? features13.dynamicRendering != 0
-                   : dynamic.dynamicRendering != 0);
+      out.core_13 ? features13.dynamicRendering != 0
+                  : ext_dynamic_rendering &&
+                        (out.core_12 ||
+                         (ext_render_pass2 && ext_depth_stencil_resolve)) &&
+                        dynamic.dynamicRendering != 0;
   const bool has_sync2 =
-      ext_synchronization2 && (out.core_13 ? features13.synchronization2 != 0
-                                           : sync2.synchronization2 != 0);
+      out.core_13 ? features13.synchronization2 != 0
+                  : ext_synchronization2 && sync2.synchronization2 != 0;
 
   const auto require = [&out](const bool have, const nx::string_view what) {
     if (!have && out.missing.empty())
@@ -200,8 +213,19 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   require(has_scalar_layout, "scalar block layout");
   require(has_dynamic, "dynamic rendering");
   require(has_sync2, "synchronization2");
+  require(draw_params.shaderDrawParameters != 0, "shader draw parameters");
+  require(features.features.samplerAnisotropy != 0, "sampler anisotropy");
+  require(features.features.multiDrawIndirect != 0, "multi-draw indirect");
+  require(features.features.shaderInt16 != 0, "shaderInt16");
+  require(features.features.independentBlend != 0, "independent blending");
+  require(features.features.shaderStorageImageReadWithoutFormat != 0,
+          "formatless storage-image reads");
+  require(features.features.shaderStorageImageWriteWithoutFormat != 0,
+          "formatless storage-image writes");
 
   out.draw_indirect_count = out.core_12 || ext_draw_indirect_count;
+  out.storage_image_extended_formats =
+      features.features.shaderStorageImageExtendedFormats != 0;
   return out;
 }
 
@@ -608,13 +632,6 @@ bool VulkanDevice::create_logical_device() {
 
   nx::small_vector<const char *, 12> device_extensions;
   device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-  // Enabled whatever the version, because the engine calls the KHR entry points
-  // and only an enabled extension resolves them. Where the version has these in
-  // core the enable is a formality; where it does not, it is the whole point.
-  device_extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
-  device_extensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
-  device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
-  device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
 
   if (m_routes.core_12) {
     features12.timelineSemaphore = VK_TRUE;
@@ -629,7 +646,8 @@ bool VulkanDevice::create_logical_device() {
     features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
     features12.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
     features12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
-    features12.drawIndirectCount = m_routes.draw_indirect_count ? VK_TRUE : VK_FALSE;
+    features12.drawIndirectCount =
+        m_routes.draw_indirect_count ? VK_TRUE : VK_FALSE;
     features12.scalarBlockLayout = VK_TRUE;
     chain(features12);
   } else {
@@ -651,6 +669,8 @@ bool VulkanDevice::create_logical_device() {
     chain(scalar);
     // Feature-only below 1.2, so wanted here and nowhere else.
     device_extensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
     device_extensions.push_back(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
     if (m_routes.draw_indirect_count)
       device_extensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
@@ -668,6 +688,8 @@ bool VulkanDevice::create_logical_device() {
     sync2.synchronization2 = VK_TRUE;
     chain(dynamic);
     chain(sync2);
+    device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
   }
 
   features.features.samplerAnisotropy = VK_TRUE;
@@ -676,13 +698,8 @@ bool VulkanDevice::create_logical_device() {
   features.features.independentBlend = VK_TRUE;
   // Lets one bindless rwTextures[] array hold images of differing formats: the
   // shader declares the type, the descriptor carries no format.
-  // RG11B10_FLOAT and friends as storage images. Optional, and asked for only
-  // where it is offered: enabling a feature a device lacks fails the create.
-  VkPhysicalDeviceFeatures2 available{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-  vkGetPhysicalDeviceFeatures2(m_physical_device, &available);
   features.features.shaderStorageImageExtendedFormats =
-      available.features.shaderStorageImageExtendedFormats;
+      m_routes.storage_image_extended_formats ? VK_TRUE : VK_FALSE;
 
   features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
@@ -699,6 +716,7 @@ bool VulkanDevice::create_logical_device() {
   // Swaps every entry point for the device-specific one, skipping the loader's
   // dispatch trampoline. Worth a measurable amount on call-heavy frames.
   volkLoadDevice(m_device);
+  route_promoted_entry_points();
 
   for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i)
     vkGetDeviceQueue(m_device, m_queue_families[i], 0, &m_queues[i]);
@@ -709,6 +727,30 @@ bool VulkanDevice::create_logical_device() {
            compute, m_caps.async_compute ? " (async)" : " (aliased)", copy,
            m_caps.dedicated_transfer ? " (dedicated)" : " (aliased)");
   return true;
+}
+
+void VulkanDevice::route_promoted_entry_points() const noexcept {
+  if (m_routes.core_12) {
+    vkGetBufferDeviceAddressKHR =
+        reinterpret_cast<PFN_vkGetBufferDeviceAddressKHR>(
+            vkGetBufferDeviceAddress);
+    vkGetSemaphoreCounterValueKHR =
+        reinterpret_cast<PFN_vkGetSemaphoreCounterValueKHR>(
+            vkGetSemaphoreCounterValue);
+    vkWaitSemaphoresKHR =
+        reinterpret_cast<PFN_vkWaitSemaphoresKHR>(vkWaitSemaphores);
+  }
+  if (m_routes.core_13) {
+    vkCmdBeginRenderingKHR =
+        reinterpret_cast<PFN_vkCmdBeginRenderingKHR>(vkCmdBeginRendering);
+    vkCmdEndRenderingKHR =
+        reinterpret_cast<PFN_vkCmdEndRenderingKHR>(vkCmdEndRendering);
+    vkCmdPipelineBarrier2KHR =
+        reinterpret_cast<PFN_vkCmdPipelineBarrier2KHR>(vkCmdPipelineBarrier2);
+    vkCmdWriteTimestamp2KHR =
+        reinterpret_cast<PFN_vkCmdWriteTimestamp2KHR>(vkCmdWriteTimestamp2);
+    vkQueueSubmit2KHR = reinterpret_cast<PFN_vkQueueSubmit2KHR>(vkQueueSubmit2);
+  }
 }
 
 bool VulkanDevice::create_allocator() {
@@ -724,7 +766,10 @@ bool VulkanDevice::create_allocator() {
   info.physicalDevice = m_physical_device;
   info.device = m_device;
   info.instance = m_instance;
-  info.vulkanApiVersion = REQUIRED_API_VERSION;
+  // VMA must follow the same core/extension route as the logical device. In
+  // particular, buffer device address is core on 1.2+ and its KHR extension is
+  // deliberately not enabled on that route.
+  info.vulkanApiVersion = m_caps.api_version;
   info.pVulkanFunctions = &functions;
   // Buffers can expose GPU addresses, so the allocator must allocate memory
   // with the matching flag.
