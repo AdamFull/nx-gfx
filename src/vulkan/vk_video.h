@@ -83,6 +83,13 @@ public:
   // Read the converted RGBA back - the verification counterpart to convert().
   [[nodiscard]] bool read_rgba(u32 width, u32 height, nx::vector<u8> &out);
 
+  [[nodiscard]] bool decode_frame(const u8 *frame, u32 size, bool &shown,
+                                  u32 &width, u32 &height);
+  [[nodiscard]] TextureHandle convert_last();
+  [[nodiscard]] Extent2D coded_extent() const noexcept {
+    return {m_extent.width, m_extent.height};
+  }
+
 private:
   [[nodiscard]] bool create_command_resources();
   [[nodiscard]] bool
@@ -135,6 +142,8 @@ private:
   u32 m_slot_width[16] = {};
   u32 m_slot_height[16] = {};
   u32 m_next_slot = 0;
+  u32 m_last_slot = 0;
+  bool m_have_last = false;
 
   VkCommandPool m_gfx_pool = VK_NULL_HANDLE;
   VkCommandBuffer m_gfx_cmd = VK_NULL_HANDLE;

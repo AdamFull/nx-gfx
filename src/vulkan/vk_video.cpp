@@ -390,6 +390,8 @@ void VideoDecoder::shutdown() noexcept {
   for (u32 i = 0; i < 8; ++i)
     m_vp9_valid[i] = false;
   m_next_slot = 0;
+  m_last_slot = 0;
+  m_have_last = false;
   m_gfx_pool = VK_NULL_HANDLE;
   m_gfx_cmd = VK_NULL_HANDLE;
   m_gfx_fence = VK_NULL_HANDLE;
@@ -1396,6 +1398,27 @@ bool VideoDecoder::convert(const u32 slot) {
   // The device tracked this texture; tell it the pass left it sampleable.
   m_device->set_texture_state(m_rgba_handle, ResourceState::ShaderReadOnly);
   return true;
+}
+
+bool VideoDecoder::decode_frame(const u8 *const frame, const u32 size,
+                                bool &shown, u32 &width, u32 &height) {
+  DecodedPicture pic;
+  if (!decode(frame, size, pic)) {
+    m_have_last = false;
+    return false;
+  }
+  m_last_slot = pic.slot;
+  m_have_last = true;
+  shown = pic.show;
+  width = pic.width;
+  height = pic.height;
+  return true;
+}
+
+TextureHandle VideoDecoder::convert_last() {
+  if (!m_have_last || !convert(m_last_slot))
+    return {};
+  return m_rgba_handle;
 }
 
 bool VideoDecoder::read_rgba(const u32 width, const u32 height,
