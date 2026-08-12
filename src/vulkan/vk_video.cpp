@@ -191,6 +191,61 @@ const nx::log::Category log_video = nx::log::category("rhi");
   return ~0u;
 }
 
+[[nodiscard]] bool create_video_image(const VkDevice dev,
+                                      const VkPhysicalDevice phys,
+                                      const VkVideoProfileListInfoKHR &profiles,
+                                      const VkFormat format,
+                                      const VkExtent2D extent,
+                                      const VkImageUsageFlags usage,
+                                      VideoImage &out) {
+  VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  ci.pNext = &profiles;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.format = format;
+  ci.extent = {extent.width, extent.height, 1};
+  ci.mipLevels = 1;
+  ci.arrayLayers = 1;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.usage = usage;
+  ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (vkCreateImage(dev, &ci, nullptr, &out.image) != VK_SUCCESS)
+    return false;
+
+  VkMemoryRequirements mr;
+  vkGetImageMemoryRequirements(dev, out.image, &mr);
+  const u32 type = session_memory_type(phys, mr.memoryTypeBits);
+  if (type == ~0u)
+    return false;
+  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  ai.allocationSize = mr.size;
+  ai.memoryTypeIndex = type;
+  if (vkAllocateMemory(dev, &ai, nullptr, &out.memory) != VK_SUCCESS)
+    return false;
+  if (vkBindImageMemory(dev, out.image, out.memory, 0) != VK_SUCCESS)
+    return false;
+
+  // A plain colour view spanning both planes: video decode reads and writes the
+  // whole picture, so no ycbcr conversion here - that arrives with sampling.
+  VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  vi.image = out.image;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.format = format;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  return vkCreateImageView(dev, &vi, nullptr, &out.view) == VK_SUCCESS;
+}
+
+void destroy_video_image(const VkDevice dev, VideoImage &image) {
+  if (image.view != VK_NULL_HANDLE)
+    vkDestroyImageView(dev, image.view, nullptr);
+  if (image.image != VK_NULL_HANDLE)
+    vkDestroyImage(dev, image.image, nullptr);
+  if (image.memory != VK_NULL_HANDLE)
+    vkFreeMemory(dev, image.memory, nullptr);
+  image = {};
+}
+
 } // namespace
 
 VideoDecoder::~VideoDecoder() { shutdown(); }
@@ -198,6 +253,9 @@ VideoDecoder::~VideoDecoder() { shutdown(); }
 void VideoDecoder::shutdown() noexcept {
   if (m_device != nullptr) {
     const VkDevice dev = m_device->vk_device();
+    for (VideoImage &image : m_dpb)
+      destroy_video_image(dev, image);
+    destroy_video_image(dev, m_output);
     if (m_session != VK_NULL_HANDLE)
       vkDestroyVideoSessionKHR(dev, m_session, nullptr);
     for (const VkDeviceMemory memory : m_memories)
@@ -205,6 +263,9 @@ void VideoDecoder::shutdown() noexcept {
   }
   m_session = VK_NULL_HANDLE;
   m_memories.clear();
+  m_dpb.clear();
+  m_output = {};
+  m_coincide = false;
   m_device = nullptr;
   m_picture_format = VK_FORMAT_UNDEFINED;
   m_dpb_format = VK_FORMAT_UNDEFINED;
@@ -252,9 +313,10 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
       VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR};
   profiles.profileCount = 1;
   profiles.pProfiles = &profile;
-  const bool coincide =
+  m_coincide =
       (decode_caps.flags &
        VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR) != 0;
+  const bool coincide = m_coincide;
   if (coincide) {
     m_dpb_format = first_video_format(
         phys, profiles,
@@ -347,6 +409,28 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
       r != VK_SUCCESS) {
     nx::logw(log_video, "video: bind session memory failed ({})",
              nx::cast<i32>(r));
+    shutdown();
+    return false;
+  }
+
+  const VkImageUsageFlags dpb_usage =
+      coincide ? (VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR |
+                  VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR)
+               : VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
+  m_dpb.resize(m_max_dpb_slots);
+  for (VideoImage &slot : m_dpb) {
+    if (!create_video_image(dev, phys, profiles, m_dpb_format, m_extent,
+                            dpb_usage, slot)) {
+      nx::logw(log_video, "video: dpb image allocation failed");
+      shutdown();
+      return false;
+    }
+  }
+  if (!coincide && !create_video_image(dev, phys, profiles, m_picture_format,
+                                       m_extent,
+                                       VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR,
+                                       m_output)) {
+    nx::logw(log_video, "video: output image allocation failed");
     shutdown();
     return false;
   }
