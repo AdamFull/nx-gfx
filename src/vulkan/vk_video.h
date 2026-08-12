@@ -13,6 +13,19 @@ namespace nxe::rhi {
 
 class VulkanDevice;
 
+enum class VideoCodec : u8 { VP9, AV1, Count };
+
+struct VideoDecodeCaps {
+  bool supported = false;
+  u32 max_width = 0;
+  u32 max_height = 0;
+  u32 max_dpb_slots = 0;
+  bool dpb_and_output_coincide = false;
+};
+
+[[nodiscard]] VideoDecodeCaps query_video_decode_caps(const VulkanDevice &device,
+                                                      VideoCodec codec);
+
 struct VideoImage {
   VkImage image = VK_NULL_HANDLE;
   VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -52,27 +65,6 @@ public:
   [[nodiscard]] VkImageView dpb_view(u32 slot) const noexcept {
     return slot < m_dpb.size() ? m_dpb[slot].view : VK_NULL_HANDLE;
   }
-  // The decode target, distinct from the DPB slots only where the device keeps
-  // them apart; null on a coincide device, where the slot is the target.
-  [[nodiscard]] VkImageView output_view() const noexcept {
-    return m_output.view;
-  }
-
-  [[nodiscard]] bool decode(const u8 *frame, u32 size, DecodedPicture &out);
-  [[nodiscard]] bool read_luma(u32 slot, u32 width, u32 height,
-                               nx::vector<u8> &out);
-
-  [[nodiscard]] bool present(u32 slot);
-  [[nodiscard]] VkImageView output_sampleable_view() const noexcept {
-    return m_sampleable.view;
-  }
-  [[nodiscard]] VkFormat picture_format() const noexcept {
-    return m_picture_format;
-  }
-  // Read the presented image's luma back - the verification counterpart to
-  // present(), reading what a sampler would see.
-  [[nodiscard]] bool read_output_luma(u32 width, u32 height,
-                                      nx::vector<u8> &out);
 
   [[nodiscard]] bool decode_frame(const u8 *frame, u32 size, bool &shown,
                                   u32 &width, u32 &height);
@@ -86,6 +78,8 @@ public:
   void reset_stream() noexcept;
 
 private:
+  [[nodiscard]] bool decode(const u8 *frame, u32 size, DecodedPicture &out);
+  [[nodiscard]] bool present(u32 slot);
   [[nodiscard]] bool create_command_resources();
   [[nodiscard]] bool
   create_bitstream_buffer(u64 capacity,
@@ -93,8 +87,6 @@ private:
   [[nodiscard]] bool
   create_sampleable_image(const u32 *families, u32 family_count);
   [[nodiscard]] bool create_plane_resources();
-  [[nodiscard]] bool read_image_luma(VideoImage &img, VkImageLayout restore_to,
-                                     u32 width, u32 height, nx::vector<u8> &out);
   [[nodiscard]] u32 allocate_slot() noexcept;
 
   VulkanDevice *m_device = nullptr;
@@ -124,11 +116,6 @@ private:
   u64 m_bitstream_capacity = 0;
   u64 m_bitstream_offset_align = 1;
   u64 m_bitstream_size_align = 1;
-
-  VkBuffer m_readback = VK_NULL_HANDLE;
-  VkDeviceMemory m_readback_memory = VK_NULL_HANDLE;
-  void *m_readback_mapped = nullptr;
-  u64 m_readback_capacity = 0;
 
   // VP9 keeps eight reference buffers; this maps each to the DPB slot that holds
   // it, and remembers each slot's coded size for building picture resources.

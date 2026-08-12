@@ -261,16 +261,6 @@ enum class AcquireResult : u8 {
   Count
 };
 
-enum class VideoCodec : u8 { VP9, AV1, Count };
-
-struct VideoDecodeCaps {
-  bool supported = false;
-  u32 max_width = 0;
-  u32 max_height = 0;
-  u32 max_dpb_slots = 0;
-  bool dpb_and_output_coincide = false;
-};
-
 [[nodiscard]] nx::string_view to_string(Format format) noexcept;
 /// The format @p name spells, case-insensitively, or Unknown. The names are
 /// to_string's, so a config and a log say the same thing.

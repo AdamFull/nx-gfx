@@ -80,18 +80,20 @@ u32 VulkanDevice::find_video_decode_family() const {
   return NONE;
 }
 
-VideoDecodeCaps VulkanDevice::video_decode_caps(const VideoCodec codec) const {
+VideoDecodeCaps query_video_decode_caps(const VulkanDevice &device,
+                                        const VideoCodec codec) {
   VideoDecodeCaps out;
-  if (m_physical_device == VK_NULL_HANDLE ||
+  const VkPhysicalDevice phys = device.vk_physical_device();
+  if (phys == VK_NULL_HANDLE ||
       vkGetPhysicalDeviceVideoCapabilitiesKHR == nullptr)
     return out;
-  if (!extension_offered(m_physical_device, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME))
+  if (!extension_offered(phys, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME))
     return out;
 
   const char *const codec_extension =
       codec == VideoCodec::AV1 ? VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME
                                : VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME;
-  if (!extension_offered(m_physical_device, codec_extension))
+  if (!extension_offered(phys, codec_extension))
     return out;
 
   VkVideoProfileInfoKHR profile{VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR};
@@ -128,8 +130,8 @@ VideoDecodeCaps VulkanDevice::video_decode_caps(const VideoCodec codec) const {
     decode.pNext = &vp9_caps;
   }
 
-  if (vkGetPhysicalDeviceVideoCapabilitiesKHR(m_physical_device, &profile,
-                                              &caps) != VK_SUCCESS)
+  if (vkGetPhysicalDeviceVideoCapabilitiesKHR(phys, &profile, &caps) !=
+      VK_SUCCESS)
     return out;
 
   out.supported = true;
@@ -326,10 +328,6 @@ void VideoDecoder::shutdown() noexcept {
       vkDestroyBuffer(dev, m_bitstream, nullptr);
     if (m_bitstream_memory != VK_NULL_HANDLE)
       vkFreeMemory(dev, m_bitstream_memory, nullptr);
-    if (m_readback != VK_NULL_HANDLE)
-      vkDestroyBuffer(dev, m_readback, nullptr);
-    if (m_readback_memory != VK_NULL_HANDLE)
-      vkFreeMemory(dev, m_readback_memory, nullptr);
     if (m_fence != VK_NULL_HANDLE)
       vkDestroyFence(dev, m_fence, nullptr);
     if (m_pool != VK_NULL_HANDLE)
@@ -359,10 +357,6 @@ void VideoDecoder::shutdown() noexcept {
   m_bitstream_capacity = 0;
   m_bitstream_offset_align = 1;
   m_bitstream_size_align = 1;
-  m_readback = VK_NULL_HANDLE;
-  m_readback_memory = VK_NULL_HANDLE;
-  m_readback_mapped = nullptr;
-  m_readback_capacity = 0;
   for (u32 i = 0; i < 8; ++i)
     m_vp9_valid[i] = false;
   m_next_slot = 0;
@@ -954,108 +948,6 @@ bool VideoDecoder::present(const u32 slot) {
     return false;
   vkWaitForFences(dev, 1, &m_fence, VK_TRUE, ~0ull);
   return true;
-}
-
-bool VideoDecoder::read_image_luma(VideoImage &img,
-                                   const VkImageLayout restore_to,
-                                   const u32 width, const u32 height,
-                                   nx::vector<u8> &out) {
-  if (!m_video_supports_transfer) {
-    nx::logw(log_video, "video: decode queue has no transfer, cannot read back");
-    return false;
-  }
-
-  const VkDevice dev = m_device->vk_device();
-  const u64 bytes = nx::cast<u64>(width) * height;
-  if (bytes > m_readback_capacity) {
-    if (m_readback != VK_NULL_HANDLE)
-      vkDestroyBuffer(dev, m_readback, nullptr);
-    if (m_readback_memory != VK_NULL_HANDLE)
-      vkFreeMemory(dev, m_readback_memory, nullptr);
-    if (!create_host_buffer(dev, m_device->vk_physical_device(), bytes,
-                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, nullptr,
-                            m_readback, m_readback_memory, m_readback_mapped))
-      return false;
-    m_readback_capacity = bytes;
-  }
-
-  vkResetCommandBuffer(m_cmd, 0);
-  VkCommandBufferBeginInfo begin_cmd{
-      VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  begin_cmd.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(m_cmd, &begin_cmd);
-
-  const auto barrier = [&](const VkImageLayout from, const VkImageLayout to) {
-    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.srcAccessMask =
-        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.dstAccessMask =
-        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.oldLayout = from;
-    b.newLayout = to;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = img.image;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(m_cmd, &dep);
-  };
-
-  barrier(img.layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-
-  VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
-  region.bufferOffset = 0;
-  region.bufferRowLength = 0;
-  region.bufferImageHeight = 0;
-  region.imageSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
-  region.imageOffset = {0, 0, 0};
-  region.imageExtent = {width, height, 1};
-  VkCopyImageToBufferInfo2 copy{VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2};
-  copy.srcImage = img.image;
-  copy.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  copy.dstBuffer = m_readback;
-  copy.regionCount = 1;
-  copy.pRegions = &region;
-  vkCmdCopyImageToBuffer2(m_cmd, &copy);
-
-  if (restore_to != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-    barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, restore_to);
-  img.layout = restore_to;
-  vkEndCommandBuffer(m_cmd);
-
-  vkResetFences(dev, 1, &m_fence);
-  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &m_cmd;
-  if (vkQueueSubmit(m_device->video_decode_queue(), 1, &submit, m_fence) !=
-      VK_SUCCESS)
-    return false;
-  vkWaitForFences(dev, 1, &m_fence, VK_TRUE, ~0ull);
-
-  out.resize(nx::cast<usize>(bytes));
-  std::memcpy(out.data(), m_readback_mapped, nx::cast<usize>(bytes));
-  return true;
-}
-
-bool VideoDecoder::read_luma(const u32 slot, const u32 width, const u32 height,
-                             nx::vector<u8> &out) {
-  if (!ready() || slot >= m_dpb.size())
-    return false;
-  return read_image_luma(m_dpb[slot], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         width, height, out);
-}
-
-bool VideoDecoder::read_output_luma(const u32 width, const u32 height,
-                                    nx::vector<u8> &out) {
-  if (!ready())
-    return false;
-  return read_image_luma(m_sampleable,
-                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, width, height,
-                         out);
 }
 
 bool VideoDecoder::create_plane_resources() {

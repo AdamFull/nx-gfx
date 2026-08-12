@@ -356,8 +356,6 @@ public:
   /// is written straight through this rather than staged and copied.
   [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
 
-  [[nodiscard]] VideoDecodeCaps video_decode_caps(VideoCodec codec) const;
-
   [[nodiscard]] bool video_decode_available() const noexcept {
     return m_video_decode.available;
   }
