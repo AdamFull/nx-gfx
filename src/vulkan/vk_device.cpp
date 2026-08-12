@@ -721,6 +721,10 @@ bool VulkanDevice::create_logical_device() {
   const usize base_queues = queue_infos.size();
   VkPhysicalDeviceVideoDecodeVP9FeaturesKHR vp9_feature{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_DECODE_VP9_FEATURES_KHR};
+  // The decoded picture is sampled through a ycbcr conversion, so the feature
+  // rides along with hardware decode - and drops with it on the retry below.
+  VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr_feature{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES};
   void **video_link = nullptr;
   if (try_video) {
     device_extensions.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
@@ -735,6 +739,8 @@ bool VulkanDevice::create_logical_device() {
     vp9_feature.videoDecodeVP9 = VK_TRUE;
     video_link = tail;
     chain(vp9_feature);
+    ycbcr_feature.samplerYcbcrConversion = VK_TRUE;
+    chain(ycbcr_feature);
   }
 
   VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
