@@ -83,6 +83,8 @@ public:
     return {m_extent.width, m_extent.height};
   }
 
+  void reset_stream() noexcept;
+
 private:
   [[nodiscard]] bool create_command_resources();
   [[nodiscard]] bool

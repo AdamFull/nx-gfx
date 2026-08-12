@@ -1116,6 +1116,13 @@ bool VideoDecoder::decode_frame(const u8 *const frame, const u32 size,
   return true;
 }
 
+void VideoDecoder::reset_stream() noexcept {
+  for (u32 i = 0; i < 8; ++i)
+    m_vp9_valid[i] = false;
+  m_have_last = false;
+  m_needs_reset = true;
+}
+
 bool VideoDecoder::show_last() {
   // present() copied the picture into the sampleable NV12 image on the decode
   // queue. Now resolve its two planes into the bindless luma/chroma textures on
