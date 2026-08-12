@@ -54,6 +54,7 @@ else ()
             vulkan/vk_resources.cpp
             vulkan/vk_swapchain.cpp
             vulkan/vk_upload.cpp
+            vulkan/vk_video.cpp
             vulkan/vk_vma.cpp)
 endif ()
 
@@ -129,6 +130,7 @@ else ()
                 vulkan/vk_resources.cpp
                 vulkan/vk_swapchain.cpp
                 vulkan/vk_upload.cpp
+                vulkan/vk_video.cpp
                 PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
     endif ()
 

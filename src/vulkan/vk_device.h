@@ -356,6 +356,8 @@ public:
   /// is written straight through this rather than staged and copied.
   [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
 
+  [[nodiscard]] VideoDecodeCaps video_decode_caps(VideoCodec codec) const;
+
   // Internals used by VulkanCommandContext
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
