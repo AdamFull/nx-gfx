@@ -367,6 +367,15 @@ public:
   [[nodiscard]] u32 video_decode_family() const noexcept {
     return m_video_decode.family;
   }
+  [[nodiscard]] VkQueue video_decode_queue() const noexcept {
+    return m_video_decode.queue;
+  }
+  [[nodiscard]] VkQueue graphics_queue() const noexcept {
+    return m_queues[nx::cast<usize>(QueueType::Graphics)];
+  }
+  [[nodiscard]] u32 graphics_family() const noexcept {
+    return m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+  }
 
   // Internals used by VulkanCommandContext
 

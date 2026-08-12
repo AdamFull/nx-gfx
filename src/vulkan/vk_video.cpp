@@ -8,6 +8,7 @@
 #include "core/rendering/rhi/vulkan/vk_common.h"
 #include "core/rendering/rhi/vulkan/vk_device.h"
 #include "core/rendering/rhi/vulkan/vk_video.h"
+#include "core/rendering/rhi/vulkan/vk_vp9.h"
 
 #include "core/foundation/diagnostics/log.h"
 
@@ -197,7 +198,8 @@ const nx::log::Category log_video = nx::log::category("rhi");
                                       const VkFormat format,
                                       const VkExtent2D extent,
                                       const VkImageUsageFlags usage,
-                                      VideoImage &out) {
+                                      const u32 *const families,
+                                      const u32 family_count, VideoImage &out) {
   VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ci.pNext = &profiles;
   ci.imageType = VK_IMAGE_TYPE_2D;
@@ -208,7 +210,15 @@ const nx::log::Category log_video = nx::log::category("rhi");
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
   ci.usage = usage;
-  ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  // The decode queue writes these; a transfer or graphics queue reads them
+  // back. Concurrent sharing spares an ownership hand-off between the two.
+  if (family_count > 1) {
+    ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    ci.queueFamilyIndexCount = family_count;
+    ci.pQueueFamilyIndices = families;
+  } else {
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  }
   ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   if (vkCreateImage(dev, &ci, nullptr, &out.image) != VK_SUCCESS)
     return false;
@@ -246,6 +256,52 @@ void destroy_video_image(const VkDevice dev, VideoImage &image) {
   image = {};
 }
 
+[[nodiscard]] u64 align_up64(const u64 value, const u64 to) {
+  return to <= 1 ? value : (value + to - 1) / to * to;
+}
+
+[[nodiscard]] u32 host_memory_type(const VkPhysicalDevice phys,
+                                   const u32 type_bits) {
+  VkPhysicalDeviceMemoryProperties props;
+  vkGetPhysicalDeviceMemoryProperties(phys, &props);
+  const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  for (u32 i = 0; i < props.memoryTypeCount; ++i)
+    if ((type_bits & (1u << i)) &&
+        (props.memoryTypes[i].propertyFlags & want) == want)
+      return i;
+  return ~0u;
+}
+
+[[nodiscard]] bool create_host_buffer(const VkDevice dev,
+                                      const VkPhysicalDevice phys,
+                                      const u64 size,
+                                      const VkBufferUsageFlags usage,
+                                      const void *const pNext, VkBuffer &buffer,
+                                      VkDeviceMemory &memory, void *&mapped) {
+  VkBufferCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  ci.pNext = pNext;
+  ci.size = size;
+  ci.usage = usage;
+  ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (vkCreateBuffer(dev, &ci, nullptr, &buffer) != VK_SUCCESS)
+    return false;
+
+  VkMemoryRequirements mr;
+  vkGetBufferMemoryRequirements(dev, buffer, &mr);
+  const u32 type = host_memory_type(phys, mr.memoryTypeBits);
+  if (type == ~0u)
+    return false;
+  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  ai.allocationSize = mr.size;
+  ai.memoryTypeIndex = type;
+  if (vkAllocateMemory(dev, &ai, nullptr, &memory) != VK_SUCCESS)
+    return false;
+  if (vkBindBufferMemory(dev, buffer, memory, 0) != VK_SUCCESS)
+    return false;
+  return vkMapMemory(dev, memory, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS;
+}
+
 } // namespace
 
 VideoDecoder::~VideoDecoder() { shutdown(); }
@@ -253,6 +309,20 @@ VideoDecoder::~VideoDecoder() { shutdown(); }
 void VideoDecoder::shutdown() noexcept {
   if (m_device != nullptr) {
     const VkDevice dev = m_device->vk_device();
+    if (m_fence != VK_NULL_HANDLE)
+      vkWaitForFences(dev, 1, &m_fence, VK_TRUE, ~0ull);
+    if (m_bitstream != VK_NULL_HANDLE)
+      vkDestroyBuffer(dev, m_bitstream, nullptr);
+    if (m_bitstream_memory != VK_NULL_HANDLE)
+      vkFreeMemory(dev, m_bitstream_memory, nullptr);
+    if (m_readback != VK_NULL_HANDLE)
+      vkDestroyBuffer(dev, m_readback, nullptr);
+    if (m_readback_memory != VK_NULL_HANDLE)
+      vkFreeMemory(dev, m_readback_memory, nullptr);
+    if (m_fence != VK_NULL_HANDLE)
+      vkDestroyFence(dev, m_fence, nullptr);
+    if (m_pool != VK_NULL_HANDLE)
+      vkDestroyCommandPool(dev, m_pool, nullptr);
     for (VideoImage &image : m_dpb)
       destroy_video_image(dev, image);
     destroy_video_image(dev, m_output);
@@ -266,6 +336,24 @@ void VideoDecoder::shutdown() noexcept {
   m_dpb.clear();
   m_output = {};
   m_coincide = false;
+  m_pool = VK_NULL_HANDLE;
+  m_cmd = VK_NULL_HANDLE;
+  m_fence = VK_NULL_HANDLE;
+  m_video_supports_transfer = false;
+  m_needs_reset = true;
+  m_bitstream = VK_NULL_HANDLE;
+  m_bitstream_memory = VK_NULL_HANDLE;
+  m_bitstream_mapped = nullptr;
+  m_bitstream_capacity = 0;
+  m_bitstream_offset_align = 1;
+  m_bitstream_size_align = 1;
+  m_readback = VK_NULL_HANDLE;
+  m_readback_memory = VK_NULL_HANDLE;
+  m_readback_mapped = nullptr;
+  m_readback_capacity = 0;
+  for (u32 i = 0; i < 8; ++i)
+    m_vp9_valid[i] = false;
+  m_next_slot = 0;
   m_device = nullptr;
   m_picture_format = VK_FORMAT_UNDEFINED;
   m_dpb_format = VK_FORMAT_UNDEFINED;
@@ -343,6 +431,10 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
       clamp_u32(align_up(height, caps.pictureAccessGranularity.height),
                 caps.minCodedExtent.height, caps.maxCodedExtent.height);
   m_max_dpb_slots = caps.maxDpbSlots;
+  m_bitstream_offset_align =
+      nx::max<u64>(1, caps.minBitstreamBufferOffsetAlignment);
+  m_bitstream_size_align =
+      nx::max<u64>(1, caps.minBitstreamBufferSizeAlignment);
 
   VkVideoSessionCreateInfoKHR create{
       VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR};
@@ -413,30 +505,397 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     return false;
   }
 
+  // TRANSFER_SRC so a decoded picture can be copied back out for verification;
+  // the images are shared with the graphics family for that copy.
+  const u32 families[2] = {device.video_decode_family(),
+                           device.graphics_family()};
   const VkImageUsageFlags dpb_usage =
-      coincide ? (VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR |
-                  VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR)
-               : VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
+      (coincide ? (VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR |
+                   VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR)
+                : VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR) |
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   m_dpb.resize(m_max_dpb_slots);
   for (VideoImage &slot : m_dpb) {
     if (!create_video_image(dev, phys, profiles, m_dpb_format, m_extent,
-                            dpb_usage, slot)) {
+                            dpb_usage, families, 2, slot)) {
       nx::logw(log_video, "video: dpb image allocation failed");
       shutdown();
       return false;
     }
   }
-  if (!coincide && !create_video_image(dev, phys, profiles, m_picture_format,
-                                       m_extent,
-                                       VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR,
-                                       m_output)) {
+  if (!coincide &&
+      !create_video_image(dev, phys, profiles, m_picture_format, m_extent,
+                          VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                          families, 2, m_output)) {
     nx::logw(log_video, "video: output image allocation failed");
+    shutdown();
+    return false;
+  }
+
+  if (!create_command_resources() ||
+      !create_bitstream_buffer(size_t{1} << 20, profiles)) {
     shutdown();
     return false;
   }
 
   nx::logi(log_video, "video: decode session {}x{}, {} dpb slots", m_extent.width,
            m_extent.height, m_max_dpb_slots);
+  return true;
+}
+
+bool VideoDecoder::create_command_resources() {
+  const VkDevice dev = m_device->vk_device();
+  const u32 video_family = m_device->video_decode_family();
+
+  u32 count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(m_device->vk_physical_device(),
+                                           &count, nullptr);
+  nx::small_vector<VkQueueFamilyProperties, 8> props(count);
+  vkGetPhysicalDeviceQueueFamilyProperties(m_device->vk_physical_device(),
+                                           &count, props.data());
+  m_video_supports_transfer =
+      video_family < count &&
+      (props[video_family].queueFlags & VK_QUEUE_TRANSFER_BIT) != 0;
+
+  VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+  pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pool.queueFamilyIndex = video_family;
+  if (vkCreateCommandPool(dev, &pool, nullptr, &m_pool) != VK_SUCCESS)
+    return false;
+
+  VkCommandBufferAllocateInfo alloc{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  alloc.commandPool = m_pool;
+  alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc.commandBufferCount = 1;
+  if (vkAllocateCommandBuffers(dev, &alloc, &m_cmd) != VK_SUCCESS)
+    return false;
+
+  VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  return vkCreateFence(dev, &fence, nullptr, &m_fence) == VK_SUCCESS;
+}
+
+bool VideoDecoder::create_bitstream_buffer(
+    const u64 capacity, const VkVideoProfileListInfoKHR &profiles) {
+  m_bitstream_capacity = align_up64(capacity, m_bitstream_size_align);
+  return create_host_buffer(m_device->vk_device(),
+                            m_device->vk_physical_device(), m_bitstream_capacity,
+                            VK_BUFFER_USAGE_VIDEO_DECODE_SRC_BIT_KHR, &profiles,
+                            m_bitstream, m_bitstream_memory, m_bitstream_mapped);
+}
+
+u32 VideoDecoder::allocate_slot() noexcept {
+  // A slot no live VP9 reference buffer points at, cycling so references stay
+  // put. With more slots than the eight VP9 buffers, one is always free.
+  for (u32 tries = 0; tries < m_max_dpb_slots; ++tries) {
+    const u32 slot = m_next_slot;
+    m_next_slot = (m_next_slot + 1) % m_max_dpb_slots;
+    bool referenced = false;
+    for (u32 i = 0; i < 8; ++i)
+      if (m_vp9_valid[i] && m_vp9_to_dpb[i] == slot) {
+        referenced = true;
+        break;
+      }
+    if (!referenced)
+      return slot;
+  }
+  return m_next_slot;
+}
+
+bool VideoDecoder::decode(const u8 *const frame, const u32 size,
+                          DecodedPicture &out) {
+  out = DecodedPicture{};
+  if (!ready() || frame == nullptr || size == 0)
+    return false;
+
+  u32 ref_w[8];
+  u32 ref_h[8];
+  for (u32 i = 0; i < 8; ++i) {
+    const bool live = m_vp9_valid[i];
+    ref_w[i] = live ? m_slot_width[m_vp9_to_dpb[i]] : 0;
+    ref_h[i] = live ? m_slot_height[m_vp9_to_dpb[i]] : 0;
+  }
+
+  Vp9FrameHeader hdr;
+  if (!parse_vp9_frame_header(frame, size, ref_w, ref_h, hdr))
+    return false;
+
+  // A show-existing frame decodes nothing; it re-presents a buffer already held.
+  if (hdr.show_existing_frame) {
+    const u32 buf = hdr.frame_to_show_map_idx;
+    if (buf >= 8 || !m_vp9_valid[buf])
+      return false;
+    out.ok = true;
+    out.show = true;
+    out.slot = m_vp9_to_dpb[buf];
+    out.width = m_slot_width[out.slot];
+    out.height = m_slot_height[out.slot];
+    return true;
+  }
+
+  const u32 coded_w = hdr.frame_width != 0 ? hdr.frame_width : m_extent.width;
+  const u32 coded_h = hdr.frame_height != 0 ? hdr.frame_height : m_extent.height;
+
+  const u64 range = align_up64(size, m_bitstream_size_align);
+  if (range > m_bitstream_capacity)
+    return false;
+  std::memcpy(m_bitstream_mapped, frame, size);
+  if (range > size)
+    std::memset(static_cast<u8 *>(m_bitstream_mapped) + size, 0,
+                nx::cast<usize>(range - size));
+
+  const u32 setup = allocate_slot();
+
+  hdr.picture.pColorConfig = &hdr.color;
+  hdr.picture.pLoopFilter = &hdr.loop_filter;
+  hdr.picture.pSegmentation = &hdr.segmentation;
+
+  VkVideoDecodeVP9PictureInfoKHR vp9pic{
+      VK_STRUCTURE_TYPE_VIDEO_DECODE_VP9_PICTURE_INFO_KHR};
+  vp9pic.pStdPictureInfo = &hdr.picture;
+  for (u32 k = 0; k < VK_MAX_VIDEO_VP9_REFERENCES_PER_FRAME_KHR; ++k)
+    vp9pic.referenceNameSlotIndices[k] = -1;
+  const bool inter =
+      hdr.picture.frame_type == STD_VIDEO_VP9_FRAME_TYPE_NON_KEY &&
+      hdr.picture.flags.intra_only == 0;
+  if (inter)
+    for (u32 k = 0; k < VK_MAX_VIDEO_VP9_REFERENCES_PER_FRAME_KHR; ++k) {
+      const u32 buf = hdr.ref_frame_idx[k];
+      if (buf < 8 && m_vp9_valid[buf])
+        vp9pic.referenceNameSlotIndices[k] =
+            nx::cast<i32>(m_vp9_to_dpb[buf]);
+    }
+  vp9pic.uncompressedHeaderOffset = 0;
+  vp9pic.compressedHeaderOffset = hdr.uncompressed_header_size;
+  vp9pic.tilesOffset = hdr.uncompressed_header_size + hdr.compressed_header_size;
+
+  VkVideoPictureResourceInfoKHR setup_res{
+      VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR};
+  setup_res.codedOffset = {0, 0};
+  setup_res.codedExtent = {coded_w, coded_h};
+  setup_res.baseArrayLayer = 0;
+  setup_res.imageViewBinding = m_dpb[setup].view;
+
+  // The unique DPB slots this frame reads from, each as a reference resource.
+  VkVideoPictureResourceInfoKHR ref_res[8];
+  VkVideoReferenceSlotInfoKHR decode_refs[8];
+  u32 unique[8];
+  u32 ref_count = 0;
+  for (u32 k = 0; k < VK_MAX_VIDEO_VP9_REFERENCES_PER_FRAME_KHR; ++k) {
+    const i32 s = vp9pic.referenceNameSlotIndices[k];
+    if (s < 0)
+      continue;
+    bool seen = false;
+    for (u32 j = 0; j < ref_count; ++j)
+      if (unique[j] == nx::cast<u32>(s))
+        seen = true;
+    if (seen)
+      continue;
+    unique[ref_count] = nx::cast<u32>(s);
+    ref_res[ref_count] = VkVideoPictureResourceInfoKHR{
+        VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR};
+    ref_res[ref_count].codedOffset = {0, 0};
+    ref_res[ref_count].codedExtent = {m_slot_width[nx::cast<u32>(s)],
+                                      m_slot_height[nx::cast<u32>(s)]};
+    ref_res[ref_count].baseArrayLayer = 0;
+    ref_res[ref_count].imageViewBinding = m_dpb[nx::cast<u32>(s)].view;
+    decode_refs[ref_count] = VkVideoReferenceSlotInfoKHR{
+        VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
+    decode_refs[ref_count].slotIndex = s;
+    decode_refs[ref_count].pPictureResource = &ref_res[ref_count];
+    ++ref_count;
+  }
+
+  // Begin lists every active slot: the references, plus the setup slot as -1 to
+  // say it is being activated by this decode.
+  VkVideoReferenceSlotInfoKHR begin_slots[9];
+  for (u32 j = 0; j < ref_count; ++j)
+    begin_slots[j] = decode_refs[j];
+  begin_slots[ref_count] = VkVideoReferenceSlotInfoKHR{
+      VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
+  begin_slots[ref_count].slotIndex = -1;
+  begin_slots[ref_count].pPictureResource = &setup_res;
+
+  VkVideoReferenceSlotInfoKHR setup_slot{
+      VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
+  setup_slot.slotIndex = nx::cast<i32>(setup);
+  setup_slot.pPictureResource = &setup_res;
+
+  VkVideoPictureResourceInfoKHR dst_res = setup_res;
+  if (!m_coincide)
+    dst_res.imageViewBinding = m_output.view;
+
+  VkVideoDecodeInfoKHR di{VK_STRUCTURE_TYPE_VIDEO_DECODE_INFO_KHR};
+  di.pNext = &vp9pic;
+  di.srcBuffer = m_bitstream;
+  di.srcBufferOffset = 0;
+  di.srcBufferRange = range;
+  di.dstPictureResource = dst_res;
+  di.pSetupReferenceSlot = &setup_slot;
+  di.referenceSlotCount = ref_count;
+  di.pReferenceSlots = ref_count != 0 ? decode_refs : nullptr;
+
+  const VkDevice dev = m_device->vk_device();
+  vkResetCommandBuffer(m_cmd, 0);
+  VkCommandBufferBeginInfo begin_cmd{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin_cmd.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(m_cmd, &begin_cmd);
+
+  // Bring every image the decode touches into its decode layout. References are
+  // already there from earlier decodes and skip the barrier.
+  VkImageMemoryBarrier2 barriers[10];
+  u32 barrier_count = 0;
+  const auto to_layout = [&](VideoImage &img, const VkImageLayout layout) {
+    if (img.layout == layout)
+      return;
+    VkImageMemoryBarrier2 &b = barriers[barrier_count++];
+    b = VkImageMemoryBarrier2{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR;
+    b.srcAccessMask = 0;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR;
+    b.dstAccessMask = VK_ACCESS_2_VIDEO_DECODE_READ_BIT_KHR |
+                      VK_ACCESS_2_VIDEO_DECODE_WRITE_BIT_KHR;
+    b.oldLayout = img.layout;
+    b.newLayout = layout;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img.image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    img.layout = layout;
+  };
+  to_layout(m_dpb[setup], VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR);
+  if (!m_coincide)
+    to_layout(m_output, VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR);
+  for (u32 j = 0; j < ref_count; ++j)
+    to_layout(m_dpb[unique[j]], VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR);
+  if (barrier_count != 0) {
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = barrier_count;
+    dep.pImageMemoryBarriers = barriers;
+    vkCmdPipelineBarrier2(m_cmd, &dep);
+  }
+
+  VkVideoBeginCodingInfoKHR begin{VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR};
+  begin.videoSession = m_session;
+  begin.referenceSlotCount = ref_count + 1;
+  begin.pReferenceSlots = begin_slots;
+  vkCmdBeginVideoCodingKHR(m_cmd, &begin);
+
+  if (m_needs_reset) {
+    VkVideoCodingControlInfoKHR control{
+        VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR};
+    control.flags = VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR;
+    vkCmdControlVideoCodingKHR(m_cmd, &control);
+    m_needs_reset = false;
+  }
+
+  vkCmdDecodeVideoKHR(m_cmd, &di);
+
+  VkVideoEndCodingInfoKHR end{VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR};
+  vkCmdEndVideoCodingKHR(m_cmd, &end);
+  vkEndCommandBuffer(m_cmd);
+
+  vkResetFences(dev, 1, &m_fence);
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &m_cmd;
+  if (vkQueueSubmit(m_device->video_decode_queue(), 1, &submit, m_fence) !=
+      VK_SUCCESS)
+    return false;
+  vkWaitForFences(dev, 1, &m_fence, VK_TRUE, ~0ull);
+
+  m_slot_width[setup] = coded_w;
+  m_slot_height[setup] = coded_h;
+  for (u32 i = 0; i < 8; ++i)
+    if (hdr.picture.refresh_frame_flags & (1u << i)) {
+      m_vp9_to_dpb[i] = setup;
+      m_vp9_valid[i] = true;
+    }
+
+  out.ok = true;
+  out.slot = setup;
+  out.show = hdr.picture.flags.show_frame != 0;
+  out.width = coded_w;
+  out.height = coded_h;
+  return true;
+}
+
+bool VideoDecoder::read_luma(const u32 slot, const u32 width, const u32 height,
+                             nx::vector<u8> &out) {
+  if (!ready() || slot >= m_dpb.size())
+    return false;
+  if (!m_video_supports_transfer) {
+    nx::logw(log_video, "video: decode queue has no transfer, cannot read back");
+    return false;
+  }
+
+  const VkDevice dev = m_device->vk_device();
+  const u64 bytes = nx::cast<u64>(width) * height;
+  if (bytes > m_readback_capacity) {
+    if (m_readback != VK_NULL_HANDLE)
+      vkDestroyBuffer(dev, m_readback, nullptr);
+    if (m_readback_memory != VK_NULL_HANDLE)
+      vkFreeMemory(dev, m_readback_memory, nullptr);
+    if (!create_host_buffer(dev, m_device->vk_physical_device(), bytes,
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, nullptr,
+                            m_readback, m_readback_memory, m_readback_mapped))
+      return false;
+    m_readback_capacity = bytes;
+  }
+
+  vkResetCommandBuffer(m_cmd, 0);
+  VkCommandBufferBeginInfo begin_cmd{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin_cmd.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(m_cmd, &begin_cmd);
+
+  VideoImage &img = m_dpb[slot];
+  VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  b.srcStageMask = VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR;
+  b.srcAccessMask = VK_ACCESS_2_VIDEO_DECODE_WRITE_BIT_KHR;
+  b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+  b.oldLayout = img.layout;
+  b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.image = img.image;
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  img.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dep.imageMemoryBarrierCount = 1;
+  dep.pImageMemoryBarriers = &b;
+  vkCmdPipelineBarrier2(m_cmd, &dep);
+
+  VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
+  region.bufferOffset = 0;
+  region.bufferRowLength = 0;
+  region.bufferImageHeight = 0;
+  region.imageSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
+  region.imageOffset = {0, 0, 0};
+  region.imageExtent = {width, height, 1};
+  VkCopyImageToBufferInfo2 copy{VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2};
+  copy.srcImage = img.image;
+  copy.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  copy.dstBuffer = m_readback;
+  copy.regionCount = 1;
+  copy.pRegions = &region;
+  vkCmdCopyImageToBuffer2(m_cmd, &copy);
+  vkEndCommandBuffer(m_cmd);
+
+  vkResetFences(dev, 1, &m_fence);
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &m_cmd;
+  if (vkQueueSubmit(m_device->video_decode_queue(), 1, &submit, m_fence) !=
+      VK_SUCCESS)
+    return false;
+  vkWaitForFences(dev, 1, &m_fence, VK_TRUE, ~0ull);
+
+  out.resize(nx::cast<usize>(bytes));
+  std::memcpy(out.data(), m_readback_mapped, nx::cast<usize>(bytes));
   return true;
 }
 
