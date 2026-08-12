@@ -326,6 +326,7 @@ void VideoDecoder::shutdown() noexcept {
     for (VideoImage &image : m_dpb)
       destroy_video_image(dev, image);
     destroy_video_image(dev, m_output);
+    destroy_video_image(dev, m_sampleable);
     if (m_session != VK_NULL_HANDLE)
       vkDestroyVideoSessionKHR(dev, m_session, nullptr);
     for (const VkDeviceMemory memory : m_memories)
@@ -335,6 +336,7 @@ void VideoDecoder::shutdown() noexcept {
   m_memories.clear();
   m_dpb.clear();
   m_output = {};
+  m_sampleable = {};
   m_coincide = false;
   m_pool = VK_NULL_HANDLE;
   m_cmd = VK_NULL_HANDLE;
@@ -534,7 +536,8 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
   }
 
   if (!create_command_resources() ||
-      !create_bitstream_buffer(size_t{1} << 20, profiles)) {
+      !create_bitstream_buffer(size_t{1} << 20, profiles) ||
+      !create_sampleable_image(families, 2)) {
     shutdown();
     return false;
   }
@@ -822,10 +825,124 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
   return true;
 }
 
-bool VideoDecoder::read_luma(const u32 slot, const u32 width, const u32 height,
-                             nx::vector<u8> &out) {
-  if (!ready() || slot >= m_dpb.size())
+bool VideoDecoder::create_sampleable_image(const u32 *const families,
+                                           const u32 family_count) {
+  const VkDevice dev = m_device->vk_device();
+  VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.format = m_picture_format;
+  ci.extent = {m_extent.width, m_extent.height, 1};
+  ci.mipLevels = 1;
+  ci.arrayLayers = 1;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+             VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  if (family_count > 1) {
+    ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    ci.queueFamilyIndexCount = family_count;
+    ci.pQueueFamilyIndices = families;
+  } else {
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  }
+  ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (vkCreateImage(dev, &ci, nullptr, &m_sampleable.image) != VK_SUCCESS)
     return false;
+
+  VkMemoryRequirements mr;
+  vkGetImageMemoryRequirements(dev, m_sampleable.image, &mr);
+  const u32 type = session_memory_type(m_device->vk_physical_device(),
+                                       mr.memoryTypeBits);
+  if (type == ~0u)
+    return false;
+  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  ai.allocationSize = mr.size;
+  ai.memoryTypeIndex = type;
+  if (vkAllocateMemory(dev, &ai, nullptr, &m_sampleable.memory) != VK_SUCCESS)
+    return false;
+  return vkBindImageMemory(dev, m_sampleable.image, m_sampleable.memory, 0) ==
+         VK_SUCCESS;
+}
+
+bool VideoDecoder::present(const u32 slot) {
+  if (!ready() || !m_video_supports_transfer)
+    return false;
+  VideoImage &src = m_coincide ? m_dpb[slot] : m_output;
+  if (m_coincide && slot >= m_dpb.size())
+    return false;
+  const VkImageLayout restore = m_coincide
+                                    ? VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR
+                                    : VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR;
+
+  const VkDevice dev = m_device->vk_device();
+  vkResetCommandBuffer(m_cmd, 0);
+  VkCommandBufferBeginInfo begin_cmd{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin_cmd.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(m_cmd, &begin_cmd);
+
+  const auto barrier = [&](VideoImage &img, const VkImageLayout to) {
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.srcAccessMask =
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.dstAccessMask =
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.oldLayout = img.layout;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img.image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    img.layout = to;
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(m_cmd, &dep);
+  };
+
+  barrier(src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  barrier(m_sampleable, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+  // Both planes: full-res luma, then half-res interleaved chroma.
+  VkImageCopy2 regions[2];
+  regions[0] = VkImageCopy2{VK_STRUCTURE_TYPE_IMAGE_COPY_2};
+  regions[0].srcSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
+  regions[0].dstSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
+  regions[0].extent = {m_extent.width, m_extent.height, 1};
+  regions[1] = VkImageCopy2{VK_STRUCTURE_TYPE_IMAGE_COPY_2};
+  regions[1].srcSubresource = {VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1};
+  regions[1].dstSubresource = {VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1};
+  regions[1].extent = {m_extent.width / 2, m_extent.height / 2, 1};
+  VkCopyImageInfo2 copy{VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2};
+  copy.srcImage = src.image;
+  copy.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  copy.dstImage = m_sampleable.image;
+  copy.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  copy.regionCount = 2;
+  copy.pRegions = regions;
+  vkCmdCopyImage2(m_cmd, &copy);
+
+  barrier(src, restore);
+  barrier(m_sampleable, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  vkEndCommandBuffer(m_cmd);
+
+  vkResetFences(dev, 1, &m_fence);
+  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &m_cmd;
+  if (vkQueueSubmit(m_device->video_decode_queue(), 1, &submit, m_fence) !=
+      VK_SUCCESS)
+    return false;
+  vkWaitForFences(dev, 1, &m_fence, VK_TRUE, ~0ull);
+  return true;
+}
+
+bool VideoDecoder::read_image_luma(VideoImage &img,
+                                   const VkImageLayout restore_to,
+                                   const u32 width, const u32 height,
+                                   nx::vector<u8> &out) {
   if (!m_video_supports_transfer) {
     nx::logw(log_video, "video: decode queue has no transfer, cannot read back");
     return false;
@@ -851,23 +968,27 @@ bool VideoDecoder::read_luma(const u32 slot, const u32 width, const u32 height,
   begin_cmd.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(m_cmd, &begin_cmd);
 
-  VideoImage &img = m_dpb[slot];
-  VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  b.srcStageMask = VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR;
-  b.srcAccessMask = VK_ACCESS_2_VIDEO_DECODE_WRITE_BIT_KHR;
-  b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-  b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-  b.oldLayout = img.layout;
-  b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.image = img.image;
-  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  img.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-  dep.imageMemoryBarrierCount = 1;
-  dep.pImageMemoryBarriers = &b;
-  vkCmdPipelineBarrier2(m_cmd, &dep);
+  const auto barrier = [&](const VkImageLayout from, const VkImageLayout to) {
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.srcAccessMask =
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.dstAccessMask =
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.oldLayout = from;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img.image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(m_cmd, &dep);
+  };
+
+  barrier(img.layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
   VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
   region.bufferOffset = 0;
@@ -883,6 +1004,10 @@ bool VideoDecoder::read_luma(const u32 slot, const u32 width, const u32 height,
   copy.regionCount = 1;
   copy.pRegions = &region;
   vkCmdCopyImageToBuffer2(m_cmd, &copy);
+
+  if (restore_to != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+    barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, restore_to);
+  img.layout = restore_to;
   vkEndCommandBuffer(m_cmd);
 
   vkResetFences(dev, 1, &m_fence);
@@ -897,6 +1022,23 @@ bool VideoDecoder::read_luma(const u32 slot, const u32 width, const u32 height,
   out.resize(nx::cast<usize>(bytes));
   std::memcpy(out.data(), m_readback_mapped, nx::cast<usize>(bytes));
   return true;
+}
+
+bool VideoDecoder::read_luma(const u32 slot, const u32 width, const u32 height,
+                             nx::vector<u8> &out) {
+  if (!ready() || slot >= m_dpb.size())
+    return false;
+  return read_image_luma(m_dpb[slot], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         width, height, out);
+}
+
+bool VideoDecoder::read_output_luma(const u32 width, const u32 height,
+                                    nx::vector<u8> &out) {
+  if (!ready())
+    return false;
+  return read_image_luma(m_sampleable,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, width, height,
+                         out);
 }
 
 } // namespace nxe::rhi

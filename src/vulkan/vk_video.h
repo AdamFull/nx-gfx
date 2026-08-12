@@ -62,11 +62,27 @@ public:
   [[nodiscard]] bool read_luma(u32 slot, u32 width, u32 height,
                                nx::vector<u8> &out);
 
+  [[nodiscard]] bool present(u32 slot);
+  [[nodiscard]] VkImageView output_sampleable_view() const noexcept {
+    return m_sampleable.view;
+  }
+  [[nodiscard]] VkFormat picture_format() const noexcept {
+    return m_picture_format;
+  }
+  // Read the presented image's luma back - the verification counterpart to
+  // present(), reading what a sampler would see.
+  [[nodiscard]] bool read_output_luma(u32 width, u32 height,
+                                      nx::vector<u8> &out);
+
 private:
   [[nodiscard]] bool create_command_resources();
   [[nodiscard]] bool
   create_bitstream_buffer(u64 capacity,
                           const VkVideoProfileListInfoKHR &profiles);
+  [[nodiscard]] bool
+  create_sampleable_image(const u32 *families, u32 family_count);
+  [[nodiscard]] bool read_image_luma(VideoImage &img, VkImageLayout restore_to,
+                                     u32 width, u32 height, nx::vector<u8> &out);
   [[nodiscard]] u32 allocate_slot() noexcept;
 
   VulkanDevice *m_device = nullptr;
@@ -74,6 +90,9 @@ private:
   nx::small_vector<VkDeviceMemory, 4> m_memories;
   nx::small_vector<VideoImage, 16> m_dpb;
   VideoImage m_output;
+  // A plain sampled NV12 image the decoded picture is copied into, so it can be
+  // read without disturbing the DPB slots.
+  VideoImage m_sampleable;
   bool m_coincide = false;
   VkFormat m_picture_format = VK_FORMAT_UNDEFINED;
   VkFormat m_dpb_format = VK_FORMAT_UNDEFINED;
