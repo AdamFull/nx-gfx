@@ -358,7 +358,7 @@ void VideoDecoder::shutdown() noexcept {
   m_bitstream_offset_align = 1;
   m_bitstream_size_align = 1;
   for (u32 i = 0; i < 8; ++i)
-    m_vp9_valid[i] = false;
+    m_ref_valid[i] = false;
   m_next_slot = 0;
   m_last_slot = 0;
   m_have_last = false;
@@ -607,7 +607,7 @@ u32 VideoDecoder::allocate_slot() noexcept {
     m_next_slot = (m_next_slot + 1) % m_max_dpb_slots;
     bool referenced = false;
     for (u32 i = 0; i < 8; ++i)
-      if (m_vp9_valid[i] && m_vp9_to_dpb[i] == slot) {
+      if (m_ref_valid[i] && m_ref_to_dpb[i] == slot) {
         referenced = true;
         break;
       }
@@ -626,9 +626,9 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
   u32 ref_w[8];
   u32 ref_h[8];
   for (u32 i = 0; i < 8; ++i) {
-    const bool live = m_vp9_valid[i];
-    ref_w[i] = live ? m_slot_width[m_vp9_to_dpb[i]] : 0;
-    ref_h[i] = live ? m_slot_height[m_vp9_to_dpb[i]] : 0;
+    const bool live = m_ref_valid[i];
+    ref_w[i] = live ? m_slot_width[m_ref_to_dpb[i]] : 0;
+    ref_h[i] = live ? m_slot_height[m_ref_to_dpb[i]] : 0;
   }
 
   Vp9FrameHeader hdr;
@@ -638,11 +638,11 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
   // A show-existing frame decodes nothing; it re-presents a buffer already held.
   if (hdr.show_existing_frame) {
     const u32 buf = hdr.frame_to_show_map_idx;
-    if (buf >= 8 || !m_vp9_valid[buf])
+    if (buf >= 8 || !m_ref_valid[buf])
       return false;
     out.ok = true;
     out.show = true;
-    out.slot = m_vp9_to_dpb[buf];
+    out.slot = m_ref_to_dpb[buf];
     out.width = m_slot_width[out.slot];
     out.height = m_slot_height[out.slot];
     return true;
@@ -676,9 +676,9 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
   if (inter)
     for (u32 k = 0; k < VK_MAX_VIDEO_VP9_REFERENCES_PER_FRAME_KHR; ++k) {
       const u32 buf = hdr.ref_frame_idx[k];
-      if (buf < 8 && m_vp9_valid[buf])
+      if (buf < 8 && m_ref_valid[buf])
         vp9pic.referenceNameSlotIndices[k] =
-            nx::cast<i32>(m_vp9_to_dpb[buf]);
+            nx::cast<i32>(m_ref_to_dpb[buf]);
     }
   vp9pic.uncompressedHeaderOffset = 0;
   vp9pic.compressedHeaderOffset = hdr.uncompressed_header_size;
@@ -824,8 +824,8 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
   m_slot_height[setup] = coded_h;
   for (u32 i = 0; i < 8; ++i)
     if (hdr.picture.refresh_frame_flags & (1u << i)) {
-      m_vp9_to_dpb[i] = setup;
-      m_vp9_valid[i] = true;
+      m_ref_to_dpb[i] = setup;
+      m_ref_valid[i] = true;
     }
 
   out.ok = true;
@@ -1010,7 +1010,7 @@ bool VideoDecoder::decode_frame(const u8 *const frame, const u32 size,
 
 void VideoDecoder::reset_stream() noexcept {
   for (u32 i = 0; i < 8; ++i)
-    m_vp9_valid[i] = false;
+    m_ref_valid[i] = false;
   m_have_last = false;
   m_needs_reset = true;
 }

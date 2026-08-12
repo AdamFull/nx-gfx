@@ -90,6 +90,7 @@ private:
   [[nodiscard]] u32 allocate_slot() noexcept;
 
   VulkanDevice *m_device = nullptr;
+  VideoCodec m_codec = VideoCodec::VP9;
   VkVideoSessionKHR m_session = VK_NULL_HANDLE;
   nx::small_vector<VkDeviceMemory, 4> m_memories;
   nx::small_vector<VideoImage, 16> m_dpb;
@@ -117,10 +118,8 @@ private:
   u64 m_bitstream_offset_align = 1;
   u64 m_bitstream_size_align = 1;
 
-  // VP9 keeps eight reference buffers; this maps each to the DPB slot that holds
-  // it, and remembers each slot's coded size for building picture resources.
-  u32 m_vp9_to_dpb[8] = {};
-  bool m_vp9_valid[8] = {};
+  u32 m_ref_to_dpb[8] = {};
+  bool m_ref_valid[8] = {};
   u32 m_slot_width[16] = {};
   u32 m_slot_height[16] = {};
   u32 m_next_slot = 0;
