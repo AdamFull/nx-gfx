@@ -361,6 +361,12 @@ public:
   [[nodiscard]] bool video_decode_available() const noexcept {
     return m_video_decode.available;
   }
+  [[nodiscard]] VkPhysicalDevice vk_physical_device() const noexcept {
+    return m_physical_device;
+  }
+  [[nodiscard]] u32 video_decode_family() const noexcept {
+    return m_video_decode.family;
+  }
 
   // Internals used by VulkanCommandContext
 

@@ -7,6 +7,9 @@
 
 #include "core/rendering/rhi/vulkan/vk_common.h"
 #include "core/rendering/rhi/vulkan/vk_device.h"
+#include "core/rendering/rhi/vulkan/vk_video.h"
+
+#include "core/foundation/diagnostics/log.h"
 
 #include <cstring>
 
@@ -137,6 +140,220 @@ VideoDecodeCaps VulkanDevice::video_decode_caps(const VideoCodec codec) const {
       (decode.flags &
        VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR) != 0;
   return out;
+}
+
+namespace {
+
+const nx::log::Category log_video = nx::log::category("rhi");
+
+[[nodiscard]] u32 align_up(const u32 value, const u32 to) {
+  return to <= 1 ? value : (value + to - 1) / to * to;
+}
+
+[[nodiscard]] u32 clamp_u32(const u32 value, const u32 lo, const u32 hi) {
+  return value < lo ? lo : (value > hi ? hi : value);
+}
+
+[[nodiscard]] VkFormat first_video_format(const VkPhysicalDevice phys,
+                                          const VkVideoProfileListInfoKHR &list,
+                                          const VkImageUsageFlags usage) {
+  VkPhysicalDeviceVideoFormatInfoKHR info{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_FORMAT_INFO_KHR};
+  info.pNext = &list;
+  info.imageUsage = usage;
+
+  u32 count = 0;
+  if (vkGetPhysicalDeviceVideoFormatPropertiesKHR(phys, &info, &count,
+                                                  nullptr) != VK_SUCCESS ||
+      count == 0)
+    return VK_FORMAT_UNDEFINED;
+  nx::small_vector<VkVideoFormatPropertiesKHR, 8> formats(count);
+  for (VkVideoFormatPropertiesKHR &f : formats)
+    f.sType = VK_STRUCTURE_TYPE_VIDEO_FORMAT_PROPERTIES_KHR;
+  if (vkGetPhysicalDeviceVideoFormatPropertiesKHR(phys, &info, &count,
+                                                  formats.data()) != VK_SUCCESS)
+    return VK_FORMAT_UNDEFINED;
+  return formats[0].format;
+}
+
+[[nodiscard]] u32 session_memory_type(const VkPhysicalDevice phys,
+                                      const u32 type_bits) {
+  VkPhysicalDeviceMemoryProperties props;
+  vkGetPhysicalDeviceMemoryProperties(phys, &props);
+  for (u32 i = 0; i < props.memoryTypeCount; ++i)
+    if ((type_bits & (1u << i)) &&
+        (props.memoryTypes[i].propertyFlags &
+         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+      return i;
+  for (u32 i = 0; i < props.memoryTypeCount; ++i)
+    if (type_bits & (1u << i))
+      return i;
+  return ~0u;
+}
+
+} // namespace
+
+VideoDecoder::~VideoDecoder() { shutdown(); }
+
+void VideoDecoder::shutdown() noexcept {
+  if (m_device != nullptr) {
+    const VkDevice dev = m_device->vk_device();
+    if (m_session != VK_NULL_HANDLE)
+      vkDestroyVideoSessionKHR(dev, m_session, nullptr);
+    for (const VkDeviceMemory memory : m_memories)
+      vkFreeMemory(dev, memory, nullptr);
+  }
+  m_session = VK_NULL_HANDLE;
+  m_memories.clear();
+  m_device = nullptr;
+  m_picture_format = VK_FORMAT_UNDEFINED;
+  m_dpb_format = VK_FORMAT_UNDEFINED;
+  m_extent = {};
+  m_max_dpb_slots = 0;
+}
+
+bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
+                        const u32 width, const u32 height) {
+  shutdown();
+  if (!device.video_decode_available() || codec != VideoCodec::VP9)
+    return false; // only VP9 is wired up so far
+
+  m_device = &device;
+  const VkPhysicalDevice phys = device.vk_physical_device();
+  const VkDevice dev = device.vk_device();
+
+  VkVideoDecodeVP9ProfileInfoKHR vp9{
+      VK_STRUCTURE_TYPE_VIDEO_DECODE_VP9_PROFILE_INFO_KHR};
+  vp9.stdProfile = STD_VIDEO_VP9_PROFILE_0;
+  VkVideoProfileInfoKHR profile{VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR};
+  profile.pNext = &vp9;
+  profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR;
+  profile.chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR;
+  profile.lumaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR;
+  profile.chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR;
+
+  VkVideoDecodeVP9CapabilitiesKHR vp9_caps{
+      VK_STRUCTURE_TYPE_VIDEO_DECODE_VP9_CAPABILITIES_KHR};
+  VkVideoDecodeCapabilitiesKHR decode_caps{
+      VK_STRUCTURE_TYPE_VIDEO_DECODE_CAPABILITIES_KHR};
+  decode_caps.pNext = &vp9_caps;
+  VkVideoCapabilitiesKHR caps{VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR};
+  caps.pNext = &decode_caps;
+  if (const VkResult r =
+          vkGetPhysicalDeviceVideoCapabilitiesKHR(phys, &profile, &caps);
+      r != VK_SUCCESS) {
+    nx::logw(log_video, "video: capabilities query failed ({})",
+             nx::cast<i32>(r));
+    m_device = nullptr;
+    return false;
+  }
+
+  VkVideoProfileListInfoKHR profiles{
+      VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR};
+  profiles.profileCount = 1;
+  profiles.pProfiles = &profile;
+  const bool coincide =
+      (decode_caps.flags &
+       VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR) != 0;
+  if (coincide) {
+    m_dpb_format = first_video_format(
+        phys, profiles,
+        VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR |
+            VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR);
+    m_picture_format = m_dpb_format;
+  } else {
+    m_dpb_format = first_video_format(phys, profiles,
+                                      VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR);
+    m_picture_format = first_video_format(
+        phys, profiles, VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR);
+  }
+  if (m_dpb_format == VK_FORMAT_UNDEFINED ||
+      m_picture_format == VK_FORMAT_UNDEFINED) {
+    nx::logw(log_video, "video: no decode image format for the profile");
+    m_device = nullptr;
+    return false;
+  }
+
+  m_extent.width =
+      clamp_u32(align_up(width, caps.pictureAccessGranularity.width),
+                caps.minCodedExtent.width, caps.maxCodedExtent.width);
+  m_extent.height =
+      clamp_u32(align_up(height, caps.pictureAccessGranularity.height),
+                caps.minCodedExtent.height, caps.maxCodedExtent.height);
+  m_max_dpb_slots = caps.maxDpbSlots;
+
+  VkVideoSessionCreateInfoKHR create{
+      VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR};
+  create.queueFamilyIndex = device.video_decode_family();
+  create.pVideoProfile = &profile;
+  create.pictureFormat = m_picture_format;
+  create.maxCodedExtent = m_extent;
+  create.referencePictureFormat = m_dpb_format;
+  create.maxDpbSlots = caps.maxDpbSlots;
+  create.maxActiveReferencePictures = caps.maxActiveReferencePictures;
+  create.pStdHeaderVersion = &caps.stdHeaderVersion;
+  if (const VkResult r = vkCreateVideoSessionKHR(dev, &create, nullptr,
+                                                 &m_session);
+      r != VK_SUCCESS) {
+    nx::logw(log_video, "video: vkCreateVideoSessionKHR failed ({})",
+             nx::cast<i32>(r));
+    m_session = VK_NULL_HANDLE;
+    m_device = nullptr;
+    return false;
+  }
+
+  // The session needs backing memory, handed over in one or more binds the
+  // driver names by index.
+  u32 requirement_count = 0;
+  vkGetVideoSessionMemoryRequirementsKHR(dev, m_session, &requirement_count,
+                                         nullptr);
+  nx::small_vector<VkVideoSessionMemoryRequirementsKHR, 4> requirements(
+      requirement_count);
+  for (VkVideoSessionMemoryRequirementsKHR &r : requirements)
+    r.sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_MEMORY_REQUIREMENTS_KHR;
+  vkGetVideoSessionMemoryRequirementsKHR(dev, m_session, &requirement_count,
+                                         requirements.data());
+
+  nx::small_vector<VkBindVideoSessionMemoryInfoKHR, 4> binds(requirement_count);
+  for (u32 i = 0; i < requirement_count; ++i) {
+    const VkMemoryRequirements &mr = requirements[i].memoryRequirements;
+    const u32 type = session_memory_type(phys, mr.memoryTypeBits);
+    if (type == ~0u) {
+      nx::logw(log_video, "video: no memory type for the session");
+      shutdown();
+      return false;
+    }
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.allocationSize = mr.size;
+    allocate.memoryTypeIndex = type;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (const VkResult r = vkAllocateMemory(dev, &allocate, nullptr, &memory);
+        r != VK_SUCCESS) {
+      nx::logw(log_video, "video: session memory alloc failed ({})",
+               nx::cast<i32>(r));
+      shutdown();
+      return false;
+    }
+    m_memories.push_back(memory);
+
+    binds[i].sType = VK_STRUCTURE_TYPE_BIND_VIDEO_SESSION_MEMORY_INFO_KHR;
+    binds[i].memoryBindIndex = requirements[i].memoryBindIndex;
+    binds[i].memory = memory;
+    binds[i].memoryOffset = 0;
+    binds[i].memorySize = mr.size;
+  }
+  if (const VkResult r = vkBindVideoSessionMemoryKHR(
+          dev, m_session, requirement_count, binds.data());
+      r != VK_SUCCESS) {
+    nx::logw(log_video, "video: bind session memory failed ({})",
+             nx::cast<i32>(r));
+    shutdown();
+    return false;
+  }
+
+  nx::logi(log_video, "video: decode session {}x{}, {} dpb slots", m_extent.width,
+           m_extent.height, m_max_dpb_slots);
+  return true;
 }
 
 } // namespace nxe::rhi
