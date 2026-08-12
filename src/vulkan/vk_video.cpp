@@ -80,6 +80,32 @@ u32 VulkanDevice::find_video_decode_family() const {
   return NONE;
 }
 
+bool VulkanDevice::video_decode_av1_capable(const u32 family) const {
+  // AV1 decode has no feature struct to enable, unlike VP9 - the extension plus
+  // a queue family carrying the AV1 decode op are the whole gate.
+  if (m_physical_device == VK_NULL_HANDLE || family == ~0u)
+    return false;
+  if (!extension_offered(m_physical_device,
+                         VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME))
+    return false;
+
+  u32 count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties2(m_physical_device, &count, nullptr);
+  if (family >= count)
+    return false;
+  nx::small_vector<VkQueueFamilyProperties2, 8> props(count);
+  nx::small_vector<VkQueueFamilyVideoPropertiesKHR, 8> video(count);
+  for (u32 i = 0; i < count; ++i) {
+    props[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+    video[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR;
+    props[i].pNext = &video[i];
+  }
+  vkGetPhysicalDeviceQueueFamilyProperties2(m_physical_device, &count,
+                                            props.data());
+  return (video[family].videoCodecOperations &
+          VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR) != 0;
+}
+
 VideoDecodeCaps query_video_decode_caps(const VulkanDevice &device,
                                         const VideoCodec codec) {
   VideoDecodeCaps out;
@@ -335,12 +361,15 @@ void VideoDecoder::shutdown() noexcept {
     for (VideoImage &image : m_dpb)
       destroy_video_image(dev, image);
     destroy_video_image(dev, m_output);
+    if (m_session_params != VK_NULL_HANDLE)
+      vkDestroyVideoSessionParametersKHR(dev, m_session_params, nullptr);
     if (m_session != VK_NULL_HANDLE)
       vkDestroyVideoSessionKHR(dev, m_session, nullptr);
     for (const VkDeviceMemory memory : m_memories)
       vkFreeMemory(dev, memory, nullptr);
   }
   m_session = VK_NULL_HANDLE;
+  m_session_params = VK_NULL_HANDLE;
   m_memories.clear();
   m_dpb.clear();
   m_output = {};
@@ -375,30 +404,57 @@ void VideoDecoder::shutdown() noexcept {
 }
 
 bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
-                        const u32 width, const u32 height) {
+                        const u32 width, const u32 height,
+                        const Av1SequenceHeader *const av1_seq) {
   shutdown();
-  if (!device.video_decode_available() || codec != VideoCodec::VP9)
-    return false; // only VP9 is wired up so far
+  if (!device.video_decode_available())
+    return false;
+  if (codec == VideoCodec::AV1) {
+    if (!device.video_decode_av1_available() || av1_seq == nullptr ||
+        !av1_seq->valid)
+      return false;
+  } else if (codec != VideoCodec::VP9) {
+    return false;
+  }
 
   m_device = &device;
+  m_codec = codec;
+  if (codec == VideoCodec::AV1) {
+    m_av1_seq = *av1_seq;
+    m_av1_seq.header.pColorConfig = &m_av1_seq.color;
+    m_av1_seq.header.pTimingInfo =
+        av1_seq->header.pTimingInfo != nullptr ? &m_av1_seq.timing : nullptr;
+  }
   const VkPhysicalDevice phys = device.vk_physical_device();
   const VkDevice dev = device.vk_device();
 
   VkVideoDecodeVP9ProfileInfoKHR vp9{
       VK_STRUCTURE_TYPE_VIDEO_DECODE_VP9_PROFILE_INFO_KHR};
   vp9.stdProfile = STD_VIDEO_VP9_PROFILE_0;
+  VkVideoDecodeAV1ProfileInfoKHR av1{
+      VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_PROFILE_INFO_KHR};
+  av1.stdProfile = STD_VIDEO_AV1_PROFILE_MAIN;
+  av1.filmGrainSupport = VK_FALSE;
   VkVideoProfileInfoKHR profile{VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR};
-  profile.pNext = &vp9;
-  profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR;
   profile.chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR;
   profile.lumaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR;
   profile.chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR;
 
   VkVideoDecodeVP9CapabilitiesKHR vp9_caps{
       VK_STRUCTURE_TYPE_VIDEO_DECODE_VP9_CAPABILITIES_KHR};
+  VkVideoDecodeAV1CapabilitiesKHR av1_caps{
+      VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_CAPABILITIES_KHR};
   VkVideoDecodeCapabilitiesKHR decode_caps{
       VK_STRUCTURE_TYPE_VIDEO_DECODE_CAPABILITIES_KHR};
-  decode_caps.pNext = &vp9_caps;
+  if (codec == VideoCodec::AV1) {
+    profile.pNext = &av1;
+    profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
+    decode_caps.pNext = &av1_caps;
+  } else {
+    profile.pNext = &vp9;
+    profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR;
+    decode_caps.pNext = &vp9_caps;
+  }
   VkVideoCapabilitiesKHR caps{VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR};
   caps.pNext = &decode_caps;
   if (const VkResult r =
@@ -518,6 +574,12 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     return false;
   }
 
+  // AV1 carries its sequence header in session parameters; VP9 needs none.
+  if (codec == VideoCodec::AV1 && !create_session_parameters()) {
+    shutdown();
+    return false;
+  }
+
   // TRANSFER_SRC so a decoded picture can be copied back out for verification;
   // the images are shared with the graphics family for that copy.
   const u32 families[2] = {device.video_decode_family(),
@@ -588,6 +650,24 @@ bool VideoDecoder::create_command_resources() {
 
   VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   return vkCreateFence(dev, &fence, nullptr, &m_fence) == VK_SUCCESS;
+}
+
+bool VideoDecoder::create_session_parameters() {
+  VkVideoDecodeAV1SessionParametersCreateInfoKHR av1{
+      VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_SESSION_PARAMETERS_CREATE_INFO_KHR};
+  av1.pStdSequenceHeader = &m_av1_seq.header;
+  VkVideoSessionParametersCreateInfoKHR create{
+      VK_STRUCTURE_TYPE_VIDEO_SESSION_PARAMETERS_CREATE_INFO_KHR};
+  create.pNext = &av1;
+  create.videoSession = m_session;
+  if (const VkResult r = vkCreateVideoSessionParametersKHR(
+          m_device->vk_device(), &create, nullptr, &m_session_params);
+      r != VK_SUCCESS) {
+    nx::logw(log_video, "video: session parameters failed ({})",
+             nx::cast<i32>(r));
+    return false;
+  }
+  return true;
 }
 
 bool VideoDecoder::create_bitstream_buffer(

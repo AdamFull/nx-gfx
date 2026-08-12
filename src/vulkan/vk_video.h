@@ -7,6 +7,7 @@
 
 #include "core/foundation/containers/small_vector.h"
 #include "core/rendering/rhi/types.h"
+#include "core/rendering/rhi/vulkan/vk_av1.h"
 #include "core/rendering/rhi/vulkan/vk_common.h"
 
 namespace nxe::rhi {
@@ -49,8 +50,10 @@ public:
   VideoDecoder(const VideoDecoder &) = delete;
   VideoDecoder &operator=(const VideoDecoder &) = delete;
 
+  // AV1 needs a parsed sequence header (session parameters carry it); VP9 reads
+  // its parameters from every frame, so @p av1_seq stays null there.
   [[nodiscard]] bool init(VulkanDevice &device, VideoCodec codec, u32 width,
-                          u32 height);
+                          u32 height, const Av1SequenceHeader *av1_seq = nullptr);
   void shutdown() noexcept;
 
   [[nodiscard]] bool ready() const noexcept {
@@ -80,6 +83,7 @@ public:
 private:
   [[nodiscard]] bool decode(const u8 *frame, u32 size, DecodedPicture &out);
   [[nodiscard]] bool present(u32 slot);
+  [[nodiscard]] bool create_session_parameters();
   [[nodiscard]] bool create_command_resources();
   [[nodiscard]] bool
   create_bitstream_buffer(u64 capacity,
@@ -92,6 +96,8 @@ private:
   VulkanDevice *m_device = nullptr;
   VideoCodec m_codec = VideoCodec::VP9;
   VkVideoSessionKHR m_session = VK_NULL_HANDLE;
+  VkVideoSessionParametersKHR m_session_params = VK_NULL_HANDLE;
+  Av1SequenceHeader m_av1_seq;
   nx::small_vector<VkDeviceMemory, 4> m_memories;
   nx::small_vector<VideoImage, 16> m_dpb;
   VideoImage m_output;

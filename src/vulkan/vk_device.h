@@ -359,6 +359,9 @@ public:
   [[nodiscard]] bool video_decode_available() const noexcept {
     return m_video_decode.available;
   }
+  [[nodiscard]] bool video_decode_av1_available() const noexcept {
+    return m_video_decode.av1;
+  }
   [[nodiscard]] VkPhysicalDevice vk_physical_device() const noexcept {
     return m_physical_device;
   }
@@ -410,6 +413,7 @@ private:
   bool select_physical_device();
   bool create_logical_device();
   [[nodiscard]] u32 find_video_decode_family() const;
+  [[nodiscard]] bool video_decode_av1_capable(u32 family) const;
   void route_promoted_entry_points() const noexcept;
   bool create_allocator();
   bool create_bindless_heap();
@@ -449,6 +453,7 @@ private:
 
   struct VideoDecode {
     bool available = false;
+    bool av1 = false;
     u32 family = ~0u;
     VkQueue queue = VK_NULL_HANDLE;
   };

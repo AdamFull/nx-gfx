@@ -719,6 +719,7 @@ bool VulkanDevice::create_logical_device() {
       video_family != compute && video_family != copy;
   const usize base_extensions = device_extensions.size();
   const usize base_queues = queue_infos.size();
+  const bool try_av1 = try_video && video_decode_av1_capable(video_family);
   VkPhysicalDeviceVideoDecodeVP9FeaturesKHR vp9_feature{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_DECODE_VP9_FEATURES_KHR};
   void **video_link = nullptr;
@@ -726,6 +727,10 @@ bool VulkanDevice::create_logical_device() {
     device_extensions.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
     device_extensions.push_back(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
     device_extensions.push_back(VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME);
+    // AV1 decode has no feature struct to enable - the extension is the whole
+    // opt-in (VP9 additionally needs its feature bit, chained below).
+    if (try_av1)
+      device_extensions.push_back(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME);
     VkDeviceQueueCreateInfo video_queue{
         VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     video_queue.queueFamilyIndex = video_family;
@@ -775,10 +780,11 @@ bool VulkanDevice::create_logical_device() {
 
   if (video_enabled) {
     m_video_decode.available = true;
+    m_video_decode.av1 = try_av1;
     m_video_decode.family = video_family;
     vkGetDeviceQueue(m_device, video_family, 0, &m_video_decode.queue);
-    nx::logi(log_rhi, "video: hardware VP9 decode on queue family {}",
-             video_family);
+    nx::logi(log_rhi, "video: hardware {} decode on queue family {}",
+             try_av1 ? "VP9+AV1" : "VP9", video_family);
   }
 
   m_caps.draw_indirect_count = m_routes.draw_indirect_count;
