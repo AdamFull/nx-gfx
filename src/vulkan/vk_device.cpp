@@ -713,6 +713,30 @@ bool VulkanDevice::create_logical_device() {
   features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
+  const u32 video_family = find_video_decode_family();
+  const bool try_video =
+      video_family != INVALID_FAMILY && video_family != graphics &&
+      video_family != compute && video_family != copy;
+  const usize base_extensions = device_extensions.size();
+  const usize base_queues = queue_infos.size();
+  VkPhysicalDeviceVideoDecodeVP9FeaturesKHR vp9_feature{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_DECODE_VP9_FEATURES_KHR};
+  void **video_link = nullptr;
+  if (try_video) {
+    device_extensions.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME);
+    VkDeviceQueueCreateInfo video_queue{
+        VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    video_queue.queueFamilyIndex = video_family;
+    video_queue.queueCount = 1;
+    video_queue.pQueuePriorities = &priority;
+    queue_infos.push_back(video_queue);
+    vp9_feature.videoDecodeVP9 = VK_TRUE;
+    video_link = tail;
+    chain(vp9_feature);
+  }
+
   VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   info.pNext = &features;
   info.queueCreateInfoCount = nx::cast<u32>(queue_infos.size());
@@ -720,7 +744,26 @@ bool VulkanDevice::create_logical_device() {
   info.enabledExtensionCount = nx::cast<u32>(device_extensions.size());
   info.ppEnabledExtensionNames = device_extensions.data();
 
-  NX_VK_TRY(vkCreateDevice(m_physical_device, &info, nullptr, &m_device));
+  bool video_enabled = try_video;
+  VkResult created = vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
+  if (created != VK_SUCCESS && video_enabled) {
+    nx::logw(log_rhi, "driver rejected the video-decode setup; the device comes "
+                      "up without hardware decode");
+    device_extensions.resize(base_extensions);
+    queue_infos.resize(base_queues);
+    if (video_link != nullptr)
+      *video_link = nullptr; // unlink the VP9 feature from the chain
+    info.queueCreateInfoCount = nx::cast<u32>(queue_infos.size());
+    info.pQueueCreateInfos = queue_infos.data();
+    info.enabledExtensionCount = nx::cast<u32>(device_extensions.size());
+    info.ppEnabledExtensionNames = device_extensions.data();
+    video_enabled = false;
+    created = vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
+  }
+  if (created != VK_SUCCESS) {
+    nx::logc(log_rhi, "vkCreateDevice failed: {}", nx::cast<i32>(created));
+    return false;
+  }
 
   // Swaps every entry point for the device-specific one, skipping the loader's
   // dispatch trampoline. Worth a measurable amount on call-heavy frames.
@@ -729,6 +772,14 @@ bool VulkanDevice::create_logical_device() {
 
   for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i)
     vkGetDeviceQueue(m_device, m_queue_families[i], 0, &m_queues[i]);
+
+  if (video_enabled) {
+    m_video_decode.available = true;
+    m_video_decode.family = video_family;
+    vkGetDeviceQueue(m_device, video_family, 0, &m_video_decode.queue);
+    nx::logi(log_rhi, "video: hardware VP9 decode on queue family {}",
+             video_family);
+  }
 
   m_caps.draw_indirect_count = m_routes.draw_indirect_count;
 

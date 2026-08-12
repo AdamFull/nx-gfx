@@ -358,6 +358,10 @@ public:
 
   [[nodiscard]] VideoDecodeCaps video_decode_caps(VideoCodec codec) const;
 
+  [[nodiscard]] bool video_decode_available() const noexcept {
+    return m_video_decode.available;
+  }
+
   // Internals used by VulkanCommandContext
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
@@ -392,6 +396,7 @@ private:
   bool create_instance(const DeviceDesc &desc);
   bool select_physical_device();
   bool create_logical_device();
+  [[nodiscard]] u32 find_video_decode_family() const;
   void route_promoted_entry_points() const noexcept;
   bool create_allocator();
   bool create_bindless_heap();
@@ -428,6 +433,13 @@ private:
 
   VkQueue m_queues[nx::cast<usize>(QueueType::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(QueueType::Count)] = {};
+
+  struct VideoDecode {
+    bool available = false;
+    u32 family = ~0u;
+    VkQueue queue = VK_NULL_HANDLE;
+  };
+  VideoDecode m_video_decode;
 
   BindlessHeap m_bindless;
   VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;

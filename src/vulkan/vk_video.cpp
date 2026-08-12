@@ -31,6 +31,51 @@ namespace {
 
 } // namespace
 
+u32 VulkanDevice::find_video_decode_family() const {
+  constexpr u32 NONE = ~0u;
+  if (m_physical_device == VK_NULL_HANDLE)
+    return NONE;
+
+  // All three extensions, or there is no session to build later.
+  if (!extension_offered(m_physical_device, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME) ||
+      !extension_offered(m_physical_device,
+                         VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME) ||
+      !extension_offered(m_physical_device,
+                         VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME))
+    return NONE;
+
+  // VP9 decode is a feature that has to be enable-able, not just an extension.
+  VkPhysicalDeviceVideoDecodeVP9FeaturesKHR vp9{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_DECODE_VP9_FEATURES_KHR};
+  VkPhysicalDeviceFeatures2 features{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  features.pNext = &vp9;
+  vkGetPhysicalDeviceFeatures2(m_physical_device, &features);
+  if (vp9.videoDecodeVP9 != VK_TRUE)
+    return NONE;
+
+  u32 count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties2(m_physical_device, &count, nullptr);
+  nx::small_vector<VkQueueFamilyProperties2, 8> props(count);
+  nx::small_vector<VkQueueFamilyVideoPropertiesKHR, 8> video(count);
+  for (u32 i = 0; i < count; ++i) {
+    props[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+    video[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR;
+    props[i].pNext = &video[i];
+  }
+  vkGetPhysicalDeviceQueueFamilyProperties2(m_physical_device, &count,
+                                            props.data());
+  for (u32 i = 0; i < count; ++i) {
+    const VkQueueFlags flags = props[i].queueFamilyProperties.queueFlags;
+    if ((flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) &&
+        (video[i].videoCodecOperations &
+         VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR) &&
+        !(flags & VK_QUEUE_GRAPHICS_BIT))
+      return i;
+  }
+  return NONE;
+}
+
 VideoDecodeCaps VulkanDevice::video_decode_caps(const VideoCodec codec) const {
   VideoDecodeCaps out;
   if (m_physical_device == VK_NULL_HANDLE ||
