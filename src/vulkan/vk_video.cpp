@@ -273,20 +273,6 @@ void destroy_video_image(const VkDevice dev, VideoImage &image) {
   return ~0u;
 }
 
-#include "core/rendering/rhi/vulkan/vk_video_convert_spv.inc"
-
-[[nodiscard]] VkShaderModule create_shader_module(const VkDevice dev,
-                                                  const u32 *const code,
-                                                  const usize bytes) {
-  VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-  ci.codeSize = bytes;
-  ci.pCode = code;
-  VkShaderModule module = VK_NULL_HANDLE;
-  if (vkCreateShaderModule(dev, &ci, nullptr, &module) != VK_SUCCESS)
-    return VK_NULL_HANDLE;
-  return module;
-}
-
 [[nodiscard]] bool create_host_buffer(const VkDevice dev,
                                       const VkPhysicalDevice phys,
                                       const u64 size,
@@ -325,22 +311,12 @@ void VideoDecoder::shutdown() noexcept {
     const VkDevice dev = m_device->vk_device();
     vkDeviceWaitIdle(dev);
 
-    // Conversion pass, dependents before the conversion object they reference.
-    if (m_pipeline != VK_NULL_HANDLE)
-      vkDestroyPipeline(dev, m_pipeline, nullptr);
-    if (m_pipe_layout != VK_NULL_HANDLE)
-      vkDestroyPipelineLayout(dev, m_pipe_layout, nullptr);
-    if (m_desc_pool != VK_NULL_HANDLE)
-      vkDestroyDescriptorPool(dev, m_desc_pool, nullptr);
-    if (m_set_layout != VK_NULL_HANDLE)
-      vkDestroyDescriptorSetLayout(dev, m_set_layout, nullptr);
-    if (m_ycbcr_sampler != VK_NULL_HANDLE)
-      vkDestroySampler(dev, m_ycbcr_sampler, nullptr);
-    if (m_rgba_handle.valid())
-      m_device->destroy_texture(m_rgba_handle);
-    destroy_video_image(dev, m_sampleable); // its view uses the conversion
-    if (m_ycbcr != VK_NULL_HANDLE)
-      vkDestroySamplerYcbcrConversion(dev, m_ycbcr, nullptr);
+    // The plane resolve's textures and command plumbing.
+    if (m_y.valid())
+      m_device->destroy_texture(m_y);
+    if (m_cbcr.valid())
+      m_device->destroy_texture(m_cbcr);
+    destroy_video_image(dev, m_sampleable);
     if (m_gfx_fence != VK_NULL_HANDLE)
       vkDestroyFence(dev, m_gfx_fence, nullptr);
     if (m_gfx_pool != VK_NULL_HANDLE)
@@ -395,15 +371,8 @@ void VideoDecoder::shutdown() noexcept {
   m_gfx_pool = VK_NULL_HANDLE;
   m_gfx_cmd = VK_NULL_HANDLE;
   m_gfx_fence = VK_NULL_HANDLE;
-  m_ycbcr = VK_NULL_HANDLE;
-  m_ycbcr_sampler = VK_NULL_HANDLE;
-  m_set_layout = VK_NULL_HANDLE;
-  m_desc_pool = VK_NULL_HANDLE;
-  m_set = VK_NULL_HANDLE;
-  m_pipe_layout = VK_NULL_HANDLE;
-  m_pipeline = VK_NULL_HANDLE;
-  m_rgba_handle = {};
-  m_rgba_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  m_y = {};
+  m_cbcr = {};
   m_device = nullptr;
   m_picture_format = VK_FORMAT_UNDEFINED;
   m_dpb_format = VK_FORMAT_UNDEFINED;
@@ -585,7 +554,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
 
   if (!create_command_resources() ||
       !create_bitstream_buffer(size_t{1} << 20, profiles) ||
-      !create_sampleable_image(families, 2) || !create_convert_resources()) {
+      !create_sampleable_image(families, 2) || !create_plane_resources()) {
     shutdown();
     return false;
   }
@@ -1089,197 +1058,10 @@ bool VideoDecoder::read_output_luma(const u32 width, const u32 height,
                          out);
 }
 
-bool VideoDecoder::create_convert_resources() {
+bool VideoDecoder::create_plane_resources() {
   const VkDevice dev = m_device->vk_device();
 
-  VkSamplerYcbcrConversionCreateInfo conv{
-      VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO};
-  conv.format = m_picture_format;
-  conv.ycbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709;
-  conv.ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
-  conv.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                     VK_COMPONENT_SWIZZLE_IDENTITY,
-                     VK_COMPONENT_SWIZZLE_IDENTITY};
-  conv.xChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
-  conv.yChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
-  conv.chromaFilter = VK_FILTER_NEAREST;
-  conv.forceExplicitReconstruction = VK_FALSE;
-  if (vkCreateSamplerYcbcrConversion(dev, &conv, nullptr, &m_ycbcr) !=
-      VK_SUCCESS)
-    return false;
-
-  VkSamplerYcbcrConversionInfo conv_info{
-      VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO};
-  conv_info.conversion = m_ycbcr;
-
-  VkSamplerCreateInfo samp{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-  samp.pNext = &conv_info;
-  samp.magFilter = VK_FILTER_LINEAR;
-  samp.minFilter = VK_FILTER_LINEAR;
-  samp.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-  samp.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  samp.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  samp.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  if (vkCreateSampler(dev, &samp, nullptr, &m_ycbcr_sampler) != VK_SUCCESS)
-    return false;
-
-  VkSamplerYcbcrConversionInfo view_conv{
-      VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO};
-  view_conv.conversion = m_ycbcr;
-  VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-  vi.pNext = &view_conv;
-  vi.image = m_sampleable.image;
-  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  vi.format = m_picture_format;
-  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  if (vkCreateImageView(dev, &vi, nullptr, &m_sampleable.view) != VK_SUCCESS)
-    return false;
-
-  // The sampler is immutable in the layout - ycbcr requires it.
-  VkDescriptorSetLayoutBinding binding{};
-  binding.binding = 0;
-  binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  binding.descriptorCount = 1;
-  binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-  binding.pImmutableSamplers = &m_ycbcr_sampler;
-  VkDescriptorSetLayoutCreateInfo sl{
-      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  sl.bindingCount = 1;
-  sl.pBindings = &binding;
-  if (vkCreateDescriptorSetLayout(dev, &sl, nullptr, &m_set_layout) !=
-      VK_SUCCESS)
-    return false;
-
-  VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
-  VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pi.maxSets = 1;
-  pi.poolSizeCount = 1;
-  pi.pPoolSizes = &pool_size;
-  if (vkCreateDescriptorPool(dev, &pi, nullptr, &m_desc_pool) != VK_SUCCESS)
-    return false;
-
-  VkDescriptorSetAllocateInfo dai{
-      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  dai.descriptorPool = m_desc_pool;
-  dai.descriptorSetCount = 1;
-  dai.pSetLayouts = &m_set_layout;
-  if (vkAllocateDescriptorSets(dev, &dai, &m_set) != VK_SUCCESS)
-    return false;
-
-  VkDescriptorImageInfo img_info{};
-  img_info.imageView = m_sampleable.view;
-  img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  write.dstSet = m_set;
-  write.dstBinding = 0;
-  write.descriptorCount = 1;
-  write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  write.pImageInfo = &img_info;
-  vkUpdateDescriptorSets(dev, 1, &write, 0, nullptr);
-
-  VkPushConstantRange pc{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(f32) * 2};
-  VkPipelineLayoutCreateInfo plc{
-      VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-  plc.setLayoutCount = 1;
-  plc.pSetLayouts = &m_set_layout;
-  plc.pushConstantRangeCount = 1;
-  plc.pPushConstantRanges = &pc;
-  if (vkCreatePipelineLayout(dev, &plc, nullptr, &m_pipe_layout) != VK_SUCCESS)
-    return false;
-
-  const VkShaderModule vs = create_shader_module(dev, VIDEO_CONVERT_VERT_SPV,
-                                                 sizeof VIDEO_CONVERT_VERT_SPV);
-  const VkShaderModule fs = create_shader_module(dev, VIDEO_CONVERT_FRAG_SPV,
-                                                 sizeof VIDEO_CONVERT_FRAG_SPV);
-  bool pipeline_ok = vs != VK_NULL_HANDLE && fs != VK_NULL_HANDLE;
-  if (pipeline_ok) {
-    VkPipelineShaderStageCreateInfo stages[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vs;
-    stages[0].pName = "main";
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fs;
-    stages[1].pName = "main";
-
-    VkPipelineVertexInputStateCreateInfo vin{
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    VkPipelineInputAssemblyStateCreateInfo ia{
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineViewportStateCreateInfo vp{
-        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    vp.viewportCount = 1;
-    vp.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo rs{
-        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_NONE;
-    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rs.lineWidth = 1.0f;
-    VkPipelineMultisampleStateCreateInfo ms{
-        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineColorBlendAttachmentState blend{};
-    blend.colorWriteMask =
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    VkPipelineColorBlendStateCreateInfo cb{
-        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 1;
-    cb.pAttachments = &blend;
-    const VkDynamicState dynamics[2] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                        VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dyn{
-        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dyn.dynamicStateCount = 2;
-    dyn.pDynamicStates = dynamics;
-
-    const VkFormat rgba_format = VK_FORMAT_R8G8B8A8_UNORM;
-    VkPipelineRenderingCreateInfo rendering{
-        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &rgba_format;
-
-    VkGraphicsPipelineCreateInfo gp{
-        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    gp.pNext = &rendering;
-    gp.stageCount = 2;
-    gp.pStages = stages;
-    gp.pVertexInputState = &vin;
-    gp.pInputAssemblyState = &ia;
-    gp.pViewportState = &vp;
-    gp.pRasterizationState = &rs;
-    gp.pMultisampleState = &ms;
-    gp.pColorBlendState = &cb;
-    gp.pDynamicState = &dyn;
-    gp.layout = m_pipe_layout;
-    pipeline_ok = vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr,
-                                            &m_pipeline) == VK_SUCCESS;
-  }
-  if (vs != VK_NULL_HANDLE)
-    vkDestroyShaderModule(dev, vs, nullptr);
-  if (fs != VK_NULL_HANDLE)
-    vkDestroyShaderModule(dev, fs, nullptr);
-  if (!pipeline_ok)
-    return false;
-
-  // The RGBA target is a device texture so a caller can sample it bindlessly.
-  TextureDesc rgba_desc;
-  rgba_desc.name = "video rgba";
-  rgba_desc.format = Format::RGBA8_UNORM;
-  rgba_desc.width = m_extent.width;
-  rgba_desc.height = m_extent.height;
-  rgba_desc.usage = TextureUsage::Sampled | TextureUsage::RenderTarget |
-                    TextureUsage::CopySrc;
-  rgba_desc.initial_state = ResourceState::Undefined;
-  m_rgba_handle = m_device->create_texture(rgba_desc);
-  if (!m_rgba_handle.valid())
-    return false;
-  m_rgba_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-  // Graphics-queue command plumbing for the pass.
+  // Command plumbing for the graphics-queue plane resolve.
   VkCommandPoolCreateInfo cpc{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   cpc.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   cpc.queueFamilyIndex = m_device->graphics_family();
@@ -1293,111 +1075,30 @@ bool VideoDecoder::create_convert_resources() {
   if (vkAllocateCommandBuffers(dev, &cba, &m_gfx_cmd) != VK_SUCCESS)
     return false;
   VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  return vkCreateFence(dev, &fci, nullptr, &m_gfx_fence) == VK_SUCCESS;
-}
-
-bool VideoDecoder::convert(const u32 slot) {
-  if (!present(slot))
+  if (vkCreateFence(dev, &fci, nullptr, &m_gfx_fence) != VK_SUCCESS)
     return false;
 
-  VulkanTexture *const rgba = m_device->texture_mut(m_rgba_handle);
-  if (rgba == nullptr)
-    return false;
+  // The two sampled planes the caller draws: full-res luma, half-res interleaved
+  // chroma. Ordinary device textures, so they carry bindless slots for free.
+  TextureDesc luma;
+  luma.name = "video luma";
+  luma.format = Format::R8_UNORM;
+  luma.width = m_extent.width;
+  luma.height = m_extent.height;
+  luma.usage =
+      TextureUsage::Sampled | TextureUsage::CopyDst | TextureUsage::CopySrc;
+  m_y = m_device->create_texture(luma);
 
-  const VkDevice dev = m_device->vk_device();
-  vkResetCommandBuffer(m_gfx_cmd, 0);
-  VkCommandBufferBeginInfo begin_cmd{
-      VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  begin_cmd.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(m_gfx_cmd, &begin_cmd);
+  TextureDesc chroma;
+  chroma.name = "video chroma";
+  chroma.format = Format::RG8_UNORM;
+  chroma.width = m_extent.width / 2;
+  chroma.height = m_extent.height / 2;
+  chroma.usage =
+      TextureUsage::Sampled | TextureUsage::CopyDst | TextureUsage::CopySrc;
+  m_cbcr = m_device->create_texture(chroma);
 
-  // The sampleable image's copy happened on the decode queue; make it visible to
-  // this queue's sampler, and move the target into a colour attachment.
-  VkImageMemoryBarrier2 pre[2];
-  pre[0] = VkImageMemoryBarrier2{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  pre[0].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  pre[0].srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-  pre[0].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-  pre[0].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-  pre[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  pre[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  pre[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  pre[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  pre[0].image = m_sampleable.image;
-  pre[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  pre[1] = VkImageMemoryBarrier2{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  pre[1].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  pre[1].srcAccessMask = 0;
-  pre[1].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-  pre[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  pre[1].oldLayout = m_rgba_layout;
-  pre[1].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  pre[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  pre[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  pre[1].image = rgba->image;
-  pre[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  m_rgba_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-  dep.imageMemoryBarrierCount = 2;
-  dep.pImageMemoryBarriers = pre;
-  vkCmdPipelineBarrier2(m_gfx_cmd, &dep);
-
-  VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  color.imageView = rgba->rtv;
-  color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-  color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  ri.renderArea = {{0, 0}, m_extent};
-  ri.layerCount = 1;
-  ri.colorAttachmentCount = 1;
-  ri.pColorAttachments = &color;
-  vkCmdBeginRendering(m_gfx_cmd, &ri);
-
-  VkViewport viewport{0.0f, 0.0f, nx::cast<f32>(m_extent.width),
-                      nx::cast<f32>(m_extent.height), 0.0f, 1.0f};
-  VkRect2D scissor{{0, 0}, m_extent};
-  vkCmdSetViewport(m_gfx_cmd, 0, 1, &viewport);
-  vkCmdSetScissor(m_gfx_cmd, 0, 1, &scissor);
-  vkCmdBindPipeline(m_gfx_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
-  vkCmdBindDescriptorSets(m_gfx_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          m_pipe_layout, 0, 1, &m_set, 0, nullptr);
-  const f32 uv_scale[2] = {1.0f, 1.0f};
-  vkCmdPushConstants(m_gfx_cmd, m_pipe_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                     sizeof uv_scale, uv_scale);
-  vkCmdDraw(m_gfx_cmd, 3, 1, 0, 0);
-  vkCmdEndRendering(m_gfx_cmd);
-
-  VkImageMemoryBarrier2 post{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  post.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-  post.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  post.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  post.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
-  post.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  post.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  post.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  post.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  post.image = rgba->image;
-  post.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  m_rgba_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  VkDependencyInfo post_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-  post_dep.imageMemoryBarrierCount = 1;
-  post_dep.pImageMemoryBarriers = &post;
-  vkCmdPipelineBarrier2(m_gfx_cmd, &post_dep);
-  vkEndCommandBuffer(m_gfx_cmd);
-
-  vkResetFences(dev, 1, &m_gfx_fence);
-  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &m_gfx_cmd;
-  if (vkQueueSubmit(m_device->graphics_queue(), 1, &submit, m_gfx_fence) !=
-      VK_SUCCESS)
-    return false;
-  vkWaitForFences(dev, 1, &m_gfx_fence, VK_TRUE, ~0ull);
-
-  // The device tracked this texture; tell it the pass left it sampleable.
-  m_device->set_texture_state(m_rgba_handle, ResourceState::ShaderReadOnly);
-  return true;
+  return m_y.valid() && m_cbcr.valid();
 }
 
 bool VideoDecoder::decode_frame(const u8 *const frame, const u32 size,
@@ -1415,32 +1116,18 @@ bool VideoDecoder::decode_frame(const u8 *const frame, const u32 size,
   return true;
 }
 
-TextureHandle VideoDecoder::convert_last() {
-  if (!m_have_last || !convert(m_last_slot))
-    return {};
-  return m_rgba_handle;
-}
-
-bool VideoDecoder::read_rgba(const u32 width, const u32 height,
-                             nx::vector<u8> &out) {
-  if (!ready())
+bool VideoDecoder::show_last() {
+  // present() copied the picture into the sampleable NV12 image on the decode
+  // queue. Now resolve its two planes into the bindless luma/chroma textures on
+  // the graphics queue, where a caller can sample them.
+  if (!m_have_last || !present(m_last_slot))
     return false;
-  VulkanTexture *const rgba = m_device->texture_mut(m_rgba_handle);
-  if (rgba == nullptr)
+
+  VulkanTexture *const y = m_device->texture_mut(m_y);
+  VulkanTexture *const c = m_device->texture_mut(m_cbcr);
+  if (y == nullptr || c == nullptr)
     return false;
   const VkDevice dev = m_device->vk_device();
-  const u64 bytes = nx::cast<u64>(width) * height * 4;
-  if (bytes > m_readback_capacity) {
-    if (m_readback != VK_NULL_HANDLE)
-      vkDestroyBuffer(dev, m_readback, nullptr);
-    if (m_readback_memory != VK_NULL_HANDLE)
-      vkFreeMemory(dev, m_readback_memory, nullptr);
-    if (!create_host_buffer(dev, m_device->vk_physical_device(), bytes,
-                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, nullptr,
-                            m_readback, m_readback_memory, m_readback_mapped))
-      return false;
-    m_readback_capacity = bytes;
-  }
 
   vkResetCommandBuffer(m_gfx_cmd, 0);
   VkCommandBufferBeginInfo begin_cmd{
@@ -1448,7 +1135,8 @@ bool VideoDecoder::read_rgba(const u32 width, const u32 height,
   begin_cmd.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(m_gfx_cmd, &begin_cmd);
 
-  const auto barrier = [&](const VkImageLayout from, const VkImageLayout to) {
+  const auto barrier = [&](const VkImage image, const VkImageLayout from,
+                           const VkImageLayout to) {
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     b.srcAccessMask =
@@ -1460,7 +1148,7 @@ bool VideoDecoder::read_rgba(const u32 width, const u32 height,
     b.newLayout = to;
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = rgba->image;
+    b.image = image;
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     d.imageMemoryBarrierCount = 1;
@@ -1468,20 +1156,41 @@ bool VideoDecoder::read_rgba(const u32 width, const u32 height,
     vkCmdPipelineBarrier2(m_gfx_cmd, &d);
   };
 
-  barrier(m_rgba_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-  VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
-  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.imageExtent = {width, height, 1};
-  VkCopyImageToBufferInfo2 copy{VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2};
-  copy.srcImage = rgba->image;
-  copy.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  copy.dstBuffer = m_readback;
-  copy.regionCount = 1;
-  copy.pRegions = &region;
-  vkCmdCopyImageToBuffer2(m_gfx_cmd, &copy);
-  barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+  // The sampleable image is concurrent, so this queue can read it; the plane
+  // textures are fully overwritten, so their old contents need no preserving.
+  barrier(m_sampleable.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  barrier(y->image, VK_IMAGE_LAYOUT_UNDEFINED,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  barrier(c->image, VK_IMAGE_LAYOUT_UNDEFINED,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+  const auto copy_plane = [&](const VkImageAspectFlagBits src_aspect,
+                              const VkImage dst, const u32 w, const u32 h) {
+    VkImageCopy2 region{VK_STRUCTURE_TYPE_IMAGE_COPY_2};
+    region.srcSubresource = {nx::cast<VkImageAspectFlags>(src_aspect), 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {w, h, 1};
+    VkCopyImageInfo2 info{VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2};
+    info.srcImage = m_sampleable.image;
+    info.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    info.dstImage = dst;
+    info.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    info.regionCount = 1;
+    info.pRegions = &region;
+    vkCmdCopyImage2(m_gfx_cmd, &info);
+  };
+  copy_plane(VK_IMAGE_ASPECT_PLANE_0_BIT, y->image, m_extent.width,
+             m_extent.height);
+  copy_plane(VK_IMAGE_ASPECT_PLANE_1_BIT, c->image, m_extent.width / 2,
+             m_extent.height / 2);
+
+  barrier(y->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-  m_rgba_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  barrier(c->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  barrier(m_sampleable.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   vkEndCommandBuffer(m_gfx_cmd);
 
   vkResetFences(dev, 1, &m_gfx_fence);
@@ -1493,8 +1202,8 @@ bool VideoDecoder::read_rgba(const u32 width, const u32 height,
     return false;
   vkWaitForFences(dev, 1, &m_gfx_fence, VK_TRUE, ~0ull);
 
-  out.resize(nx::cast<usize>(bytes));
-  std::memcpy(out.data(), m_readback_mapped, nx::cast<usize>(bytes));
+  m_device->set_texture_state(m_y, ResourceState::ShaderReadOnly);
+  m_device->set_texture_state(m_cbcr, ResourceState::ShaderReadOnly);
   return true;
 }
 

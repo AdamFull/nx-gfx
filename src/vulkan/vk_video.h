@@ -74,18 +74,11 @@ public:
   [[nodiscard]] bool read_output_luma(u32 width, u32 height,
                                       nx::vector<u8> &out);
 
-  [[nodiscard]] bool convert(u32 slot);
-  // The converted frame as a device texture: a normal sampled handle a caller
-  // draws through the bindless path, so nothing Vulkan leaks out.
-  [[nodiscard]] TextureHandle rgba_texture() const noexcept {
-    return m_rgba_handle;
-  }
-  // Read the converted RGBA back - the verification counterpart to convert().
-  [[nodiscard]] bool read_rgba(u32 width, u32 height, nx::vector<u8> &out);
-
   [[nodiscard]] bool decode_frame(const u8 *frame, u32 size, bool &shown,
                                   u32 &width, u32 &height);
-  [[nodiscard]] TextureHandle convert_last();
+  [[nodiscard]] bool show_last();
+  [[nodiscard]] TextureHandle luma_texture() const noexcept { return m_y; }
+  [[nodiscard]] TextureHandle chroma_texture() const noexcept { return m_cbcr; }
   [[nodiscard]] Extent2D coded_extent() const noexcept {
     return {m_extent.width, m_extent.height};
   }
@@ -97,7 +90,7 @@ private:
                           const VkVideoProfileListInfoKHR &profiles);
   [[nodiscard]] bool
   create_sampleable_image(const u32 *families, u32 family_count);
-  [[nodiscard]] bool create_convert_resources();
+  [[nodiscard]] bool create_plane_resources();
   [[nodiscard]] bool read_image_luma(VideoImage &img, VkImageLayout restore_to,
                                      u32 width, u32 height, nx::vector<u8> &out);
   [[nodiscard]] u32 allocate_slot() noexcept;
@@ -145,20 +138,13 @@ private:
   u32 m_last_slot = 0;
   bool m_have_last = false;
 
+  // The plane resolve runs on the graphics queue: it copies the presented NV12
+  // picture out into two bindless-sampled device textures.
   VkCommandPool m_gfx_pool = VK_NULL_HANDLE;
   VkCommandBuffer m_gfx_cmd = VK_NULL_HANDLE;
   VkFence m_gfx_fence = VK_NULL_HANDLE;
-  VkSamplerYcbcrConversion m_ycbcr = VK_NULL_HANDLE;
-  VkSampler m_ycbcr_sampler = VK_NULL_HANDLE;
-  VkDescriptorSetLayout m_set_layout = VK_NULL_HANDLE;
-  VkDescriptorPool m_desc_pool = VK_NULL_HANDLE;
-  VkDescriptorSet m_set = VK_NULL_HANDLE;
-  VkPipelineLayout m_pipe_layout = VK_NULL_HANDLE;
-  VkPipeline m_pipeline = VK_NULL_HANDLE;
-  // The RGBA target is a device texture (bindless-sampled by the caller), so its
-  // layout is tracked here across the ycbcr pass and readback.
-  TextureHandle m_rgba_handle;
-  VkImageLayout m_rgba_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  TextureHandle m_y;    ///< R8 luma
+  TextureHandle m_cbcr; ///< R8G8 interleaved chroma
 };
 
 } // namespace nxe::rhi
