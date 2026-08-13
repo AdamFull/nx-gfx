@@ -82,6 +82,23 @@ public:
 
 private:
   [[nodiscard]] bool decode(const u8 *frame, u32 size, DecodedPicture &out);
+  [[nodiscard]] bool decode_vp9(const u8 *frame, u32 size, DecodedPicture &out);
+  [[nodiscard]] bool decode_av1(const u8 *frame, u32 size, DecodedPicture &out);
+
+  struct DecodeSubmit {
+    const VkVideoDecodeInfoKHR *info = nullptr;
+    const VkVideoReferenceSlotInfoKHR *begin_slots = nullptr;
+    u32 begin_slot_count = 0;
+    u32 setup = 0;
+    const u32 *unique_refs = nullptr;
+    u32 unique_ref_count = 0;
+    u32 coded_w = 0;
+    u32 coded_h = 0;
+    u32 refresh_frame_flags = 0;
+  };
+  [[nodiscard]] bool submit_decode(const DecodeSubmit &s);
+  void update_av1_refs(const Av1FrameHeader &hdr, u32 setup);
+
   [[nodiscard]] bool present(u32 slot);
   [[nodiscard]] bool create_session_parameters();
   [[nodiscard]] bool create_command_resources();
@@ -131,6 +148,11 @@ private:
   u32 m_next_slot = 0;
   u32 m_last_slot = 0;
   bool m_have_last = false;
+
+  // AV1 only: decoded-reference state the frame-header parser reads, and the Std
+  // reference info each DPB slot carries when used as an AV1 reference.
+  Av1RefState m_av1_refs;
+  StdVideoDecodeAV1ReferenceInfo m_slot_ref_info[16] = {};
 
   // The plane resolve runs on the graphics queue: it copies the presented NV12
   // picture out into two bindless-sampled device textures.

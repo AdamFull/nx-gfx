@@ -79,10 +79,21 @@ struct Av1FrameHeader {
 
   u8 ref_frame_idx[STD_VIDEO_AV1_REFS_PER_FRAME] = {};
   bool frame_is_intra = false;
+  bool show_frame = false;
   bool showable_frame = false;
   u8 tile_size_bytes = 1;
+  u8 tile_cols_log2 = 0;
+  u8 tile_rows_log2 = 0;
 
   u32 header_size = 0; // bytes of frame header consumed, byte-rounded up
+
+  // Byte offsets into the OBU run parse_av1_frame_header was given, for the
+  // decode command: where the frame header OBU starts, and each tile's data.
+  static constexpr u32 kMaxTiles = 64;
+  u32 frame_header_offset = 0;
+  u32 tile_count = 0;
+  u32 tile_offsets[kMaxTiles] = {};
+  u32 tile_sizes[kMaxTiles] = {};
 };
 
 [[nodiscard]] bool parse_av1_frame_header(const u8 *data, u32 size,

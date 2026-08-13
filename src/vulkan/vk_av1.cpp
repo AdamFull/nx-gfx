@@ -779,6 +779,8 @@ private:
     ti.TileRows = nx::cast<u8>(tile_rows);
     m_tile_cols_log2 = tile_cols_log2;
     m_tile_rows_log2 = tile_rows_log2;
+    m_out.tile_cols_log2 = nx::cast<u8>(tile_cols_log2);
+    m_out.tile_rows_log2 = nx::cast<u8>(tile_rows_log2);
   }
 
   i8 read_delta_q() {
@@ -1475,6 +1477,7 @@ private:
     m_out.upscaled_width = m_upscaled_width;
     m_out.render_width = m_render_width;
     m_out.render_height = m_render_height;
+    m_out.show_frame = m_show_frame != 0;
   }
 
   BitReader &m_r;
@@ -1517,7 +1520,66 @@ private:
 };
 
 constexpr u32 OBU_FRAME_HEADER = 3;
+constexpr u32 OBU_TILE_GROUP = 4;
 constexpr u32 OBU_FRAME = 6;
+constexpr u32 OBU_REDUNDANT_FRAME_HEADER = 7;
+
+// Locate each tile's data within a tile-group payload at [base+off, +size), the
+// tiles a decode command reads. @p off/size are relative to @p base and the
+// filled offsets are too. Appends to out.tile_offsets/sizes. AV1 spec 5.11.1.
+[[nodiscard]] bool parse_tile_group(const u8 *const base, const u32 off,
+                                    const u32 size, Av1FrameHeader &out) {
+  const u32 num_tiles =
+      nx::cast<u32>(out.tile_info.TileCols) * out.tile_info.TileRows;
+  if (num_tiles == 0 || num_tiles > Av1FrameHeader::kMaxTiles)
+    return false;
+
+  u32 tg_start = 0;
+  u32 tg_end = num_tiles - 1;
+  u32 header_bytes = 0;
+  if (num_tiles > 1) {
+    BitReader r(base + off, size);
+    const u32 present = r.f(1);
+    u32 header_bits = 1;
+    if (present != 0) {
+      const u32 tile_bits =
+          nx::cast<u32>(out.tile_cols_log2) + out.tile_rows_log2;
+      tg_start = r.f(tile_bits);
+      tg_end = r.f(tile_bits);
+      header_bits += 2 * tile_bits;
+    }
+    header_bytes = (header_bits + 7) / 8; // byte_alignment()
+  }
+  if (header_bytes > size || tg_end < tg_start || tg_end >= num_tiles)
+    return false;
+
+  u32 cursor = off + header_bytes;
+  u32 remaining = size - header_bytes;
+  for (u32 tile = tg_start; tile <= tg_end; ++tile) {
+    u32 tile_size = remaining;
+    if (tile != tg_end) {
+      const u32 n = out.tile_size_bytes;
+      if (remaining < n)
+        return false;
+      u32 value = 0;
+      for (u32 i = 0; i < n; ++i)
+        value |= nx::cast<u32>(base[cursor + i]) << (i * 8);
+      tile_size = value + 1;
+      cursor += n;
+      remaining -= n;
+      if (tile_size > remaining)
+        return false;
+    }
+    if (out.tile_count >= Av1FrameHeader::kMaxTiles)
+      return false;
+    out.tile_offsets[out.tile_count] = cursor;
+    out.tile_sizes[out.tile_count] = tile_size;
+    ++out.tile_count;
+    cursor += tile_size;
+    remaining -= tile_size;
+  }
+  return true;
+}
 
 } // namespace
 
@@ -1571,7 +1633,9 @@ bool parse_av1_frame_header(const u8 *const data, const u32 size,
 
   const u8 *p = data;
   const u8 *const end = data + size;
+  bool have_header = false;
   while (p < end) {
+    const u8 *const obu_start = p;
     const u8 header = *p++;
     const u32 obu_type = (header >> 3) & 0xfu;
     const bool extension = ((header >> 2) & 1u) != 0;
@@ -1592,14 +1656,37 @@ bool parse_av1_frame_header(const u8 *const data, const u32 size,
     }
     if (nx::cast<u64>(end - p) < payload_size)
       return false;
-    if (obu_type == OBU_FRAME_HEADER || obu_type == OBU_FRAME) {
+    const u32 payload_off = nx::cast<u32>(p - data);
+
+    if (!have_header && (obu_type == OBU_FRAME_HEADER || obu_type == OBU_FRAME ||
+                         obu_type == OBU_REDUNDANT_FRAME_HEADER)) {
       BitReader r(p, nx::cast<u32>(payload_size));
       FrameHeaderParser parser(r, seq, refs, out);
-      return parser.parse();
+      if (!parser.parse())
+        return false;
+      have_header = true;
+      out.frame_header_offset = nx::cast<u32>(obu_start - data);
+      if (out.show_existing_frame)
+        return true;
+      // An OBU_FRAME bundles the tile group after the byte-aligned header.
+      if (obu_type == OBU_FRAME) {
+        if (out.header_size > payload_size)
+          return false;
+        return parse_tile_group(data, payload_off + out.header_size,
+                                nx::cast<u32>(payload_size) - out.header_size,
+                                out);
+      }
+    } else if (have_header && obu_type == OBU_TILE_GROUP) {
+      if (!parse_tile_group(data, payload_off, nx::cast<u32>(payload_size), out))
+        return false;
+      const u32 num_tiles =
+          nx::cast<u32>(out.tile_info.TileCols) * out.tile_info.TileRows;
+      if (out.tile_count >= num_tiles)
+        return true;
     }
     p += payload_size;
   }
-  return false;
+  return have_header && out.tile_count > 0;
 }
 
 } // namespace nxe::rhi
