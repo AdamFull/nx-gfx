@@ -7,7 +7,6 @@
 
 #include "core/foundation/containers/small_vector.h"
 #include "core/rendering/rhi/types.h"
-#include "core/rendering/rhi/vulkan/vk_av1.h"
 #include "core/rendering/rhi/vulkan/vk_common.h"
 
 namespace nxe::rhi {
@@ -50,10 +49,8 @@ public:
   VideoDecoder(const VideoDecoder &) = delete;
   VideoDecoder &operator=(const VideoDecoder &) = delete;
 
-  // AV1 needs a parsed sequence header (session parameters carry it); VP9 reads
-  // its parameters from every frame, so @p av1_seq stays null there.
   [[nodiscard]] bool init(VulkanDevice &device, VideoCodec codec, u32 width,
-                          u32 height, const Av1SequenceHeader *av1_seq = nullptr);
+                          u32 height);
   void shutdown() noexcept;
 
   [[nodiscard]] bool ready() const noexcept {
@@ -82,25 +79,7 @@ public:
 
 private:
   [[nodiscard]] bool decode(const u8 *frame, u32 size, DecodedPicture &out);
-  [[nodiscard]] bool decode_vp9(const u8 *frame, u32 size, DecodedPicture &out);
-  [[nodiscard]] bool decode_av1(const u8 *frame, u32 size, DecodedPicture &out);
-
-  struct DecodeSubmit {
-    const VkVideoDecodeInfoKHR *info = nullptr;
-    const VkVideoReferenceSlotInfoKHR *begin_slots = nullptr;
-    u32 begin_slot_count = 0;
-    u32 setup = 0;
-    const u32 *unique_refs = nullptr;
-    u32 unique_ref_count = 0;
-    u32 coded_w = 0;
-    u32 coded_h = 0;
-    u32 refresh_frame_flags = 0;
-  };
-  [[nodiscard]] bool submit_decode(const DecodeSubmit &s);
-  void update_av1_refs(const Av1FrameHeader &hdr, u32 setup);
-
   [[nodiscard]] bool present(u32 slot);
-  [[nodiscard]] bool create_session_parameters();
   [[nodiscard]] bool create_command_resources();
   [[nodiscard]] bool
   create_bitstream_buffer(u64 capacity,
@@ -111,10 +90,7 @@ private:
   [[nodiscard]] u32 allocate_slot() noexcept;
 
   VulkanDevice *m_device = nullptr;
-  VideoCodec m_codec = VideoCodec::VP9;
   VkVideoSessionKHR m_session = VK_NULL_HANDLE;
-  VkVideoSessionParametersKHR m_session_params = VK_NULL_HANDLE;
-  Av1SequenceHeader m_av1_seq;
   nx::small_vector<VkDeviceMemory, 4> m_memories;
   nx::small_vector<VideoImage, 16> m_dpb;
   VideoImage m_output;
@@ -141,18 +117,15 @@ private:
   u64 m_bitstream_offset_align = 1;
   u64 m_bitstream_size_align = 1;
 
-  u32 m_ref_to_dpb[8] = {};
-  bool m_ref_valid[8] = {};
+  // VP9 keeps eight reference buffers; this maps each to the DPB slot that holds
+  // it, and remembers each slot's coded size for building picture resources.
+  u32 m_vp9_to_dpb[8] = {};
+  bool m_vp9_valid[8] = {};
   u32 m_slot_width[16] = {};
   u32 m_slot_height[16] = {};
   u32 m_next_slot = 0;
   u32 m_last_slot = 0;
   bool m_have_last = false;
-
-  // AV1 only: decoded-reference state the frame-header parser reads, and the Std
-  // reference info each DPB slot carries when used as an AV1 reference.
-  Av1RefState m_av1_refs;
-  StdVideoDecodeAV1ReferenceInfo m_slot_ref_info[16] = {};
 
   // The plane resolve runs on the graphics queue: it copies the presented NV12
   // picture out into two bindless-sampled device textures.

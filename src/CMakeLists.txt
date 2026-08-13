@@ -47,8 +47,7 @@ else ()
             vulkan/vk_device.h
             vulkan/vk_upload.h
             vulkan/vk_video.h
-            vulkan/vk_vp9.h
-            vulkan/vk_av1.h)
+            vulkan/vk_vp9.h)
     list(APPEND NX_RHI_SOURCES
             vulkan/vk_bindless.cpp
             vulkan/vk_common.cpp
@@ -59,7 +58,6 @@ else ()
             vulkan/vk_upload.cpp
             vulkan/vk_video.cpp
             vulkan/vk_vp9.cpp
-            vulkan/vk_av1.cpp
             vulkan/vk_vma.cpp)
 endif ()
 
@@ -137,7 +135,6 @@ else ()
                 vulkan/vk_upload.cpp
                 vulkan/vk_video.cpp
                 vulkan/vk_vp9.cpp
-                vulkan/vk_av1.cpp
                 PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
     endif ()
 

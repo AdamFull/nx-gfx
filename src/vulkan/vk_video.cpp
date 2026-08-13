@@ -80,32 +80,6 @@ u32 VulkanDevice::find_video_decode_family() const {
   return NONE;
 }
 
-bool VulkanDevice::video_decode_av1_capable(const u32 family) const {
-  // AV1 decode has no feature struct to enable, unlike VP9 - the extension plus
-  // a queue family carrying the AV1 decode op are the whole gate.
-  if (m_physical_device == VK_NULL_HANDLE || family == ~0u)
-    return false;
-  if (!extension_offered(m_physical_device,
-                         VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME))
-    return false;
-
-  u32 count = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties2(m_physical_device, &count, nullptr);
-  if (family >= count)
-    return false;
-  nx::small_vector<VkQueueFamilyProperties2, 8> props(count);
-  nx::small_vector<VkQueueFamilyVideoPropertiesKHR, 8> video(count);
-  for (u32 i = 0; i < count; ++i) {
-    props[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
-    video[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR;
-    props[i].pNext = &video[i];
-  }
-  vkGetPhysicalDeviceQueueFamilyProperties2(m_physical_device, &count,
-                                            props.data());
-  return (video[family].videoCodecOperations &
-          VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR) != 0;
-}
-
 VideoDecodeCaps query_video_decode_caps(const VulkanDevice &device,
                                         const VideoCodec codec) {
   VideoDecodeCaps out;
@@ -361,15 +335,12 @@ void VideoDecoder::shutdown() noexcept {
     for (VideoImage &image : m_dpb)
       destroy_video_image(dev, image);
     destroy_video_image(dev, m_output);
-    if (m_session_params != VK_NULL_HANDLE)
-      vkDestroyVideoSessionParametersKHR(dev, m_session_params, nullptr);
     if (m_session != VK_NULL_HANDLE)
       vkDestroyVideoSessionKHR(dev, m_session, nullptr);
     for (const VkDeviceMemory memory : m_memories)
       vkFreeMemory(dev, memory, nullptr);
   }
   m_session = VK_NULL_HANDLE;
-  m_session_params = VK_NULL_HANDLE;
   m_memories.clear();
   m_dpb.clear();
   m_output = {};
@@ -387,7 +358,7 @@ void VideoDecoder::shutdown() noexcept {
   m_bitstream_offset_align = 1;
   m_bitstream_size_align = 1;
   for (u32 i = 0; i < 8; ++i)
-    m_ref_valid[i] = false;
+    m_vp9_valid[i] = false;
   m_next_slot = 0;
   m_last_slot = 0;
   m_have_last = false;
@@ -404,57 +375,30 @@ void VideoDecoder::shutdown() noexcept {
 }
 
 bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
-                        const u32 width, const u32 height,
-                        const Av1SequenceHeader *const av1_seq) {
+                        const u32 width, const u32 height) {
   shutdown();
-  if (!device.video_decode_available())
-    return false;
-  if (codec == VideoCodec::AV1) {
-    if (!device.video_decode_av1_available() || av1_seq == nullptr ||
-        !av1_seq->valid)
-      return false;
-  } else if (codec != VideoCodec::VP9) {
-    return false;
-  }
+  if (!device.video_decode_available() || codec != VideoCodec::VP9)
+    return false; // only VP9 is wired up so far
 
   m_device = &device;
-  m_codec = codec;
-  if (codec == VideoCodec::AV1) {
-    m_av1_seq = *av1_seq;
-    m_av1_seq.header.pColorConfig = &m_av1_seq.color;
-    m_av1_seq.header.pTimingInfo =
-        av1_seq->header.pTimingInfo != nullptr ? &m_av1_seq.timing : nullptr;
-  }
   const VkPhysicalDevice phys = device.vk_physical_device();
   const VkDevice dev = device.vk_device();
 
   VkVideoDecodeVP9ProfileInfoKHR vp9{
       VK_STRUCTURE_TYPE_VIDEO_DECODE_VP9_PROFILE_INFO_KHR};
   vp9.stdProfile = STD_VIDEO_VP9_PROFILE_0;
-  VkVideoDecodeAV1ProfileInfoKHR av1{
-      VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_PROFILE_INFO_KHR};
-  av1.stdProfile = STD_VIDEO_AV1_PROFILE_MAIN;
-  av1.filmGrainSupport = VK_FALSE;
   VkVideoProfileInfoKHR profile{VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR};
+  profile.pNext = &vp9;
+  profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR;
   profile.chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR;
   profile.lumaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR;
   profile.chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR;
 
   VkVideoDecodeVP9CapabilitiesKHR vp9_caps{
       VK_STRUCTURE_TYPE_VIDEO_DECODE_VP9_CAPABILITIES_KHR};
-  VkVideoDecodeAV1CapabilitiesKHR av1_caps{
-      VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_CAPABILITIES_KHR};
   VkVideoDecodeCapabilitiesKHR decode_caps{
       VK_STRUCTURE_TYPE_VIDEO_DECODE_CAPABILITIES_KHR};
-  if (codec == VideoCodec::AV1) {
-    profile.pNext = &av1;
-    profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
-    decode_caps.pNext = &av1_caps;
-  } else {
-    profile.pNext = &vp9;
-    profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR;
-    decode_caps.pNext = &vp9_caps;
-  }
+  decode_caps.pNext = &vp9_caps;
   VkVideoCapabilitiesKHR caps{VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR};
   caps.pNext = &decode_caps;
   if (const VkResult r =
@@ -574,12 +518,6 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     return false;
   }
 
-  // AV1 carries its sequence header in session parameters; VP9 needs none.
-  if (codec == VideoCodec::AV1 && !create_session_parameters()) {
-    shutdown();
-    return false;
-  }
-
   // TRANSFER_SRC so a decoded picture can be copied back out for verification;
   // the images are shared with the graphics family for that copy.
   const u32 families[2] = {device.video_decode_family(),
@@ -652,24 +590,6 @@ bool VideoDecoder::create_command_resources() {
   return vkCreateFence(dev, &fence, nullptr, &m_fence) == VK_SUCCESS;
 }
 
-bool VideoDecoder::create_session_parameters() {
-  VkVideoDecodeAV1SessionParametersCreateInfoKHR av1{
-      VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_SESSION_PARAMETERS_CREATE_INFO_KHR};
-  av1.pStdSequenceHeader = &m_av1_seq.header;
-  VkVideoSessionParametersCreateInfoKHR create{
-      VK_STRUCTURE_TYPE_VIDEO_SESSION_PARAMETERS_CREATE_INFO_KHR};
-  create.pNext = &av1;
-  create.videoSession = m_session;
-  if (const VkResult r = vkCreateVideoSessionParametersKHR(
-          m_device->vk_device(), &create, nullptr, &m_session_params);
-      r != VK_SUCCESS) {
-    nx::logw(log_video, "video: session parameters failed ({})",
-             nx::cast<i32>(r));
-    return false;
-  }
-  return true;
-}
-
 bool VideoDecoder::create_bitstream_buffer(
     const u64 capacity, const VkVideoProfileListInfoKHR &profiles) {
   m_bitstream_capacity = align_up64(capacity, m_bitstream_size_align);
@@ -687,7 +607,7 @@ u32 VideoDecoder::allocate_slot() noexcept {
     m_next_slot = (m_next_slot + 1) % m_max_dpb_slots;
     bool referenced = false;
     for (u32 i = 0; i < 8; ++i)
-      if (m_ref_valid[i] && m_ref_to_dpb[i] == slot) {
+      if (m_vp9_valid[i] && m_vp9_to_dpb[i] == slot) {
         referenced = true;
         break;
       }
@@ -702,18 +622,13 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
   out = DecodedPicture{};
   if (!ready() || frame == nullptr || size == 0)
     return false;
-  return m_codec == VideoCodec::AV1 ? decode_av1(frame, size, out)
-                                    : decode_vp9(frame, size, out);
-}
 
-bool VideoDecoder::decode_vp9(const u8 *const frame, const u32 size,
-                              DecodedPicture &out) {
   u32 ref_w[8];
   u32 ref_h[8];
   for (u32 i = 0; i < 8; ++i) {
-    const bool live = m_ref_valid[i];
-    ref_w[i] = live ? m_slot_width[m_ref_to_dpb[i]] : 0;
-    ref_h[i] = live ? m_slot_height[m_ref_to_dpb[i]] : 0;
+    const bool live = m_vp9_valid[i];
+    ref_w[i] = live ? m_slot_width[m_vp9_to_dpb[i]] : 0;
+    ref_h[i] = live ? m_slot_height[m_vp9_to_dpb[i]] : 0;
   }
 
   Vp9FrameHeader hdr;
@@ -723,11 +638,11 @@ bool VideoDecoder::decode_vp9(const u8 *const frame, const u32 size,
   // A show-existing frame decodes nothing; it re-presents a buffer already held.
   if (hdr.show_existing_frame) {
     const u32 buf = hdr.frame_to_show_map_idx;
-    if (buf >= 8 || !m_ref_valid[buf])
+    if (buf >= 8 || !m_vp9_valid[buf])
       return false;
     out.ok = true;
     out.show = true;
-    out.slot = m_ref_to_dpb[buf];
+    out.slot = m_vp9_to_dpb[buf];
     out.width = m_slot_width[out.slot];
     out.height = m_slot_height[out.slot];
     return true;
@@ -761,9 +676,9 @@ bool VideoDecoder::decode_vp9(const u8 *const frame, const u32 size,
   if (inter)
     for (u32 k = 0; k < VK_MAX_VIDEO_VP9_REFERENCES_PER_FRAME_KHR; ++k) {
       const u32 buf = hdr.ref_frame_idx[k];
-      if (buf < 8 && m_ref_valid[buf])
+      if (buf < 8 && m_vp9_valid[buf])
         vp9pic.referenceNameSlotIndices[k] =
-            nx::cast<i32>(m_ref_to_dpb[buf]);
+            nx::cast<i32>(m_vp9_to_dpb[buf]);
     }
   vp9pic.uncompressedHeaderOffset = 0;
   vp9pic.compressedHeaderOffset = hdr.uncompressed_header_size;
@@ -835,28 +750,6 @@ bool VideoDecoder::decode_vp9(const u8 *const frame, const u32 size,
   di.referenceSlotCount = ref_count;
   di.pReferenceSlots = ref_count != 0 ? decode_refs : nullptr;
 
-  DecodeSubmit sub;
-  sub.info = &di;
-  sub.begin_slots = begin_slots;
-  sub.begin_slot_count = ref_count + 1;
-  sub.setup = setup;
-  sub.unique_refs = unique;
-  sub.unique_ref_count = ref_count;
-  sub.coded_w = coded_w;
-  sub.coded_h = coded_h;
-  sub.refresh_frame_flags = hdr.picture.refresh_frame_flags;
-  if (!submit_decode(sub))
-    return false;
-
-  out.ok = true;
-  out.slot = setup;
-  out.show = hdr.picture.flags.show_frame != 0;
-  out.width = coded_w;
-  out.height = coded_h;
-  return true;
-}
-
-bool VideoDecoder::submit_decode(const DecodeSubmit &s) {
   const VkDevice dev = m_device->vk_device();
   vkResetCommandBuffer(m_cmd, 0);
   VkCommandBufferBeginInfo begin_cmd{
@@ -886,11 +779,11 @@ bool VideoDecoder::submit_decode(const DecodeSubmit &s) {
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     img.layout = layout;
   };
-  to_layout(m_dpb[s.setup], VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR);
+  to_layout(m_dpb[setup], VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR);
   if (!m_coincide)
     to_layout(m_output, VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR);
-  for (u32 j = 0; j < s.unique_ref_count; ++j)
-    to_layout(m_dpb[s.unique_refs[j]], VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR);
+  for (u32 j = 0; j < ref_count; ++j)
+    to_layout(m_dpb[unique[j]], VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR);
   if (barrier_count != 0) {
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = barrier_count;
@@ -900,9 +793,8 @@ bool VideoDecoder::submit_decode(const DecodeSubmit &s) {
 
   VkVideoBeginCodingInfoKHR begin{VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR};
   begin.videoSession = m_session;
-  begin.videoSessionParameters = m_session_params; // null for VP9, set for AV1
-  begin.referenceSlotCount = s.begin_slot_count;
-  begin.pReferenceSlots = s.begin_slots;
+  begin.referenceSlotCount = ref_count + 1;
+  begin.pReferenceSlots = begin_slots;
   vkCmdBeginVideoCodingKHR(m_cmd, &begin);
 
   if (m_needs_reset) {
@@ -913,7 +805,7 @@ bool VideoDecoder::submit_decode(const DecodeSubmit &s) {
     m_needs_reset = false;
   }
 
-  vkCmdDecodeVideoKHR(m_cmd, s.info);
+  vkCmdDecodeVideoKHR(m_cmd, &di);
 
   VkVideoEndCodingInfoKHR end{VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR};
   vkCmdEndVideoCodingKHR(m_cmd, &end);
@@ -928,215 +820,20 @@ bool VideoDecoder::submit_decode(const DecodeSubmit &s) {
     return false;
   vkWaitForFences(dev, 1, &m_fence, VK_TRUE, ~0ull);
 
-  m_slot_width[s.setup] = s.coded_w;
-  m_slot_height[s.setup] = s.coded_h;
+  m_slot_width[setup] = coded_w;
+  m_slot_height[setup] = coded_h;
   for (u32 i = 0; i < 8; ++i)
-    if (s.refresh_frame_flags & (1u << i)) {
-      m_ref_to_dpb[i] = s.setup;
-      m_ref_valid[i] = true;
+    if (hdr.picture.refresh_frame_flags & (1u << i)) {
+      m_vp9_to_dpb[i] = setup;
+      m_vp9_valid[i] = true;
     }
-  return true;
-}
-
-bool VideoDecoder::decode_av1(const u8 *const frame, const u32 size,
-                              DecodedPicture &out) {
-  Av1FrameHeader hdr;
-  if (!parse_av1_frame_header(frame, size, m_av1_seq, m_av1_refs, hdr))
-    return false;
-
-  // A show-existing frame re-presents a decoded buffer, decoding nothing.
-  if (hdr.show_existing_frame) {
-    const u32 buf = hdr.frame_to_show_map_idx;
-    if (buf >= 8 || !m_ref_valid[buf])
-      return false;
-    out.ok = true;
-    out.show = true;
-    out.slot = m_ref_to_dpb[buf];
-    out.width = m_slot_width[out.slot];
-    out.height = m_slot_height[out.slot];
-    return true;
-  }
-
-  if (hdr.tile_count == 0 || hdr.tile_count > Av1FrameHeader::kMaxTiles)
-    return false;
-  const u32 coded_w = hdr.frame_width != 0 ? hdr.frame_width : m_extent.width;
-  const u32 coded_h = hdr.frame_height != 0 ? hdr.frame_height : m_extent.height;
-
-  // The decode buffer holds only the tile data: the driver reads the frame
-  // header from pStdPictureInfo, never from the bitstream, so frameHeaderOffset
-  // is 0 and the tiles are concatenated with their offsets pointing into this
-  // buffer. (Same layout FFmpeg's vulkan_av1 feeds.)
-  u32 buf_tile_offsets[Av1FrameHeader::kMaxTiles];
-  u32 dst = 0;
-  for (u32 t = 0; t < hdr.tile_count; ++t) {
-    dst = nx::cast<u32>(align_up64(dst, m_bitstream_offset_align));
-    const u32 tsz = hdr.tile_sizes[t];
-    if (nx::cast<u64>(dst) + tsz > m_bitstream_capacity)
-      return false;
-    std::memcpy(static_cast<u8 *>(m_bitstream_mapped) + dst,
-                frame + hdr.tile_offsets[t], tsz);
-    buf_tile_offsets[t] = dst;
-    dst += tsz;
-  }
-  const u64 range = align_up64(dst, m_bitstream_size_align);
-  if (range > m_bitstream_capacity)
-    return false;
-  if (range > dst)
-    std::memset(static_cast<u8 *>(m_bitstream_mapped) + dst, 0,
-                nx::cast<usize>(range - dst));
-
-  const u32 setup = allocate_slot();
-
-  VkVideoDecodeAV1PictureInfoKHR av1pic{
-      VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_PICTURE_INFO_KHR};
-  av1pic.pStdPictureInfo = &hdr.picture;
-  for (u32 k = 0; k < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR; ++k)
-    av1pic.referenceNameSlotIndices[k] = -1;
-  if (!hdr.frame_is_intra)
-    for (u32 k = 0; k < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR; ++k) {
-      const u32 buf = hdr.ref_frame_idx[k];
-      if (buf < 8 && m_ref_valid[buf])
-        av1pic.referenceNameSlotIndices[k] = nx::cast<i32>(m_ref_to_dpb[buf]);
-    }
-  av1pic.frameHeaderOffset = 0;
-  av1pic.tileCount = hdr.tile_count;
-  av1pic.pTileOffsets = buf_tile_offsets;
-  av1pic.pTileSizes = hdr.tile_sizes;
-
-  // The setup slot's reference info: what this frame contributes when a later
-  // frame references it. Saved into m_slot_ref_info[setup] after the decode.
-  StdVideoDecodeAV1ReferenceInfo setup_info{};
-  setup_info.flags.disable_frame_end_update_cdf =
-      hdr.picture.flags.disable_frame_end_update_cdf;
-  setup_info.flags.segmentation_enabled =
-      hdr.picture.flags.segmentation_enabled;
-  setup_info.frame_type = nx::cast<u8>(hdr.picture.frame_type);
-  setup_info.OrderHint = hdr.picture.OrderHint;
-  for (u32 j = 0; j < STD_VIDEO_AV1_NUM_REF_FRAMES; ++j)
-    setup_info.SavedOrderHints[j] = nx::cast<u8>(hdr.picture.OrderHints[j]);
-
-  VkVideoDecodeAV1DpbSlotInfoKHR setup_dpb{
-      VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_DPB_SLOT_INFO_KHR};
-  setup_dpb.pStdReferenceInfo = &setup_info;
-
-  VkVideoPictureResourceInfoKHR setup_res{
-      VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR};
-  setup_res.codedOffset = {0, 0};
-  setup_res.codedExtent = {coded_w, coded_h};
-  setup_res.baseArrayLayer = 0;
-  setup_res.imageViewBinding = m_dpb[setup].view;
-
-  // Each unique DPB slot this frame reads, with its saved reference info.
-  VkVideoPictureResourceInfoKHR ref_res[VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR];
-  VkVideoDecodeAV1DpbSlotInfoKHR ref_dpb[VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR];
-  VkVideoReferenceSlotInfoKHR decode_refs[VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR];
-  u32 unique[VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR];
-  u32 ref_count = 0;
-  for (u32 k = 0; k < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR; ++k) {
-    const i32 sidx = av1pic.referenceNameSlotIndices[k];
-    if (sidx < 0)
-      continue;
-    bool seen = false;
-    for (u32 j = 0; j < ref_count; ++j)
-      if (unique[j] == nx::cast<u32>(sidx))
-        seen = true;
-    if (seen)
-      continue;
-    const u32 sl = nx::cast<u32>(sidx);
-    unique[ref_count] = sl;
-    ref_res[ref_count] = VkVideoPictureResourceInfoKHR{
-        VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR};
-    ref_res[ref_count].codedOffset = {0, 0};
-    ref_res[ref_count].codedExtent = {m_slot_width[sl], m_slot_height[sl]};
-    ref_res[ref_count].baseArrayLayer = 0;
-    ref_res[ref_count].imageViewBinding = m_dpb[sl].view;
-    ref_dpb[ref_count] = VkVideoDecodeAV1DpbSlotInfoKHR{
-        VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_DPB_SLOT_INFO_KHR};
-    ref_dpb[ref_count].pStdReferenceInfo = &m_slot_ref_info[sl];
-    decode_refs[ref_count] = VkVideoReferenceSlotInfoKHR{
-        VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
-    decode_refs[ref_count].pNext = &ref_dpb[ref_count];
-    decode_refs[ref_count].slotIndex = sidx;
-    decode_refs[ref_count].pPictureResource = &ref_res[ref_count];
-    ++ref_count;
-  }
-
-  VkVideoReferenceSlotInfoKHR begin_slots[VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR + 1];
-  for (u32 j = 0; j < ref_count; ++j)
-    begin_slots[j] = decode_refs[j];
-  begin_slots[ref_count] = VkVideoReferenceSlotInfoKHR{
-      VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
-  begin_slots[ref_count].pNext = &setup_dpb;
-  begin_slots[ref_count].slotIndex = -1;
-  begin_slots[ref_count].pPictureResource = &setup_res;
-
-  VkVideoReferenceSlotInfoKHR setup_slot{
-      VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
-  setup_slot.pNext = &setup_dpb;
-  setup_slot.slotIndex = nx::cast<i32>(setup);
-  setup_slot.pPictureResource = &setup_res;
-
-  VkVideoPictureResourceInfoKHR dst_res = setup_res;
-  if (!m_coincide)
-    dst_res.imageViewBinding = m_output.view;
-
-  VkVideoDecodeInfoKHR di{VK_STRUCTURE_TYPE_VIDEO_DECODE_INFO_KHR};
-  di.pNext = &av1pic;
-  di.srcBuffer = m_bitstream;
-  di.srcBufferOffset = 0;
-  di.srcBufferRange = range;
-  di.dstPictureResource = dst_res;
-  di.pSetupReferenceSlot = &setup_slot;
-  di.referenceSlotCount = ref_count;
-  di.pReferenceSlots = ref_count != 0 ? decode_refs : nullptr;
-
-  DecodeSubmit sub;
-  sub.info = &di;
-  sub.begin_slots = begin_slots;
-  sub.begin_slot_count = ref_count + 1;
-  sub.setup = setup;
-  sub.unique_refs = unique;
-  sub.unique_ref_count = ref_count;
-  sub.coded_w = coded_w;
-  sub.coded_h = coded_h;
-  sub.refresh_frame_flags = hdr.picture.refresh_frame_flags;
-  if (!submit_decode(sub))
-    return false;
-
-  m_slot_ref_info[setup] = setup_info;
-  update_av1_refs(hdr, setup);
 
   out.ok = true;
   out.slot = setup;
-  out.show = hdr.show_frame;
+  out.show = hdr.picture.flags.show_frame != 0;
   out.width = coded_w;
   out.height = coded_h;
   return true;
-}
-
-void VideoDecoder::update_av1_refs(const Av1FrameHeader &hdr, const u32 setup) {
-  (void)setup;
-  for (u32 i = 0; i < STD_VIDEO_AV1_NUM_REF_FRAMES; ++i) {
-    if ((hdr.picture.refresh_frame_flags & (1u << i)) == 0)
-      continue;
-    m_av1_refs.valid[i] = true;
-    m_av1_refs.frame_type[i] = nx::cast<u8>(hdr.picture.frame_type);
-    m_av1_refs.frame_id[i] = hdr.picture.current_frame_id;
-    m_av1_refs.upscaled_width[i] = hdr.upscaled_width;
-    m_av1_refs.frame_width[i] = hdr.frame_width;
-    m_av1_refs.frame_height[i] = hdr.frame_height;
-    m_av1_refs.render_width[i] = hdr.render_width;
-    m_av1_refs.render_height[i] = hdr.render_height;
-    m_av1_refs.order_hint[i] = nx::cast<u8>(hdr.picture.OrderHint);
-    for (u32 j = 0; j < STD_VIDEO_AV1_NUM_REF_FRAMES; ++j)
-      m_av1_refs.saved_order_hints[i][j] =
-          nx::cast<u8>(hdr.picture.OrderHints[j]);
-    m_av1_refs.loop_filter[i] = hdr.loop_filter;
-    m_av1_refs.segmentation[i] = hdr.segmentation;
-    for (u32 r = 0; r < STD_VIDEO_AV1_NUM_REF_FRAMES; ++r)
-      for (u32 p = 0; p < STD_VIDEO_AV1_GLOBAL_MOTION_PARAMS; ++p)
-        m_av1_refs.gm_params[i][r][p] = hdr.global_motion.gm_params[r][p];
-  }
 }
 
 bool VideoDecoder::create_sampleable_image(const u32 *const families,
@@ -1313,8 +1010,7 @@ bool VideoDecoder::decode_frame(const u8 *const frame, const u32 size,
 
 void VideoDecoder::reset_stream() noexcept {
   for (u32 i = 0; i < 8; ++i)
-    m_ref_valid[i] = false;
-  m_av1_refs = Av1RefState{};
+    m_vp9_valid[i] = false;
   m_have_last = false;
   m_needs_reset = true;
 }
