@@ -1000,8 +1000,13 @@ void VulkanDevice::shutdown() noexcept {
 }
 
 void VulkanDevice::wait_idle() noexcept {
-  if (m_device != VK_NULL_HANDLE)
-    NX_VK_CHECK(vkDeviceWaitIdle(m_device));
+  if (m_device == VK_NULL_HANDLE)
+    return;
+
+  if (NX_VK_CHECK(vkDeviceWaitIdle(m_device)) == VK_SUCCESS) {
+    collect_garbage(~0ull);
+    m_uploader.reclaim();
+  }
 }
 
 void VulkanDevice::flush_uploads() noexcept {

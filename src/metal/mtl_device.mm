@@ -345,6 +345,13 @@ void MetalDevice::wait_idle() noexcept {
   }
 }
 
+void MetalDevice::flush_uploads() noexcept {
+  if (m_state == nullptr || m_state->frame_active)
+    return;
+  m_uploader.pump();
+  m_uploader.flush();
+}
+
 // Frame
 
 AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
@@ -647,6 +654,27 @@ MTLTextureDescriptor *make_texture_descriptor(const TextureDesc &desc) {
 }
 
 } // namespace
+
+bool MetalDevice::supports(const Format format,
+                           const TextureUsageFlags usage) const {
+  if (m_state == nullptr || m_state->device == nil ||
+      format == Format::Unknown ||
+      to_mtl_format(format) == MTLPixelFormatInvalid)
+    return false;
+
+  TextureDesc desc;
+  desc.name = "format support probe";
+  desc.format = format;
+  desc.width = 8;
+  desc.height = 8;
+  desc.usage = usage;
+
+  @autoreleasepool {
+    MTLTextureDescriptor *info = make_texture_descriptor(desc);
+    id<MTLTexture> texture = [m_state->device newTextureWithDescriptor:info];
+    return texture != nil;
+  }
+}
 
 TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
   if (m_state == nullptr)

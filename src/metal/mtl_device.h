@@ -218,11 +218,15 @@ public:
 
   [[nodiscard]] MetalUploader &uploader() noexcept { return m_uploader; }
 
+  void flush_uploads() noexcept;
+
   // Swapchain
 
   [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
   [[nodiscard]] bool resize_swapchain(u32 width, u32 height);
   void destroy_swapchain() noexcept;
+
+  [[nodiscard]] bool supports(Format format, TextureUsageFlags usage) const;
 
   [[nodiscard]] Format swapchain_format() const noexcept;
   [[nodiscard]] Extent2D swapchain_extent() const noexcept;
