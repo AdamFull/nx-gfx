@@ -137,7 +137,6 @@ VideoDecodeCaps query_video_decode_caps(const VulkanDevice &device,
   out.supported = true;
   out.max_width = caps.maxCodedExtent.width;
   out.max_height = caps.maxCodedExtent.height;
-  out.max_height = caps.maxCodedExtent.height;
   out.max_dpb_slots = caps.maxDpbSlots;
   out.dpb_and_output_coincide =
       (decode.flags &
@@ -324,6 +323,8 @@ void VideoDecoder::shutdown() noexcept {
     if (m_gfx_pool != VK_NULL_HANDLE)
       vkDestroyCommandPool(dev, m_gfx_pool, nullptr);
 
+    if (m_bitstream_mapped != nullptr)
+      vkUnmapMemory(dev, m_bitstream_memory);
     if (m_bitstream != VK_NULL_HANDLE)
       vkDestroyBuffer(dev, m_bitstream, nullptr);
     if (m_bitstream_memory != VK_NULL_HANDLE)
