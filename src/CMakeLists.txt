@@ -5,24 +5,47 @@
 # compiled per platform, so the portable headers contain no #ifdef and no
 # graphics API types. See docs/design.md section 5.
 
+# The image decode + the cooked .nvtex container. Device-free (stb + foundation
+# only), so the asset cooker links it without pulling in Vulkan/Metal. nx_rhi
+# re-exports it, so a device consumer sees no change.
+add_library(nx_rhi_image STATIC
+        types.h
+        types.cpp
+        image/image.h
+        image/image.cpp
+        image/stb_image_impl.cpp
+        image/texture_nva.h
+        image/texture_nva.cpp)
+add_library(nx::rhi_image ALIAS nx_rhi_image)
+target_include_directories(nx_rhi_image PUBLIC "${CMAKE_SOURCE_DIR}/engine")
+target_link_libraries(nx_rhi_image
+        PUBLIC nx::foundation
+        PRIVATE nx::compile_options nx::stb)
+set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
+
+# stb_image's implementation TU is third-party code; its warnings are not ours
+# to fix and it is noisy under /W4.
+if (MSVC)
+    set_source_files_properties(image/stb_image_impl.cpp PROPERTIES
+            COMPILE_OPTIONS "/w")
+else ()
+    set_source_files_properties(image/stb_image_impl.cpp PROPERTIES
+            COMPILE_OPTIONS "-w")
+endif ()
+
 set(NX_RHI_HEADERS
         bindless.h
         descs.h
         device.h
         handles.h
-        image/image.h
         rhi.h
         shader_reflect.h
-        types.h
         upload.h
         upload_ring.h)
 
 set(NX_RHI_SOURCES
-        image/image.cpp
-        image/stb_image_impl.cpp
         shader_reflect.cpp
         shader_reflect_json.cpp
-        types.cpp
         upload_ring.cpp)
 
 # Vulkan everywhere except Apple platforms, which get Metal. Note this is not
@@ -77,18 +100,8 @@ add_library(nx::rhi ALIAS nx_rhi)
 # NativeWindowHandle, which exists precisely to be handed to a surface-creation
 # call.
 target_link_libraries(nx_rhi
-        PUBLIC nx::foundation
-        PRIVATE nx::compile_options nx::stb)
-
-# stb_image's implementation TU is third-party code; its warnings are not ours
-# to fix and it is noisy under /W4.
-if (MSVC)
-    set_source_files_properties(image/stb_image_impl.cpp PROPERTIES
-            COMPILE_OPTIONS "/w")
-else ()
-    set_source_files_properties(image/stb_image_impl.cpp PROPERTIES
-            COMPILE_OPTIONS "-w")
-endif ()
+        PUBLIC nx::foundation nx::rhi_image
+        PRIVATE nx::compile_options)
 
 if (APPLE)
     target_compile_definitions(nx_rhi PUBLIC NX_RHI_METAL=1)
