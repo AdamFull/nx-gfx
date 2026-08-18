@@ -18,6 +18,16 @@
 #include <stb_image.h>
 #include <stb_image_resize2.h>
 
+#if NX_TEXTURE_ENCODERS
+#include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread.h"
+
+#include <astcenc.h>
+#include <bc7enc.h>
+
+#include <atomic>
+#endif
+
 #include <cstring>
 
 namespace nxe::rhi {
@@ -601,9 +611,9 @@ void generate_mip_chain(ImageData &image) {
 
 namespace {
 
-/// Bytes per 4x4 block for a format stb_dxt can encode, or 0 for one it cannot
-/// (BC7, ASTC and the rest need their own encoders).
-[[nodiscard]] u32 dxt_block_bytes(const Format f) noexcept {
+/// Bytes per 4x4 block for a format encodable one block at a time, or 0 for a
+/// whole-image format (ASTC) or one with no linked encoder.
+[[nodiscard]] u32 block_bytes(const Format f) noexcept {
   switch (f) {
   case Format::BC1_RGB_UNORM:
   case Format::BC1_RGBA_UNORM:
@@ -612,13 +622,17 @@ namespace {
   case Format::BC3_RGBA_UNORM:
   case Format::BC5_RG_UNORM:
     return 16;
+#if NX_TEXTURE_ENCODERS
+  case Format::BC7_RGBA_UNORM:
+    return 16;
+#endif
   default:
     return 0;
   }
 }
 
 /// Encodes one gathered 4x4 RGBA block (64 bytes) into @p target's block.
-void encode_dxt_block(u8 *dst, const u8 *rgba, const Format target) {
+void encode_block(u8 *dst, const u8 *rgba, const Format target) {
   switch (target) {
   case Format::BC1_RGB_UNORM:
   case Format::BC1_RGBA_UNORM:
@@ -643,20 +657,167 @@ void encode_dxt_block(u8 *dst, const u8 *rgba, const Format target) {
     stb_compress_bc5_block(dst, rg);
     break;
   }
+#if NX_TEXTURE_ENCODERS
+  case Format::BC7_RGBA_UNORM: {
+    static const bool ready = [] {
+      bc7enc_compress_block_init();
+      return true;
+    }();
+    (void)ready;
+    bc7enc_compress_block_params params;
+    bc7enc_compress_block_params_init(&params);
+    bc7enc_compress_block(dst, rgba, &params);
+    break;
+  }
+#endif
   default:
     break;
   }
 }
+
+#if NX_TEXTURE_ENCODERS
+[[nodiscard]] bool is_astc(const Format f) noexcept {
+  return f == Format::ASTC_4x4_UNORM || f == Format::ASTC_6x6_UNORM ||
+         f == Format::ASTC_8x8_UNORM;
+}
+
+[[nodiscard]] u32 astc_threads() noexcept {
+  return nx::min(nx::max(nx::cpu::logical_core_count(), 1u), 16u);
+}
+
+/// One astcenc context per (block size, thread count), reused across textures.
+/// Allocating a context builds the block tables and takes seconds, so paying it
+/// per texture made a cook of a few hundred textures take many minutes. The
+/// static frees the context at exit rather than leaking it. Caller holds the
+/// lock.
+[[nodiscard]] astcenc_context *shared_astc_context(const u32 bx, const u32 by,
+                                                   const u32 threads) {
+  struct Cache {
+    astcenc_context *ctx = nullptr;
+    u32 bx = 0, by = 0, threads = 0;
+    ~Cache() {
+      if (ctx)
+        astcenc_context_free(ctx);
+    }
+  };
+  static Cache cache;
+  if (cache.ctx != nullptr && cache.bx == bx && cache.by == by &&
+      cache.threads == threads)
+    return cache.ctx;
+  if (cache.ctx != nullptr) {
+    astcenc_context_free(cache.ctx);
+    cache.ctx = nullptr;
+  }
+  // FAST, not MEDIUM: MEDIUM is far slower and the cook has to be usable.
+  // Quality can become a flag if a project needs it.
+  astcenc_config config{};
+  if (astcenc_config_init(ASTCENC_PRF_LDR, bx, by, 1, ASTCENC_PRE_FAST, 0,
+                          &config) != ASTCENC_SUCCESS)
+    return nullptr;
+  if (astcenc_context_alloc(&config, threads, &cache.ctx, nullptr) !=
+      ASTCENC_SUCCESS) {
+    cache.ctx = nullptr;
+    return nullptr;
+  }
+  cache.bx = bx;
+  cache.by = by;
+  cache.threads = threads;
+  return cache.ctx;
+}
+
+/// Runs one image through astcenc across @p threads workers. astcenc divides the
+/// blocks among the threads that call it, so all @p threads must enter - this
+/// thread takes index 0 and spawns the rest.
+[[nodiscard]] bool compress_astc_image(astcenc_context *ctx,
+                                       astcenc_image *img,
+                                       const astcenc_swizzle *swizzle, u8 *out,
+                                       const u64 size, const u32 threads) {
+  std::atomic<bool> failed{false};
+  const auto run = [&](const u32 index) {
+    if (astcenc_compress_image(ctx, img, swizzle, out, size, index) !=
+        ASTCENC_SUCCESS)
+      failed.store(true, std::memory_order_relaxed);
+  };
+  nx::vector<nx::thread> workers;
+  workers.reserve(threads > 0 ? threads - 1 : 0);
+  for (u32 t = 1; t < threads; ++t)
+    workers.emplace_back([&run, t] { run(t); });
+  run(0);
+  for (nx::thread &w : workers)
+    w.join();
+  return !failed.load(std::memory_order_relaxed);
+}
+
+/// ASTC compresses a whole 2D image at once rather than block by block, so it
+/// takes each mip as an astcenc_image and appends the packed blocks.
+[[nodiscard]] bool compress_astc(ImageData &image, const Format target) {
+  u32 bx = 4, by = 4;
+  format_block_extent(target, bx, by);
+
+  static nx::mutex astc_lock;
+  const nx::scoped_lock<nx::mutex> guard(astc_lock);
+  const u32 threads = astc_threads();
+  astcenc_context *ctx = shared_astc_context(bx, by, threads);
+  if (ctx == nullptr)
+    return false;
+  astcenc_compress_reset(ctx);
+
+  const u32 mips = image.mip_levels;
+  nx::blob<u8> dst(
+      total_size(target, image.width, image.height, 1, mips, 1, false));
+  nx::vector<ImageSubresource> subs;
+  subs.reserve(mips);
+
+  const astcenc_swizzle swizzle{ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B,
+                                ASTCENC_SWZ_A};
+  bool ok = true;
+  u64 dst_off = 0;
+  for (u32 mip = 0; mip < mips && ok; ++mip) {
+    const ImageSubresource &s = image.subresources[mip];
+    void *slice = const_cast<u8 *>(image.pixels.data() + s.offset);
+    astcenc_image slice_img{};
+    slice_img.dim_x = s.width;
+    slice_img.dim_y = s.height;
+    slice_img.dim_z = 1;
+    slice_img.data_type = ASTCENC_TYPE_U8;
+    slice_img.data = &slice;
+
+    const u64 size = format_subresource_size(target, s.width, s.height, 1);
+    if (!compress_astc_image(ctx, &slice_img, &swizzle, dst.data() + dst_off,
+                             size, threads)) {
+      ok = false;
+      break;
+    }
+    astcenc_compress_reset(ctx);
+    subs.push_back(ImageSubresource{
+        dst_off, size, mip, 0, s.width, s.height, 1,
+        nx::cast<u32>(format_row_pitch(target, s.width)), 0, 0, 0});
+    dst_off += size;
+  }
+  if (!ok)
+    return false;
+  image.format = target;
+  image.pixels = std::move(dst);
+  image.subresources = std::move(subs);
+  return true;
+}
+#endif
 
 } // namespace
 
 bool compress_texture(ImageData &image, const Format target) {
   if (image.format == target)
     return true;
-  const u32 block = dxt_block_bytes(target);
-  if (block == 0 || image.format != Format::RGBA8_UNORM ||
+  if (image.format != Format::RGBA8_UNORM ||
       image.dimension != TextureDimension::Tex2D || image.array_layers != 1 ||
       image.subresources.empty())
+    return false;
+#if NX_TEXTURE_ENCODERS
+  if (is_astc(target))
+    return compress_astc(image, target);
+#endif
+  const u32 block = block_bytes(target);
+  if (block == 0)
     return false;
 
   const u32 mips = image.mip_levels;
@@ -687,7 +848,7 @@ bool compress_texture(ImageData &image, const Format target) {
                         sp + sy * s.row_pitch + sx * 4u, 4u);
           }
         }
-        encode_dxt_block(dp, rgba, target);
+        encode_block(dp, rgba, target);
         dp += block;
       }
     push_subresource(image, dst_off, mip, 0, s.width, s.height, 1);

@@ -23,6 +23,14 @@ target_include_directories(nx_rhi_image PUBLIC "${CMAKE_SOURCE_DIR}/engine")
 target_link_libraries(nx_rhi_image
         PUBLIC nx::foundation
         PRIVATE nx::compile_options nx::stb)
+
+# BC7 + ASTC encoders are a desktop cook-time dependency: only the cooker (and
+# the tests) call compress_texture, never the runtime. On Android they are absent
+# and the BC7/ASTC paths compile out, leaving BC1-5 (stb_dxt) and raw.
+if (NOT ANDROID)
+    target_link_libraries(nx_rhi_image PRIVATE nx::bc7enc nx::astcenc)
+    target_compile_definitions(nx_rhi_image PRIVATE NX_TEXTURE_ENCODERS=1)
+endif ()
 set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 
 # stb's implementation TUs are third-party code; their warnings are not ours to
