@@ -14,6 +14,7 @@
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
 
+#include <stb_dxt.h>
 #include <stb_image.h>
 #include <stb_image_resize2.h>
 
@@ -596,6 +597,104 @@ void generate_mip_chain(ImageData &image) {
   }
   image.pixels = std::move(dst);
   image.mip_levels = mips;
+}
+
+namespace {
+
+/// Bytes per 4x4 block for a format stb_dxt can encode, or 0 for one it cannot
+/// (BC7, ASTC and the rest need their own encoders).
+[[nodiscard]] u32 dxt_block_bytes(const Format f) noexcept {
+  switch (f) {
+  case Format::BC1_RGB_UNORM:
+  case Format::BC1_RGBA_UNORM:
+  case Format::BC4_R_UNORM:
+    return 8;
+  case Format::BC3_RGBA_UNORM:
+  case Format::BC5_RG_UNORM:
+    return 16;
+  default:
+    return 0;
+  }
+}
+
+/// Encodes one gathered 4x4 RGBA block (64 bytes) into @p target's block.
+void encode_dxt_block(u8 *dst, const u8 *rgba, const Format target) {
+  switch (target) {
+  case Format::BC1_RGB_UNORM:
+  case Format::BC1_RGBA_UNORM:
+    stb_compress_dxt_block(dst, rgba, 0, STB_DXT_HIGHQUAL);
+    break;
+  case Format::BC3_RGBA_UNORM:
+    stb_compress_dxt_block(dst, rgba, 1, STB_DXT_HIGHQUAL);
+    break;
+  case Format::BC4_R_UNORM: {
+    u8 r[16];
+    for (u32 i = 0; i < 16; ++i)
+      r[i] = rgba[i * 4];
+    stb_compress_bc4_block(dst, r);
+    break;
+  }
+  case Format::BC5_RG_UNORM: {
+    u8 rg[32];
+    for (u32 i = 0; i < 16; ++i) {
+      rg[i * 2 + 0] = rgba[i * 4 + 0];
+      rg[i * 2 + 1] = rgba[i * 4 + 1];
+    }
+    stb_compress_bc5_block(dst, rg);
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+} // namespace
+
+bool compress_texture(ImageData &image, const Format target) {
+  if (image.format == target)
+    return true;
+  const u32 block = dxt_block_bytes(target);
+  if (block == 0 || image.format != Format::RGBA8_UNORM ||
+      image.dimension != TextureDimension::Tex2D || image.array_layers != 1 ||
+      image.subresources.empty())
+    return false;
+
+  const u32 mips = image.mip_levels;
+  const u64 total =
+      total_size(target, image.width, image.height, 1, mips, 1, false);
+  nx::blob<u8> dst(total);
+
+  const nx::vector<ImageSubresource> src = image.subresources;
+  const u8 *src_pixels = image.pixels.data();
+  image.format = target;
+  image.subresources.clear();
+
+  u64 dst_off = 0;
+  for (u32 mip = 0; mip < mips; ++mip) {
+    const ImageSubresource &s = src[mip];
+    const u8 *sp = src_pixels + s.offset;
+    const u32 blocks_x = (s.width + 3u) / 4u;
+    const u32 blocks_y = (s.height + 3u) / 4u;
+    u8 *dp = dst.data() + dst_off;
+    for (u32 by = 0; by < blocks_y; ++by)
+      for (u32 bx = 0; bx < blocks_x; ++bx) {
+        u8 rgba[64];
+        for (u32 py = 0; py < 4; ++py) {
+          const u32 sy = nx::min(by * 4u + py, s.height - 1u);
+          for (u32 px = 0; px < 4; ++px) {
+            const u32 sx = nx::min(bx * 4u + px, s.width - 1u);
+            std::memcpy(rgba + (py * 4u + px) * 4u,
+                        sp + sy * s.row_pitch + sx * 4u, 4u);
+          }
+        }
+        encode_dxt_block(dp, rgba, target);
+        dp += block;
+      }
+    push_subresource(image, dst_off, mip, 0, s.width, s.height, 1);
+    dst_off += format_subresource_size(target, s.width, s.height, 1);
+  }
+  image.pixels = std::move(dst);
+  return true;
 }
 
 Result load_image(const nx::fs::path_view path) {

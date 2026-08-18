@@ -15,6 +15,7 @@ add_library(nx_rhi_image STATIC
         image/image.cpp
         image/stb_image_impl.cpp
         image/stb_image_resize_impl.cpp
+        image/stb_dxt_impl.cpp
         image/texture_nva.h
         image/texture_nva.cpp)
 add_library(nx::rhi_image ALIAS nx_rhi_image)
@@ -29,10 +30,12 @@ set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 if (MSVC)
     set_source_files_properties(
             image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
+            image/stb_dxt_impl.cpp
             PROPERTIES COMPILE_OPTIONS "/w")
 else ()
     set_source_files_properties(
             image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
+            image/stb_dxt_impl.cpp
             PROPERTIES COMPILE_OPTIONS "-w")
 endif ()
 

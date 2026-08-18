@@ -88,4 +88,6 @@ load_image(nx::fs::path_view path);
 
 void generate_mip_chain(ImageData &image);
 
+[[nodiscard]] bool compress_texture(ImageData &image, Format target);
+
 } // namespace nxe::rhi
