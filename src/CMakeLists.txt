@@ -14,6 +14,7 @@ add_library(nx_rhi_image STATIC
         image/image.h
         image/image.cpp
         image/stb_image_impl.cpp
+        image/stb_image_resize_impl.cpp
         image/texture_nva.h
         image/texture_nva.cpp)
 add_library(nx::rhi_image ALIAS nx_rhi_image)
@@ -23,14 +24,16 @@ target_link_libraries(nx_rhi_image
         PRIVATE nx::compile_options nx::stb)
 set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 
-# stb_image's implementation TU is third-party code; its warnings are not ours
-# to fix and it is noisy under /W4.
+# stb's implementation TUs are third-party code; their warnings are not ours to
+# fix and they are noisy under /W4.
 if (MSVC)
-    set_source_files_properties(image/stb_image_impl.cpp PROPERTIES
-            COMPILE_OPTIONS "/w")
+    set_source_files_properties(
+            image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
+            PROPERTIES COMPILE_OPTIONS "/w")
 else ()
-    set_source_files_properties(image/stb_image_impl.cpp PROPERTIES
-            COMPILE_OPTIONS "-w")
+    set_source_files_properties(
+            image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
+            PROPERTIES COMPILE_OPTIONS "-w")
 endif ()
 
 set(NX_RHI_HEADERS
