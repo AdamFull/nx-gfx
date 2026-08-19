@@ -13,7 +13,6 @@ add_library(nx_rhi_image STATIC
         types.cpp
         image/image.h
         image/image.cpp
-        image/texture_compress.cpp
         image/stb_image_impl.cpp
         image/stb_image_resize_impl.cpp
         image/texture_nva.h
@@ -24,15 +23,6 @@ target_link_libraries(nx_rhi_image
         PUBLIC nx::foundation
         PRIVATE nx::compile_options nx::stb)
 
-# Texture compression is a desktop cook-time dependency: only the cooker (and the
-# tests) call compress_texture, never the runtime. On Android they are absent and
-# the whole compress path compiles out. Compressonator's CMP_Core does BC1-7
-# (incl. BC6H); astc-encoder does ASTC (CMP_Core has none).
-if (NOT ANDROID)
-    target_sources(nx_rhi_image PRIVATE image/cmp_encode.cpp)
-    target_link_libraries(nx_rhi_image PRIVATE nx::cmp_core nx::astcenc)
-    target_compile_definitions(nx_rhi_image PRIVATE NX_TEXTURE_ENCODERS=1)
-endif ()
 set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 
 # stb's implementation TUs are third-party code; their warnings are not ours to
