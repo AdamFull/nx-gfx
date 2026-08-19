@@ -16,7 +16,9 @@ add_library(nx_rhi_image STATIC
         image/stb_image_impl.cpp
         image/stb_image_resize_impl.cpp
         image/texture_nva.h
-        image/texture_nva.cpp)
+        image/texture_nva.cpp
+        shader_nva.h
+        shader_nva.cpp)
 add_library(nx::rhi_image ALIAS nx_rhi_image)
 target_include_directories(nx_rhi_image PUBLIC "${CMAKE_SOURCE_DIR}/engine")
 target_link_libraries(nx_rhi_image
