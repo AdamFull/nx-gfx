@@ -13,6 +13,7 @@ add_library(nx_rhi_image STATIC
         types.cpp
         image/image.h
         image/image.cpp
+        image/texture_compress.cpp
         image/stb_image_impl.cpp
         image/stb_image_resize_impl.cpp
         image/texture_nva.h
