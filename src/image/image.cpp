@@ -14,16 +14,15 @@
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
 
-#include <stb_dxt.h>
 #include <stb_image.h>
 #include <stb_image_resize2.h>
 
 #if NX_TEXTURE_ENCODERS
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
+#include "core/rendering/rhi/image/cmp_encode.h"
 
 #include <astcenc.h>
-#include <bc7enc.h>
 
 #include <atomic>
 #endif
@@ -611,71 +610,37 @@ void generate_mip_chain(ImageData &image) {
 
 namespace {
 
-/// Bytes per 4x4 block for a format encodable one block at a time, or 0 for a
-/// whole-image format (ASTC) or one with no linked encoder.
-[[nodiscard]] u32 block_bytes(const Format f) noexcept {
+#if NX_TEXTURE_ENCODERS
+/// Maps a per-block BC target to its CMP_Core format and block size. False for a
+/// format encoded another way (ASTC, BC6H) or not at all.
+[[nodiscard]] bool bc_target(const Format f, CmpBc &fmt, u32 &block) noexcept {
   switch (f) {
   case Format::BC1_RGB_UNORM:
   case Format::BC1_RGBA_UNORM:
+    fmt = CmpBc::BC1;
+    block = 8;
+    return true;
+  case Format::BC3_RGBA_UNORM:
+    fmt = CmpBc::BC3;
+    block = 16;
+    return true;
   case Format::BC4_R_UNORM:
-    return 8;
-  case Format::BC3_RGBA_UNORM:
+    fmt = CmpBc::BC4;
+    block = 8;
+    return true;
   case Format::BC5_RG_UNORM:
-    return 16;
-#if NX_TEXTURE_ENCODERS
+    fmt = CmpBc::BC5;
+    block = 16;
+    return true;
   case Format::BC7_RGBA_UNORM:
-    return 16;
-#endif
+    fmt = CmpBc::BC7;
+    block = 16;
+    return true;
   default:
-    return 0;
+    return false;
   }
 }
 
-/// Encodes one gathered 4x4 RGBA block (64 bytes) into @p target's block.
-void encode_block(u8 *dst, const u8 *rgba, const Format target) {
-  switch (target) {
-  case Format::BC1_RGB_UNORM:
-  case Format::BC1_RGBA_UNORM:
-    stb_compress_dxt_block(dst, rgba, 0, STB_DXT_HIGHQUAL);
-    break;
-  case Format::BC3_RGBA_UNORM:
-    stb_compress_dxt_block(dst, rgba, 1, STB_DXT_HIGHQUAL);
-    break;
-  case Format::BC4_R_UNORM: {
-    u8 r[16];
-    for (u32 i = 0; i < 16; ++i)
-      r[i] = rgba[i * 4];
-    stb_compress_bc4_block(dst, r);
-    break;
-  }
-  case Format::BC5_RG_UNORM: {
-    u8 rg[32];
-    for (u32 i = 0; i < 16; ++i) {
-      rg[i * 2 + 0] = rgba[i * 4 + 0];
-      rg[i * 2 + 1] = rgba[i * 4 + 1];
-    }
-    stb_compress_bc5_block(dst, rg);
-    break;
-  }
-#if NX_TEXTURE_ENCODERS
-  case Format::BC7_RGBA_UNORM: {
-    static const bool ready = [] {
-      bc7enc_compress_block_init();
-      return true;
-    }();
-    (void)ready;
-    bc7enc_compress_block_params params;
-    bc7enc_compress_block_params_init(&params);
-    bc7enc_compress_block(dst, rgba, &params);
-    break;
-  }
-#endif
-  default:
-    break;
-  }
-}
-
-#if NX_TEXTURE_ENCODERS
 [[nodiscard]] bool is_astc(const Format f) noexcept {
   return f == Format::ASTC_4x4_UNORM || f == Format::ASTC_6x6_UNORM ||
          f == Format::ASTC_8x8_UNORM;
@@ -801,6 +766,43 @@ void encode_block(u8 *dst, const u8 *rgba, const Format target) {
   image.subresources = std::move(subs);
   return true;
 }
+
+// --- BC6H (HDR) ------------------------------------------------------------
+//
+// BC6H is HDR-only. CMP_Core encodes it from FP16 in cmp_encode.cpp, which keeps
+// its headers off image.cpp. A non-float source is refused, as it is for LDR BC.
+
+[[nodiscard]] bool compress_bc6h(ImageData &image) {
+  if (image.format != Format::RGBA32_FLOAT ||
+      image.dimension != TextureDimension::Tex2D || image.array_layers != 1 ||
+      image.subresources.empty())
+    return false;
+
+  constexpr Format target = Format::BC6H_RGB_UFLOAT;
+  const u32 mips = image.mip_levels;
+  nx::blob<u8> dst(
+      total_size(target, image.width, image.height, 1, mips, 1, false));
+  const nx::vector<ImageSubresource> src = image.subresources;
+  const u8 *src_pixels = image.pixels.data();
+  nx::vector<ImageSubresource> subs;
+  subs.reserve(mips);
+
+  u64 dst_off = 0;
+  for (u32 mip = 0; mip < mips; ++mip) {
+    const ImageSubresource &s = src[mip];
+    cmp_encode_bc6h(reinterpret_cast<const f32 *>(src_pixels + s.offset),
+                    s.width, s.height, s.row_pitch, dst.data() + dst_off);
+    const u64 size = format_subresource_size(target, s.width, s.height, 1);
+    subs.push_back(ImageSubresource{
+        dst_off, size, mip, 0, s.width, s.height, 1,
+        nx::cast<u32>(format_row_pitch(target, s.width)), 0, 0, 0});
+    dst_off += size;
+  }
+  image.format = target;
+  image.pixels = std::move(dst);
+  image.subresources = std::move(subs);
+  return true;
+}
 #endif
 
 } // namespace
@@ -808,54 +810,49 @@ void encode_block(u8 *dst, const u8 *rgba, const Format target) {
 bool compress_texture(ImageData &image, const Format target) {
   if (image.format == target)
     return true;
+#if NX_TEXTURE_ENCODERS
+  if (target == Format::BC6H_RGB_UFLOAT)
+    return compress_bc6h(image);
   if (image.format != Format::RGBA8_UNORM ||
       image.dimension != TextureDimension::Tex2D || image.array_layers != 1 ||
       image.subresources.empty())
     return false;
-#if NX_TEXTURE_ENCODERS
   if (is_astc(target))
     return compress_astc(image, target);
-#endif
-  const u32 block = block_bytes(target);
-  if (block == 0)
+
+  CmpBc fmt;
+  u32 block;
+  if (!bc_target(target, fmt, block))
     return false;
 
   const u32 mips = image.mip_levels;
-  const u64 total =
-      total_size(target, image.width, image.height, 1, mips, 1, false);
-  nx::blob<u8> dst(total);
-
+  nx::blob<u8> dst(
+      total_size(target, image.width, image.height, 1, mips, 1, false));
   const nx::vector<ImageSubresource> src = image.subresources;
   const u8 *src_pixels = image.pixels.data();
-  image.format = target;
-  image.subresources.clear();
+  nx::vector<ImageSubresource> subs;
+  subs.reserve(mips);
 
   u64 dst_off = 0;
   for (u32 mip = 0; mip < mips; ++mip) {
     const ImageSubresource &s = src[mip];
-    const u8 *sp = src_pixels + s.offset;
-    const u32 blocks_x = (s.width + 3u) / 4u;
-    const u32 blocks_y = (s.height + 3u) / 4u;
-    u8 *dp = dst.data() + dst_off;
-    for (u32 by = 0; by < blocks_y; ++by)
-      for (u32 bx = 0; bx < blocks_x; ++bx) {
-        u8 rgba[64];
-        for (u32 py = 0; py < 4; ++py) {
-          const u32 sy = nx::min(by * 4u + py, s.height - 1u);
-          for (u32 px = 0; px < 4; ++px) {
-            const u32 sx = nx::min(bx * 4u + px, s.width - 1u);
-            std::memcpy(rgba + (py * 4u + px) * 4u,
-                        sp + sy * s.row_pitch + sx * 4u, 4u);
-          }
-        }
-        encode_block(dp, rgba, target);
-        dp += block;
-      }
-    push_subresource(image, dst_off, mip, 0, s.width, s.height, 1);
-    dst_off += format_subresource_size(target, s.width, s.height, 1);
+    cmp_encode_bc(fmt, src_pixels + s.offset, s.width, s.height, s.row_pitch,
+                  dst.data() + dst_off);
+    const u64 size = format_subresource_size(target, s.width, s.height, 1);
+    subs.push_back(ImageSubresource{
+        dst_off, size, mip, 0, s.width, s.height, 1,
+        nx::cast<u32>(format_row_pitch(target, s.width)), 0, 0, 0});
+    dst_off += size;
   }
+  image.format = target;
   image.pixels = std::move(dst);
+  image.subresources = std::move(subs);
   return true;
+#else
+  (void)image;
+  (void)target;
+  return false;
+#endif
 }
 
 Result load_image(const nx::fs::path_view path) {

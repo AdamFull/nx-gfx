@@ -15,7 +15,6 @@ add_library(nx_rhi_image STATIC
         image/image.cpp
         image/stb_image_impl.cpp
         image/stb_image_resize_impl.cpp
-        image/stb_dxt_impl.cpp
         image/texture_nva.h
         image/texture_nva.cpp)
 add_library(nx::rhi_image ALIAS nx_rhi_image)
@@ -24,11 +23,13 @@ target_link_libraries(nx_rhi_image
         PUBLIC nx::foundation
         PRIVATE nx::compile_options nx::stb)
 
-# BC7 + ASTC encoders are a desktop cook-time dependency: only the cooker (and
-# the tests) call compress_texture, never the runtime. On Android they are absent
-# and the BC7/ASTC paths compile out, leaving BC1-5 (stb_dxt) and raw.
+# Texture compression is a desktop cook-time dependency: only the cooker (and the
+# tests) call compress_texture, never the runtime. On Android they are absent and
+# the whole compress path compiles out. Compressonator's CMP_Core does BC1-7
+# (incl. BC6H); astc-encoder does ASTC (CMP_Core has none).
 if (NOT ANDROID)
-    target_link_libraries(nx_rhi_image PRIVATE nx::bc7enc nx::astcenc)
+    target_sources(nx_rhi_image PRIVATE image/cmp_encode.cpp)
+    target_link_libraries(nx_rhi_image PRIVATE nx::cmp_core nx::astcenc)
     target_compile_definitions(nx_rhi_image PRIVATE NX_TEXTURE_ENCODERS=1)
 endif ()
 set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
@@ -38,12 +39,10 @@ set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 if (MSVC)
     set_source_files_properties(
             image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
-            image/stb_dxt_impl.cpp
             PROPERTIES COMPILE_OPTIONS "/w")
 else ()
     set_source_files_properties(
             image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
-            image/stb_dxt_impl.cpp
             PROPERTIES COMPILE_OPTIONS "-w")
 endif ()
 
