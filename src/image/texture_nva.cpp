@@ -89,9 +89,8 @@ bool decode_texture(const std::span<const u8> bytes, ImageData &out) {
 }
 
 nx::string cooked_texture_path(const nx::string_view source) {
-  const usize dot = source.find_last_of('.');
-  nx::string out(dot == nx::string_view::npos ? source : source.substr(0, dot));
-  out += ".nvtex";
+  nx::string out(source);
+  out += ".nxb";
   return out;
 }
 
