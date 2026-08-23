@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file vk_common.h
- * @brief Shared Vulkan plumbing: volk, error checking, enum translation.
- *
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/rendering/rhi/descs.h"
 #include "core/rendering/rhi/types.h"
@@ -73,4 +67,4 @@ struct VkStateInfo {
 
 [[nodiscard]] VkStateInfo to_vk_state(ResourceState state) noexcept;
 
-} // namespace nxe::rhi
+}

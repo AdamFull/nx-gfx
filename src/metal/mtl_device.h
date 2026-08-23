@@ -1,14 +1,5 @@
 #pragma once
 
-/**
- * @file mtl_device.h
- * @brief Metal device, swapchain and command context.
- *
- * Pure C++ by necessity: device.h pulls this into ordinary .cpp files, and
- * every Metal type is an Objective-C object. All of that lives behind
- * MetalDeviceState, defined only in mtl_internal.h.
- */
-
 #include "core/foundation/strings/utf8_string.h"
 #include "core/rendering/rhi/bindless.h"
 #include "core/rendering/rhi/descs.h"
@@ -24,7 +15,6 @@ namespace nxe::rhi {
 
 class MetalDevice;
 
-/// The backend's Objective-C state. Opaque here on purpose; see mtl_internal.h.
 struct MetalDeviceState;
 
 struct DeviceDesc {
@@ -36,15 +26,10 @@ struct DeviceDesc {
   bool enable_validation = false;
 #endif
   bool break_on_validation_error = false;
-  /// File the pipeline cache is loaded from and saved to. Empty keeps the cache
-  /// in memory only (recompiled every run). Metal's equivalent is an
-  /// MTLBinaryArchive; unused until pipelines land.
   nx::string_view pipeline_cache_path;
   u32 frames_in_flight = 2;
 };
 
-/// In-flight readback. `data` is valid once the ticket completes, and only
-/// until a later read_* reuses the staging - copy it out promptly.
 struct ReadbackResult {
   UploadTicket ticket;
   const u8 *data = nullptr;
@@ -55,15 +40,14 @@ struct ReadbackResult {
   }
 };
 
-/// A snapshot of the uploader's internal load, for profiling and stress tests.
 struct UploaderStats {
   u64 total_submits = 0;     ///< Lifetime batch submissions.
-  u64 completed_submits = 0; ///< Of those, finished on the GPU.
+  u64 completed_submits = 0;
   u64 ring_used = 0;         ///< Bytes staged into the batch still open.
-  u64 ring_capacity = 0;     ///< Total capacity of every pooled staging buffer.
-  usize extra_buffers = 0;   ///< Staging buffers sitting idle in the pool.
-  usize inflight_submits = 0; ///< Batches whose GPU work is not done yet.
-  u64 loads_ready = 0;        ///< Async loads that reached Ready.
+  u64 ring_capacity = 0;
+  usize extra_buffers = 0;
+  usize inflight_submits = 0;
+  u64 loads_ready = 0;
   u64 loads_failed = 0;
 };
 
@@ -90,8 +74,6 @@ public:
   [[nodiscard]] UploadTicket
   upload_buffer(BufferHandle handle, u64 dst_offset, std::span<const u8> src,
                 ResourceState final_state = ResourceState::ShaderReadOnly);
-  /// Fills the entire buffer with zero on the GPU, consuming no staging
-  /// allocation regardless of the buffer's size.
   [[nodiscard]] UploadTicket
   clear_buffer(BufferHandle handle,
                ResourceState final_state = ResourceState::ShaderReadOnly);
@@ -109,8 +91,6 @@ public:
   // Readbacks (render thread). The source must not be in concurrent GPU use.
   // A readback flushes any open upload batch and submits on its own.
 
-  /// Reads a range from a buffer created with BufferUsage::CopySrc. Invalid
-  /// handles, usage, or ranges are rejected before GPU work is recorded.
   ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
   ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
 
@@ -148,8 +128,6 @@ public:
   void set_viewport(const Viewport &viewport);
   void set_scissor(const Rect2D &rect);
 
-  /// See MetalDevice::create_timestamp_pool: no pool is ever handed out, so
-  /// these are only ever called with an invalid one.
   void reset_queries(QueryPoolHandle, u32, u32) {}
   void write_timestamp(QueryPoolHandle, u32) {}
 
@@ -157,7 +135,6 @@ public:
   /// Sets the whole 128-byte push block. Offset/size in bytes.
   void push_constants(const void *data, u32 size, u32 offset = 0);
 
-  /// Pushes what a BlockWriter staged, at the size reflection reported.
   void push_constants(const BlockWriter &block) {
     push_constants(block.bytes().data(), nx::cast<u32>(block.bytes().size()));
   }
@@ -177,8 +154,6 @@ public:
                              u32 draw_count = 1, u32 stride = 0);
   void dispatch_indirect(BufferHandle buffer, u64 offset = 0);
 
-  /// Only bookkeeping: Metal tracks non-heap hazards itself, and heap ones are
-  /// handled by the pass fence. The state drives load/store actions.
   void barrier(const TextureBarrier *textures, u32 texture_count,
                const BufferBarrier *buffers = nullptr, u32 buffer_count = 0,
                StateTracking tracking = StateTracking::Update);
@@ -191,12 +166,9 @@ public:
 private:
   friend class MetalDevice;
 
-  /// Defined in mtl_device.mm; resolves m_slot against the device.
   [[nodiscard]] struct MetalContextSlot &ctx_slot() const noexcept;
 
   MetalDeviceState *m_state = nullptr;
-  /// Index into the device's recording slots. Contexts record on different
-  /// threads, so mutable state lives per slot, not on the device.
   u32 m_slot = 0;
   bool m_in_render_pass = false;
 };
@@ -220,8 +192,6 @@ public:
 
   void flush_uploads() noexcept;
 
-  // Swapchain
-
   [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
   [[nodiscard]] bool resize_swapchain(u32 width, u32 height);
   void destroy_swapchain() noexcept;
@@ -231,8 +201,6 @@ public:
   [[nodiscard]] Format swapchain_format() const noexcept;
   [[nodiscard]] Extent2D swapchain_extent() const noexcept;
 
-  // Frame
-
   [[nodiscard]] AcquireResult begin_frame(MetalCommandContext &out_context);
   [[nodiscard]] bool end_frame();
 
@@ -240,15 +208,9 @@ public:
 
   [[nodiscard]] bool end_headless_frame();
 
-  /// Always fails for now: every MetalCommandContext shares the device's one
-  /// command buffer and encoder, so there is nothing to hand out. Parallel
-  /// encoding needs a command buffer per context, ordered with -enqueue.
-  /// Callers fall back to recording serially.
   [[nodiscard]] TextureHandle current_backbuffer() const noexcept;
 
   void wait_idle() noexcept;
-
-  // Resources
 
   [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
   void destroy_texture(TextureHandle handle) noexcept;
@@ -256,8 +218,6 @@ public:
   [[nodiscard]] BufferHandle create_buffer(const BufferDesc &desc);
   void destroy_buffer(BufferHandle handle) noexcept;
 
-  // Memory aliasing. The render graph packs transients with disjoint lifetimes
-  // into one heap; see the Vulkan header for the contract, which is identical.
   [[nodiscard]] MemoryRequirements
   texture_requirements(const TextureDesc &desc) const;
   [[nodiscard]] HeapHandle create_heap(const HeapDesc &desc);
@@ -274,9 +234,6 @@ public:
     return false;
   }
 
-  // Shaders and pipelines. A shader is a metallib compiled to an MTLLibrary;
-  // the reflection sidecar is parsed the same way the Vulkan backend does it.
-
   [[nodiscard]] ShaderHandle create_shader(const ShaderDesc &desc);
   void destroy_shader(ShaderHandle handle) noexcept;
 
@@ -286,17 +243,11 @@ public:
   create_compute_pipeline(const ComputePipelineDesc &desc);
   void destroy_pipeline(PipelineHandle handle) noexcept;
 
-  // Bindless indices, for the push block. A resource with no slot answers
-  // BINDLESS_INVALID_INDEX.
-
-  /// The shader's reflected interface. Empty for an unknown handle.
   [[nodiscard]] const ShaderReflection &
   reflection(ShaderHandle handle) const noexcept;
 
-  /// Tracked state, for the graph to resolve transitions against up front.
   [[nodiscard]] ResourceState
   texture_state(TextureHandle handle) const noexcept;
-  /// Pairs with StateTracking::Skip: the caller writes back what it recorded.
   void set_texture_state(TextureHandle handle, ResourceState state) noexcept;
 
   [[nodiscard]] u32 texture_index(TextureHandle handle) const noexcept;
@@ -305,16 +256,13 @@ public:
   [[nodiscard]] u32 sampler_index(SamplerHandle handle) const noexcept;
   [[nodiscard]] u64 buffer_address(BufferHandle handle) const noexcept;
 
-  /// Host pointer for a persistently mapped buffer, else null. Per-frame data
-  /// is written straight through this rather than staged and copied.
   [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
 
 private:
   DeviceCaps m_caps;
-  /// Backing store for m_caps.device_name, which is only a view.
   nx::string m_device_name;
   MetalDeviceState *m_state = nullptr;
   MetalUploader m_uploader;
 };
 
-} // namespace nxe::rhi
+}

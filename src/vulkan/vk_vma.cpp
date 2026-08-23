@@ -1,8 +1,3 @@
-/**
- * @file vk_vma.cpp
- * @brief The single translation unit that compiles VMA.
- *
- */
 
 #include <volk.h>
 

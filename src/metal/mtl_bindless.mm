@@ -1,25 +1,9 @@
-/**
- * @file mtl_bindless.mm
- * @brief The single bindless argument buffer.
- *
- * Slang lowers ParameterBlock<BindlessTables> to one argument buffer holding
- * textures, rw_textures and samplers back to back, 8 bytes per entry, so the
- * CPU writes it directly - the layout comes from the array bounds in
- * shaders/bindless.slang.
- *
- * Two things Vulkan does not need: Tier 2 argument buffers (Tier 1 has neither
- * resource arrays nor dynamic indexing, so init() refuses the device), and
- * residency - naming a resource here does not make it reachable, which is what
- * the heaps and `resident` list are for.
- */
 
 #include "core/rendering/rhi/metal/mtl_internal.h"
 
 namespace nxe::rhi {
 namespace {
 
-/// Every resource handle in a Tier 2 argument buffer is one MTLResourceID.
-/// Asserted against the shader's own view of the layout below.
 constexpr u64 SLOT_SIZE = sizeof(MTLResourceID);
 static_assert(SLOT_SIZE == 8, "argument buffer slot size changed");
 
@@ -32,8 +16,6 @@ void write_slot(const MetalDeviceState &state, const u64 offset, const u32 slot,
               sizeof(id));
 }
 
-/// New heap size unless one resource needs more: big enough for a 2D game's
-/// atlas set, small enough not to reserve absurd address space up front.
 constexpr u64 DEFAULT_HEAP_BYTES = 64ull << 20;
 
 /// Adds a heap big enough for @p required bytes and returns it, or nil.
@@ -42,10 +24,6 @@ id<MTLHeap> grow_heaps(MetalDeviceState &state, const u64 required) noexcept {
   info.size = nx::max<u64>(DEFAULT_HEAP_BYTES, required);
   info.storageMode = MTLStorageModePrivate;
   info.type = MTLHeapTypeAutomatic;
-  // Tracked, deliberately. Untracked would need the backend to place every
-  // cross-encoder dependency itself, and getting that wrong left heap resources
-  // with no synchronisation at all - survivable on an immediate-mode desktop
-  // GPU, but it corrupts on a tile-based one.
   info.hazardTrackingMode = MTLHazardTrackingModeTracked;
 
   id<MTLHeap> heap = [state.device newHeapWithDescriptor:info];
@@ -69,13 +47,11 @@ void clear_slot(const MetalDeviceState &state, const u64 offset, const u32 slot,
                 const u32 max_slots) noexcept {
   if (slot >= max_slots || state.bindless.argument_buffer == nil)
     return;
-  // A zeroed MTLResourceID is the null resource. Sampling through it returns
-  // zero rather than faulting, which is what a freed slot should do.
   auto *base = static_cast<u8 *>([state.bindless.argument_buffer contents]);
   std::memset(base + offset + nx::cast<u64>(slot) * SLOT_SIZE, 0, SLOT_SIZE);
 }
 
-} // namespace
+}
 
 bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
   if (!caps.descriptor_indexing) {
@@ -104,9 +80,6 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
       heap.samplers_offset + nx::cast<u64>(heap.max_samplers) * SLOT_SIZE;
 
   @autoreleasepool {
-    // Shared so the slot writes above are plain stores. The buffer is written
-    // far more often than it is read, and it is small enough that keeping it
-    // in shared memory costs nothing measurable.
     heap.argument_buffer =
         [state.device newBufferWithLength:total
                                   options:MTLResourceStorageModeShared];
@@ -187,8 +160,6 @@ void free_rw_slot(MetalDeviceState &state, const u32 slot) noexcept {
 id<MTLTexture>
 alloc_bindless_texture(MetalDeviceState &state,
                        MTLTextureDescriptor *descriptor) noexcept {
-  // The heaps are private-storage. A shared or memoryless texture would need a
-  // heap of its own kind, which is not worth it for the handful that exist.
   if (descriptor.storageMode != MTLStorageModePrivate)
     return nil;
 
@@ -222,8 +193,6 @@ id<MTLBuffer> alloc_bindless_buffer(MetalDeviceState &state, const u64 length,
   return heap != nil ? [heap newBufferWithLength:length options:options] : nil;
 }
 
-// Fences
-
 void begin_command_buffer(MetalContextSlot &slot) noexcept {
   slot.fence_written = false;
 }
@@ -232,8 +201,6 @@ void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLRenderCommandEncoder> encoder) noexcept {
   if (encoder == nil || state.pass_fence == nil || !slot.fence_written)
     return;
-  // Before the vertex stage: a vertex shader may pull from a heap buffer, so
-  // waiting only before fragment would be too late.
   [encoder waitForFence:state.pass_fence beforeStages:MTLRenderStageVertex];
 }
 
@@ -311,15 +278,12 @@ void bind_bindless(MetalDeviceState &state,
                       offset:0
                      atIndex:BINDLESS_BUFFER_INDEX];
 
-  // One call per heap whatever it holds - the reason for sub-allocating.
   if (!state.bindless.heaps.empty()) {
     [encoder useHeaps:state.bindless.heaps.data()
                 count:state.bindless.heaps.size()
                stages:MTLRenderStageVertex | MTLRenderStageFragment];
   }
 
-  // Whatever could not live in a heap. Short by construction: shared and
-  // memoryless resources only.
   if (!state.bindless.resident.empty()) {
     [encoder useResources:state.bindless.resident.data()
                     count:state.bindless.resident.size()
@@ -349,4 +313,4 @@ void bind_bindless_compute(MetalDeviceState &state,
   }
 }
 
-} // namespace nxe::rhi
+}

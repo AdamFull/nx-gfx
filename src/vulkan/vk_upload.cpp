@@ -1,11 +1,3 @@
-/**
- * @file vk_upload.cpp
- * @brief Batched transfer-queue staging, plus the async decode worker.
- *
- * All GPU work is single-owner (render thread), so the ring, batch and chunks
- * take no lock. A dedicated worker thread only reads files and decodes images,
- * communicating through lock-free queues and an atomic status table.
- */
 
 #include "core/rendering/rhi/vulkan/vk_upload.h"
 
@@ -22,9 +14,6 @@ namespace {
 
 const nx::log::Category log_up = nx::log::category("upload");
 
-/// Staging ring size. Sized to hold a busy frame of sprite loads plus a couple
-/// of frames in flight; larger uploads take a dedicated buffer, so this is a
-/// throughput knob, not a hard limit on texture size.
 constexpr u64 RING_CAPACITY = 32ull * 1024 * 1024;
 
 [[nodiscard]] u64 align_up(const u64 value, const u64 alignment) noexcept {
@@ -51,7 +40,7 @@ whole_image_barrier(const VkImage image,
   return barrier;
 }
 
-} // namespace
+}
 
 nx::string_view to_string(const LoadStatus status) noexcept {
   switch (status) {
@@ -145,7 +134,6 @@ void VulkanUploader::shutdown() noexcept {
   if (m_vk == VK_NULL_HANDLE)
     return;
 
-  // Stop the worker first; it only touches CPU data, but join before freeing.
   m_worker_stop.store(true, std::memory_order_release);
   m_worker_wake.release();
   if (m_worker.joinable())
@@ -344,7 +332,7 @@ u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
     if (m_batch_open)
       flush_locked();
     if (m_markers.empty())
-      return nullptr; // Fits the ring, yet nothing is in flight: unreachable.
+      return nullptr;
 
     // The oldest bytes can be held by a frame that is still being recorded -
     // waiting on a value nothing has submitted yet would hang the render
@@ -418,10 +406,9 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   const VkImageAspectFlags aspect = to_vk_aspect(tex->format);
   const u64 align = copy_alignment(tex->format);
   const bool qfot = needs_ownership_transfer();
-  // The copy queue cannot write an image the graphics family owns: keeping the
-  // untouched parts - the whole point of a partial upload - would need an
-  // acquire, and its matching release can only come from a graphics submit.
-  // Hand the copy to the next frame instead, which owns the image already.
+  // The copy queue cannot write an image the graphics family owns: keeping the untouched parts -
+  // the whole point of a partial upload - would need an acquire, and its matching release can only
+  // come from a graphics submit.
   const bool on_graphics = qfot && tex->owner == ImageOwner::Graphics;
 
   u64 staging_size = 0;
@@ -447,9 +434,6 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     return UploadTicket::failure();
   }
 
-  // A replayed copy needs no batch of its own, and opening one here would make
-  // flush_batch() submit an empty command buffer every frame the gui patches
-  // its atlas.
   const VkCommandBuffer cmd = on_graphics ? VK_NULL_HANDLE : ensure_batch();
   if (!on_graphics && cmd == VK_NULL_HANDLE) {
     nx::loge(log_up, "upload_texture: no command batch to record into");
@@ -474,8 +458,6 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   }
 
   if (on_graphics) {
-    // Several rectangles can land on one atlas in a frame; keep them in one
-    // record so the replay transitions the image once.
     GraphicsCopy *pending = nullptr;
     for (GraphicsCopy &gc : m_graphics_copies)
       if (gc.image == tex->image && gc.buffer == staging_buf)
@@ -495,10 +477,8 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     for (const VkBufferImageCopy &copy : copies)
       pending->regions.push_back(copy);
 
-    // Whichever frame replays this is the one that has to be done with the
-    // staging, not the copy timeline. This is a lower bound - the frame that
-    // gets it is not known until replay_graphics_copies() - but it is enough
-    // to stop the ring reclaiming the bytes off the copy timeline alone.
+    // This is a lower bound - the frame that gets it is not known until replay_graphics_copies() -
+    // but it is enough to stop the ring reclaiming the bytes off the copy timeline alone.
     const u64 hold = m_device->m_timeline_value + 1;
     if (hold > m_graphics_hold)
       m_graphics_hold = hold;
@@ -510,12 +490,8 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   }
 
   const VkStateInfo from = to_vk_state(tex->state);
-  // A second upload into the same batch finds the image still in TRANSFER_DST
-  // on this very queue, so the copy-to-copy hazard is ours to order. One that
-  // crosses a hand-off instead finds a *graphics* state whose stages a
-  // dedicated transfer family does not accept; nothing is lost, since a stage
-  // mask cannot order work on another queue anyway - the release/acquire pair
-  // carries that dependency.
+  // nothing is lost, since a stage mask cannot order work on another queue anyway - the
+  // release/acquire pair carries that dependency.
   const bool copy_to_copy = tex->state == ResourceState::CopyDst;
   VkImageMemoryBarrier2 pre = whole_image_barrier(tex->image, aspect);
   pre.srcStageMask =
@@ -556,9 +532,6 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     m_pending_wait = m_batch_value;
 
   if (qfot) {
-    // The image stays in TRANSFER_DST and copy-owned; record_releases() puts it
-    // in final_state on the graphics family at the next frame hand-off, so any
-    // further upload before then is just another copy on this queue.
     tex->state = ResourceState::CopyDst;
     tex->owner = ImageOwner::Copy;
     ImageRelease &release =
@@ -628,8 +601,6 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
 
   VkBufferMemoryBarrier2 before_copy{
       VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-  // ALL_TRANSFER also covers a preceding vkCmdFillBuffer (CLEAR in sync2), so
-  // a buffer may be cleared and patched within the same open upload batch.
   before_copy.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
   before_copy.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   before_copy.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -742,8 +713,6 @@ UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
   return {m_batch_value};
 }
 
-// Async loading -------------------------------------------------------------
-
 LoadRequest VulkanUploader::enqueue_load(LoadPayload *payload) {
   u32 slot = 0;
   if (!m_free_slots.try_pop(slot)) {
@@ -822,7 +791,6 @@ void VulkanUploader::worker_main() {
   while (!m_worker_stop.load(std::memory_order_acquire)) {
     LoadCommand cmd;
     if (!m_load_requests.try_pop(cmd)) {
-      // Timing out and being woken lead to the same place: round the loop.
       (void)m_worker_wake.try_acquire_for(std::chrono::milliseconds(100));
       continue;
     }
@@ -870,7 +838,7 @@ void VulkanUploader::pump() {
   m_load_results.consume_all([this](DecodeResult res) {
     const u32 s = res.id - 1;
     if (m_load_gen[s].load(std::memory_order_acquire) != res.generation) {
-      nx::release(res.image); // Released since it decoded; drop it.
+      nx::release(res.image);
       return;
     }
 
@@ -940,7 +908,7 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
     return {};
   }
 
-  flush_locked(); // Readback is its own submit; get pending uploads out first.
+  flush_locked();
 
   Chunk *chunk = acquire_chunk(size, true);
   if (chunk == nullptr)
@@ -950,9 +918,6 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   if (cmd == VK_NULL_HANDLE)
     return {};
 
-  // The source may have just been populated by an upload submission. Its
-  // shader-facing post-copy scope does not cover another transfer operation,
-  // so establish the copy-write -> copy-read dependency explicitly.
   VkBufferMemoryBarrier2 before_read{
       VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   before_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -1029,10 +994,6 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
              "frame, while the copy queue still owns what it uploaded.");
   }
 
-  // As in upload_texture: a *graphics* state's stages are not recordable on a
-  // dedicated transfer family, and fencing that work off is the caller's job
-  // anyway (see the header). A copy state is this queue's own, though - naming
-  // it is what orders the readback after the upload that filled the image.
   const bool copy_state = tex->state == ResourceState::CopyDst ||
                           tex->state == ResourceState::CopySrc;
   const bool foreign = qfot && !copy_state;
@@ -1054,10 +1015,9 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   vkCmdCopyImageToBuffer(cmd, tex->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                          chunk->buffer, 1, &copy);
   tex->state = ResourceState::CopySrc;
-  // The image is left in TRANSFER_SRC on the copy family. Anything graphics
-  // does with it afterwards needs an acquire, and the only barrier that can
-  // pair with one is the release the next frame hand-off emits - so book it
-  // now rather than leaving the image stranded on this queue.
+  // Anything graphics does with it afterwards needs an acquire, and the only barrier that can pair
+  // with one is the release the next frame hand-off emits - so book it now rather than leaving the
+  // image stranded on this queue.
   if (qfot && tex->owner == ImageOwner::Copy) {
     ImageRelease &release =
         pending_release(handle, tex->image, aspect, ResourceState::CopySrc);
@@ -1089,7 +1049,7 @@ void VulkanUploader::wait(const UploadTicket ticket) noexcept {
   if (!ticket.valid())
     return;
   if (ticket.value > m_value)
-    flush_locked(); // The ticket names the still-open batch: submit it.
+    flush_locked();
   wait_value(ticket.value);
 }
 
@@ -1144,8 +1104,6 @@ VulkanUploader::pending_release(const BufferHandle handle,
     const u64 new_end = offset + size;
     release.offset = begin;
     release.size = (old_end > new_end ? old_end : new_end) - begin;
-    // Resource state is tracked for a buffer as a whole; the last upload names
-    // the state in which the completed batch is handed to graphics.
     release.new_state = state;
     return release;
   }
@@ -1205,8 +1163,6 @@ void VulkanUploader::record_releases() {
 
     VkBufferMemoryBarrier2 barrier{
         VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    // Buffer batches may contain both vkCmdCopyBuffer and vkCmdFillBuffer;
-    // synchronization2 assigns those to COPY and CLEAR respectively.
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -1241,10 +1197,8 @@ void VulkanUploader::replay_graphics_copies(const VkCommandBuffer cmd) {
   if (m_graphics_copies.empty())
     return;
 
-  // Which frame ends up replaying a copy is only settled here: one recorded
-  // *during* a frame waits for the next one. Raise the hold to the frame about
-  // to be recorded and carry it to everything already stamped with the guess,
-  // or the ring could hand those bytes out before this frame has read them.
+  // Raise the hold to the frame about to be recorded and carry it to everything already stamped
+  // with the guess, or the ring could hand those bytes out before this frame has read them.
   const u64 hold = m_device->m_timeline_value + 1;
   if (hold > m_graphics_hold)
     m_graphics_hold = hold;
@@ -1261,8 +1215,6 @@ void VulkanUploader::replay_graphics_copies(const VkCommandBuffer cmd) {
   nx::small_vector<VkImageMemoryBarrier2, 8> pre;
   nx::small_vector<VkImageMemoryBarrier2, 8> post;
   for (const GraphicsCopy &copy : m_graphics_copies) {
-    // As in record_releases(): a texture destroyed since the copy was staged
-    // has already been collected, so there is no image left to patch.
     if (m_device->m_textures.try_get(copy.handle) == nullptr)
       continue;
     bool seen = false;
@@ -1312,9 +1264,6 @@ void VulkanUploader::replay_graphics_copies(const VkCommandBuffer cmd) {
     vkCmdPipelineBarrier2KHR(cmd, &dep);
   }
 
-  // Hold the staging until this frame has run. flush_locked() stamps every
-  // marker it pushes with m_graphics_hold, so the only gap left is a batch
-  // that never opened - close it with a marker of our own.
   if (m_markers.empty() || m_markers.back().head != m_ring_head)
     m_markers.push_back({m_ring_head, m_value, m_graphics_hold});
   else if (m_graphics_hold > m_markers.back().gfx_value)
@@ -1381,4 +1330,4 @@ u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
 
 void VulkanUploader::reclaim() noexcept { reclaim_locked(); }
 
-} // namespace nxe::rhi
+}

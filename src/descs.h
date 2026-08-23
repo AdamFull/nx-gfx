@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file descs.h
- * @brief Resource creation descriptors (namespace nxe::rhi).
- *
- */
-
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/platform/native_window.h"
 #include "core/foundation/strings/utf8_string_view.h"
@@ -73,14 +67,11 @@ struct TextureDesc {
   TextureDimension dimension = TextureDimension::Tex2D;
   u32 width = 1;
   u32 height = 1;
-  /// Depth for Tex3D, array length for Tex2DArray, 6 (or 6*N) for TexCube.
   u32 depth_or_layers = 1;
   u32 mip_levels = 1;
-  /// MSAA sample count; 1 disables it. 2D rendering rarely wants more.
   u32 sample_count = 1;
   TextureUsageFlags usage = TextureUsage::Sampled;
   MemoryUsage memory = MemoryUsage::DeviceLocal;
-  /// State the texture is in immediately after creation.
   ResourceState initial_state = ResourceState::Undefined;
 };
 
@@ -99,7 +90,6 @@ struct HeapDesc {
   nx::string_view name = "heap";
   u64 size = 0;
   u64 alignment = 256;
-  /// Intersection of the memory_type_bits of everything to be placed here.
   u32 memory_type_bits = ~0u;
   MemoryUsage memory = MemoryUsage::DeviceLocal;
 };
@@ -123,10 +113,9 @@ struct SamplerDesc {
   AddressMode address_v = AddressMode::ClampToEdge;
   AddressMode address_w = AddressMode::ClampToEdge;
   f32 mip_lod_bias = 0.f;
-  f32 max_anisotropy = 1.f; ///< 1 disables anisotropic filtering.
+  f32 max_anisotropy = 1.f;
   f32 min_lod = 0.f;
   f32 max_lod = 1000.f;
-  /// Set for shadow/percentage-closer sampling; Never disables comparison.
   CompareOp compare = CompareOp::Never;
 };
 
@@ -137,7 +126,6 @@ struct RenderAttachment {
   LoadOp load = LoadOp::Clear;
   StoreOp store = StoreOp::Store;
   ClearValue clear = {};
-  /// MSAA resolve target; null handle disables resolve.
   TextureHandle resolve_target;
 };
 
@@ -149,19 +137,14 @@ struct RenderPassDesc {
   u32 color_count = 0;
   RenderAttachment depth_stencil = {};
   bool has_depth_stencil = false;
-  /// Render area; zero extent means the full size of the first attachment.
   Rect2D render_area = {};
 };
 
-/// Swapchain creation / recreation parameters.
 struct SwapchainDesc {
-  /// Native surface, straight from IWindow::native_handle().
   nx::NativeWindowHandle window;
   u32 width = 0;
   u32 height = 0;
   PresentMode present_mode = PresentMode::Fifo;
-  /// Preferred backbuffer format; the backend picks the closest supported one
-  /// and reports the result via Swapchain::format().
   Format preferred_format = Format::BGRA8_UNORM;
 };
 
@@ -180,13 +163,11 @@ struct ShaderDesc {
   nx::string_view reflection_json;
 };
 
-/// A shader stage in a pipeline: which blob, and which entry point in it.
 struct ShaderEntry {
   ShaderHandle shader;
   nx::string_view entry_point = "main";
 };
 
-/// Colour target blending, one per attachment.
 struct BlendState {
   bool enabled = false;
   BlendMode mode = BlendMode::Opaque;
@@ -223,8 +204,6 @@ struct ComputePipelineDesc {
   u32 group_size[3] = {0, 0, 0};
 };
 
-/// One indirect draw, as the GPU writes it. Layout is fixed by both APIs, so
-/// a compute pass fills these directly and the CPU never sees the count.
 struct DrawIndirectCommand {
   u32 vertex_count = 0;
   u32 instance_count = 0;
@@ -253,7 +232,6 @@ struct TextureBarrier {
   ResourceState from = ResourceState::Undefined;
   ResourceState to = ResourceState::Undefined;
   bool discard = false;
-  /// UINT32_MAX means "all mips" / "all layers".
   u32 base_mip = 0;
   u32 mip_count = ~0u;
   u32 base_layer = 0;
@@ -265,11 +243,9 @@ struct BufferBarrier {
   ResourceState from = ResourceState::Undefined;
   ResourceState to = ResourceState::Undefined;
   u64 offset = 0;
-  u64 size = ~0ull; ///< ~0 means "to the end".
+  u64 size = ~0ull;
 };
 
-/// What the device can actually do. Queried once after creation; the engine
-/// refuses to start if the mandatory bindless features are missing.
 struct DeviceCaps {
   nx::string_view device_name;
   u32 api_version = 0;
@@ -277,19 +253,15 @@ struct DeviceCaps {
   u32 vendor_id = 0;
   bool discrete = false;
 
-  /// Mandatory: the whole binding model depends on these.
   bool descriptor_indexing = false;
   bool buffer_device_address = false;
   bool dynamic_rendering = false;
   bool synchronization2 = false;
   bool timeline_semaphores = false;
 
-  /// Optional.
   bool async_compute = false;
   bool dedicated_transfer = false;
   bool draw_indirect_count = false;
-  /// Lazily-allocated / memoryless attachments; free transient targets on
-  /// tile-based mobile GPUs.
   bool memoryless_attachments = false;
   bool timestamps = false;
 
@@ -306,4 +278,4 @@ struct DeviceCaps {
   f32 timestamp_period_ns = 0.f;
 };
 
-} // namespace nxe::rhi
+}

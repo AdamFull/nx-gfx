@@ -12,7 +12,7 @@ constexpr u32 CHUNK_INFO = nx::nva::fourcc('I', 'N', 'F', 'O');
 constexpr u32 CHUNK_DATA = nx::nva::fourcc('D', 'A', 'T', 'A');
 constexpr u16 VERSION = 1;
 
-} // namespace
+}
 
 nx::vector<u8> encode_texture(const ImageData &image) {
   nx::nva::Writer info;
@@ -94,4 +94,4 @@ nx::string cooked_texture_path(const nx::string_view source) {
   return out;
 }
 
-} // namespace nxe::rhi
+}

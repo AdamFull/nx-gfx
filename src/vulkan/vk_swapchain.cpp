@@ -1,7 +1,3 @@
-/**
- * @file vk_swapchain.cpp
- * @brief Surface, swapchain, and the per-frame acquire/submit/present cycle.
- */
 
 #include "core/foundation/diagnostics/profiler.h"
 #include "core/rendering/rhi/vulkan/vk_device.h"
@@ -21,8 +17,6 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
   if (slot.pool == VK_NULL_HANDLE) {
     VkCommandPoolCreateInfo pool_info{
         VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    // Reset the whole pool each frame rather than individual buffers: it is
-    // one call and lets the driver recycle the backing blocks wholesale.
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pool_info.queueFamilyIndex = queue_family;
     if (NX_VK_CHECK(vkCreateCommandPool(device, &pool_info, nullptr,
@@ -53,8 +47,6 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
   return true;
 }
 
-/// Whether the surface has actually resized out from under the swapchain.
-/// Used to tell a real resize apart from a permanently-suboptimal swapchain.
 [[nodiscard]] bool surface_resized(VkPhysicalDevice physical,
                                    VkSurfaceKHR surface,
                                    const VkExtent2D current) noexcept {
@@ -62,7 +54,6 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
   if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &caps) !=
       VK_SUCCESS)
     return false;
-  // 0xFFFFFFFF means the surface defers to us, so our extent is current.
   if (caps.currentExtent.width == 0xFFFFFFFFu)
     return false;
   return caps.currentExtent.width != current.width ||
@@ -81,14 +72,11 @@ pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported) noexcept {
     if ((supported & nx::cast<VkCompositeAlphaFlagsKHR>(bit)) != 0)
       return bit;
   }
-  // A surface supporting none of the four is not a thing the spec allows.
   nx::logw(log_rhi,
            "surface reports no composite alpha mode; asking for opaque");
   return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 }
 
-/// Creates a VkSurfaceKHR from whatever the PAL handed us. This is the one
-/// place in the RHI that knows about window systems.
 VkSurfaceKHR create_surface(VkInstance instance,
                             const nx::NativeWindowHandle &window) noexcept {
   VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -151,13 +139,11 @@ VkSurfaceKHR create_surface(VkInstance instance,
   return surface;
 }
 
-} // namespace
+}
 
 bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
   if (desc.window.kind == nx::NativeWindowKind::None ||
       desc.window.window == nullptr) {
-    // No surface yet. Normal on Android and iOS, where the OS only hands one
-    // over after the activity is resumed; the caller retries next frame.
     return false;
   }
 
@@ -190,7 +176,6 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
       m_physical_device, m_surface, &mode_count, modes.data()));
 
   const VkPresentModeKHR wanted = to_vk_present_mode(desc.present_mode);
-  // FIFO is the only mode guaranteed to exist, so it is the fallback.
   m_present_mode = VK_PRESENT_MODE_FIFO_KHR;
   for (const VkPresentModeKHR mode : modes) {
     if (mode == wanted) {
@@ -256,13 +241,10 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
                              : extent.height);
 
   if (extent.width == 0 || extent.height == 0) {
-    // Minimized. Not an error; there is simply nothing to render into.
     m_swapchain_extent = {0, 0};
     return false;
   }
 
-  // One more image than frames in flight lets the present engine always have
-  // something to show while we render.
   u32 image_count = m_frames_in_flight + 1;
   if (image_count < caps.minImageCount)
     image_count = caps.minImageCount;
@@ -286,8 +268,6 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
   info.compositeAlpha = pick_composite_alpha(caps.supportedCompositeAlpha);
   info.presentMode = m_present_mode;
   info.clipped = VK_TRUE;
-  // Handing the old swapchain over lets the driver reuse its allocations and
-  // keeps presentation going during the rebuild.
   info.oldSwapchain = m_swapchain;
 
   VkSwapchainKHR new_swapchain = VK_NULL_HANDLE;
@@ -306,8 +286,6 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
   NX_VK_TRY(vkGetSwapchainImagesKHR(m_device, m_swapchain, &actual_count,
                                     images.data()));
 
-  // Swapchain images become ordinary texture handles so the rest of the engine
-  // never special-cases the backbuffer.
   for (u32 i = 0; i < actual_count; ++i) {
     VulkanTexture texture;
     texture.image = images[i];
@@ -316,7 +294,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     texture.height = extent.height;
     texture.usage = TextureUsage::RenderTarget;
     texture.state = ResourceState::Undefined;
-    texture.owns_image = false; // The swapchain owns these.
+    texture.owns_image = false;
 
     VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view_info.image = images[i];
@@ -344,7 +322,6 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
 bool VulkanDevice::resize_swapchain(const u32 width, const u32 height) {
   if (m_surface == VK_NULL_HANDLE)
     return false;
-  // The old images may still be referenced by in-flight work.
   wait_idle();
   return build_swapchain(width, height);
 }
@@ -382,8 +359,6 @@ void VulkanDevice::destroy_swapchain() noexcept {
   m_swapchain_extent = {0, 0};
 }
 
-// Frame
-
 AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   NX_PROFILE_ZONE("vk::begin_frame");
   if (m_swapchain == VK_NULL_HANDLE || m_swapchain_extent.width == 0)
@@ -391,12 +366,7 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
 
   FrameContext &frame = m_frames[m_frame_index];
 
-  // Wait until the GPU has finished the last submission that used this slot.
-  // A timeline semaphore replaces the classic fence-per-frame: one object,
-  // and the completed value is queryable without blocking.
   if (frame.timeline_value > 0) {
-    // Waiting on the GPU to finish the frame that used this slot. On a
-    // GPU-bound scene this is where the wall clock goes.
     NX_PROFILE_ZONE_COLOR("vk::wait_gpu", 0x604040);
     VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wait.semaphoreCount = 1;
@@ -414,8 +384,6 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
 
   VkResult acquired = VK_SUCCESS;
   {
-    // Blocks until the presentation engine has an image free, which under
-    // FIFO is the vsync wait.
     NX_PROFILE_ZONE_COLOR("vk::acquire", 0x604040);
     acquired = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
                                      frame.acquire_semaphore, VK_NULL_HANDLE,
@@ -450,7 +418,6 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   out_context.m_in_render_pass = false;
   m_frame_active = true;
 
-  // Report suboptimal only when it means something actionable - see end_frame.
   const bool suboptimal =
       acquired == VK_SUBOPTIMAL_KHR &&
       surface_resized(m_physical_device, m_surface, m_swapchain_extent);
@@ -466,8 +433,6 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
 
   FrameContext &frame = m_frames[m_frame_index];
   if (frame.timeline_value > 0) {
-    // Waiting on the GPU to finish the frame that used this slot. On a
-    // GPU-bound scene this is where the wall clock goes.
     NX_PROFILE_ZONE_COLOR("vk::wait_gpu", 0x604040);
     VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wait.semaphoreCount = 1;
@@ -546,7 +511,6 @@ bool VulkanDevice::end_headless_frame() {
                                  1, &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
     return false;
 
-  // Block, rather than pipelining: the caller is about to read the target.
   VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
@@ -661,7 +625,7 @@ bool VulkanDevice::end_frame() {
   m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
 
   if (presented == VK_ERROR_OUT_OF_DATE_KHR)
-    return false; // Rendered fine, but the swapchain wants rebuilding.
+    return false;
   if (presented == VK_SUBOPTIMAL_KHR)
     return !surface_resized(m_physical_device, m_surface, m_swapchain_extent);
   if (presented != VK_SUCCESS) {
@@ -671,4 +635,4 @@ bool VulkanDevice::end_frame() {
   return true;
 }
 
-} // namespace nxe::rhi
+}

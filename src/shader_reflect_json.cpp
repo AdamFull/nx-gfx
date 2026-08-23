@@ -1,13 +1,3 @@
-/**
- * @file shader_reflect_json.cpp
- * @brief Populates ShaderReflection from slangc's -reflection-json sidecar.
- *
- * One parser for both backends. Names, field offsets and threadGroupSize are
- * the same whichever target the JSON was generated for; binding topology is
- * not, and is not meant to be - Metal packs the bindless arrays into a single
- * argument buffer where Vulkan has three descriptor slots. Each build reads
- * the sidecar generated for its own target, so that difference is correct.
- */
 
 #include "core/rendering/rhi/shader_reflect.h"
 
@@ -27,8 +17,6 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
   if (kind == "pushConstantBuffer")
     return ReflectKind::PushConstant;
   if (kind == "constantBuffer")
-    // Metal has no push constants; the block Slang calls "pc" is still the one
-    // the engine pushes, so it keeps the same kind on both backends.
     return name == "pc" ? ReflectKind::PushConstant
                         : ReflectKind::UniformBuffer;
   if (kind == "shaderResource" || kind == "descriptorTableSlot")
@@ -60,7 +48,7 @@ void read_fields(const nx::json::value &element_type, ReflectBlock &out) {
   }
 }
 
-} // namespace
+}
 
 bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
   out.blocks.clear();
@@ -121,4 +109,4 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
   return true;
 }
 
-} // namespace nxe::rhi
+}

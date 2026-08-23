@@ -1,7 +1,3 @@
-/**
- * @file mtl_common.mm
- * @brief Translation between the portable RHI enums and Metal's.
- */
 
 #include "core/rendering/rhi/metal/mtl_internal.h"
 
@@ -92,8 +88,6 @@ MTLPixelFormat to_mtl_format(const Format format) noexcept {
     return MTLPixelFormatDepth32Float_Stencil8;
 
 #if TARGET_OS_OSX || TARGET_OS_MACCATALYST
-  // BC is a desktop-only family. Apple silicon Macs do support it; iOS does
-  // not, so these stay out of the iOS build entirely.
   case Format::BC1_RGB_UNORM:
   case Format::BC1_RGBA_UNORM:
     return MTLPixelFormatBC1_RGBA;
@@ -170,8 +164,6 @@ MTLTextureType to_mtl_texture_type(const TextureDimension dimension,
     return multisampled ? MTLTextureType2DMultisampleArray
                         : MTLTextureType2DArray;
   case TextureDimension::TexCube:
-    // A cube array is 6 faces per element; anything above one element is an
-    // array of cubes.
     return layers > 6 ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
   case TextureDimension::Tex3D:
     return MTLTextureType3D;
@@ -195,8 +187,6 @@ MTLTextureUsage to_mtl_texture_usage(const TextureUsageFlags usage) noexcept {
 
 MTLStorageMode to_mtl_storage_mode(const MemoryUsage memory,
                                    const bool transient) noexcept {
-  // Memoryless exists only on Apple GPUs; elsewhere private is the right
-  // fallback, since Transient is a hint.
   if (transient) {
 #if TARGET_OS_IPHONE
     return MTLStorageModeMemoryless;
@@ -208,9 +198,6 @@ MTLStorageMode to_mtl_storage_mode(const MemoryUsage memory,
   switch (memory) {
   case MemoryUsage::Upload:
   case MemoryUsage::Readback:
-    // Shared is host-visible and coherent everywhere. Managed would be a touch
-    // faster on discrete Macs but needs didModifyRange and is absent on Apple
-    // silicon.
     return MTLStorageModeShared;
   case MemoryUsage::DeviceLocal:
   default:
@@ -288,4 +275,4 @@ NSString *to_ns_string(const nx::string_view text) noexcept {
                                 encoding:NSUTF8StringEncoding];
 }
 
-} // namespace nxe::rhi
+}

@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file texture_nva.h
- * @brief The cooked binary texture: an nva container (TEX) in a `.nxb` file
- * (namespace nxe::rhi).
- */
-
 #include "core/foundation/strings/utf8_string.h"
 #include "core/rendering/rhi/image/image.h"
 
@@ -21,7 +15,6 @@ namespace nxe::rhi {
 /// are not a valid texture container.
 [[nodiscard]] bool decode_texture(std::span<const u8> bytes, ImageData &out);
 
-/// The cooked path for an image source: `foo.png` -> `foo.png.nxb`.
 [[nodiscard]] nx::string cooked_texture_path(nx::string_view source);
 
-} // namespace nxe::rhi
+}

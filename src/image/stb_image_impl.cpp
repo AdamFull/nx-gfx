@@ -1,7 +1,3 @@
-/**
- * @file stb_image_impl.cpp
- * @brief The single translation unit that compiles stb_image's implementation.
- */
 
 // No SIMD intrinsics path: keep the decoder portable across the desktop and
 // mobile targets the RHI is built for, at a small cost to decode speed.

@@ -1,7 +1,3 @@
-/**
- * @file vk_bindless.cpp
- * @brief The single bindless descriptor set and the global pipeline layout.
- */
 
 #include "core/rendering/rhi/vulkan/vk_device.h"
 
@@ -18,7 +14,7 @@ u32 clamp_count(const u32 desired, const u32 device_limit) noexcept {
   return desired < device_limit ? desired : device_limit;
 }
 
-} // namespace
+}
 
 bool VulkanDevice::create_bindless_heap() {
   m_bindless.max_samplers =
@@ -180,4 +176,4 @@ void VulkanDevice::free_rw_slot(const u32 slot) noexcept {
     m_bindless.free_rw_slots.push_back(slot);
 }
 
-} // namespace nxe::rhi
+}

@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file types.h
- * @brief Portable RHI enums and flags (namespace nxe::rhi).
- *
- */
-
 #include "core/foundation/core/enum.h"
 
 namespace nxe::rhi {
@@ -46,17 +40,14 @@ enum class Format : u16 {
   RGBA32_FLOAT,
   RGBA32_UINT,
 
-  // Packed
   RGB10A2_UNORM,
   RG11B10_FLOAT,
 
-  // Depth / stencil
   D16_UNORM,
   D32_FLOAT,
   D24_UNORM_S8_UINT,
   D32_FLOAT_S8_UINT,
 
-  // Block compressed - desktop
   BC1_RGBA_UNORM,
   BC1_RGBA_SRGB,
   BC3_RGBA_UNORM,
@@ -66,7 +57,6 @@ enum class Format : u16 {
   BC7_RGBA_UNORM,
   BC7_RGBA_SRGB,
 
-  // Block compressed - mobile
   ASTC_4x4_UNORM,
   ASTC_4x4_SRGB,
   ASTC_6x6_UNORM,
@@ -74,14 +64,12 @@ enum class Format : u16 {
   ASTC_8x8_UNORM,
   ASTC_8x8_SRGB,
 
-  // Extra block-compressed formats DDS/KTX assets commonly carry. Appended
-  // rather than grouped so no existing enumerator changes value.
   BC1_RGB_UNORM, ///< DXT1 without the 1-bit alpha.
   BC1_RGB_SRGB,
-  BC2_RGBA_UNORM, ///< DXT3 (explicit alpha).
+  BC2_RGBA_UNORM,
   BC2_RGBA_SRGB,
-  BC6H_RGB_UFLOAT, ///< HDR, unsigned.
-  BC6H_RGB_SFLOAT, ///< HDR, signed.
+  BC6H_RGB_UFLOAT,
+  BC6H_RGB_SFLOAT,
 
   Count
 };
@@ -92,20 +80,20 @@ enum class StateTracking : u8 { Update, Skip };
 
 enum class ResourceState : u16 {
   Undefined = 0, ///< Contents are garbage; only valid as a barrier source.
-  General,       ///< Any access; the catch-all when nothing tighter applies.
+  General,
 
   CopySrc,
   CopyDst,
 
   ShaderReadOnly,  ///< Sampled, or a read-only storage resource.
   ShaderWriteOnly, ///< Write-only storage image / buffer.
-  ShaderReadWrite, ///< Read-write storage image / buffer (UAV).
+  ShaderReadWrite,
 
-  ColorAttachment, ///< Read and write (blending).
+  ColorAttachment,
   ColorAttachmentRead,
   ColorAttachmentWrite,
 
-  DepthStencilRead, ///< Depth test with writes disabled; sampleable.
+  DepthStencilRead,
   DepthStencilWrite,
   DepthStencilReadWrite,
 
@@ -123,10 +111,10 @@ enum class ResourceState : u16 {
 
 enum class TextureUsage : u16 {
   None = 0,
-  Sampled = 1 << 0,      ///< Readable from shaders.
-  Storage = 1 << 1,      ///< Read/write from shaders (RWTexture).
-  RenderTarget = 1 << 2, ///< Colour attachment.
-  DepthStencil = 1 << 3, ///< Depth/stencil attachment.
+  Sampled = 1 << 0,
+  Storage = 1 << 1,
+  RenderTarget = 1 << 2,
+  DepthStencil = 1 << 3,
   CopySrc = 1 << 4,
   CopyDst = 1 << 5,
   /// Attachment that never leaves tile memory. Free on mobile tilers, ignored
@@ -144,18 +132,13 @@ enum class BufferUsage : u16 {
   Indirect = 1 << 4,
   CopySrc = 1 << 5,
   CopyDst = 1 << 6,
-  /// Expose a GPU virtual address, so shaders can hold a pointer to it. This is
-  /// how the bindless path reaches buffer data.
   DeviceAddress = 1 << 7,
 };
 NX_ENUM_FLAGS_DEFINE(BufferUsage, BufferUsageFlags)
 
 enum class MemoryUsage : u8 {
-  /// VRAM. Fastest for the GPU, not host-visible on discrete cards.
   DeviceLocal,
-  /// Host-visible, write-combined. For per-frame data the CPU produces.
   Upload,
-  /// Host-visible, cached. For data the CPU reads back.
   Readback,
   Count
 };
@@ -163,15 +146,15 @@ enum class MemoryUsage : u8 {
 enum class TextureDimension : u8 { Tex2D, Tex2DArray, TexCube, Tex3D, Count };
 
 enum class LoadOp : u8 {
-  Load,     ///< Preserve existing contents (costly on tilers).
-  Clear,    ///< Clear to the supplied value.
-  DontCare, ///< Contents undefined; cheapest.
+  Load,
+  Clear,
+  DontCare,
   Count
 };
 
 enum class StoreOp : u8 {
   Store,
-  DontCare, ///< Discard after the pass; required for transient attachments.
+  DontCare,
   Count
 };
 
@@ -216,13 +199,11 @@ enum class CullMode : u8 { None, Front, Back, Count };
 
 enum class FrontFace : u8 { CounterClockwise, Clockwise, Count };
 
-/// Common blend presets, so the renderer names intent instead of spelling out
-/// src/dst factors. 2D wants little more than these.
 enum class BlendMode : u8 {
-  Opaque,        ///< No blending.
-  AlphaBlend,    ///< src.a over dst (straight alpha).
-  Premultiplied, ///< src over dst, src colour already alpha-weighted.
-  Additive,      ///< src.a * src + dst (straight alpha).
+  Opaque,
+  AlphaBlend,
+  Premultiplied,
+  Additive,
   PremultipliedAdditive,
   Multiply,
   Screen,
@@ -231,14 +212,12 @@ enum class BlendMode : u8 {
 
 enum class QueueType : u8 {
   Graphics, ///< Also valid for compute and copy.
-  Compute,  ///< Async compute where the device exposes it.
-  Copy,     ///< DMA / transfer-only queue for streaming.
+  Compute,
+  Copy,
   Count
 };
 
-/// Presentation pacing.
 enum class PresentMode : u8 {
-  /// Wait for vblank, queue depth 1. Always supported; no tearing.
   Fifo,
   /// Wait for vblank but replace a queued frame if we beat it. No tearing,
   /// lower latency than Fifo. Falls back to Fifo when unsupported.
@@ -250,22 +229,14 @@ enum class PresentMode : u8 {
 
 enum class AcquireResult : u8 {
   Success,
-  /// Acquired, but the swapchain no longer matches the surface. The frame is
-  /// still renderable; recreate afterwards.
   Suboptimal,
-  /// Nothing acquired. Recreate the swapchain and skip this frame.
   OutOfDate,
-  /// Nothing acquired and nothing to render into (minimized, or the OS took
-  /// the surface away). Skip the frame entirely.
   SurfaceLost,
   Count
 };
 
 [[nodiscard]] nx::string_view to_string(Format format) noexcept;
-/// The format @p name spells, case-insensitively, or Unknown. The names are
-/// to_string's, so a config and a log say the same thing.
 [[nodiscard]] Format format_from_string(nx::string_view name) noexcept;
-/// One flag by name ("sampled", "render_target"), or None. Callers combine.
 [[nodiscard]] TextureUsage texture_usage_from_string(nx::string_view name) noexcept;
 [[nodiscard]] BufferUsage buffer_usage_from_string(nx::string_view name) noexcept;
 [[nodiscard]] nx::string_view to_string(ResourceState state) noexcept;
@@ -274,12 +245,10 @@ enum class AcquireResult : u8 {
 /// Bytes per pixel for uncompressed formats, or bytes per block for compressed
 /// ones. Returns 0 for Format::Unknown.
 [[nodiscard]] u32 format_texel_size(Format format) noexcept;
-/// Block footprint in texels; {1, 1} for uncompressed formats.
 void format_block_extent(Format format, u32 &width, u32 &height) noexcept;
 [[nodiscard]] bool format_is_depth(Format format) noexcept;
 [[nodiscard]] bool format_is_stencil(Format format) noexcept;
 [[nodiscard]] bool format_is_srgb(Format format) noexcept;
-/// True for block-compressed formats (BC*, ASTC*).
 [[nodiscard]] bool format_is_compressed(Format format) noexcept;
 
 [[nodiscard]] bool format_is_float(Format format) noexcept;
@@ -292,4 +261,4 @@ void format_block_extent(Format format, u32 &width, u32 &height) noexcept;
 [[nodiscard]] u64 format_subresource_size(Format format, u32 width, u32 height,
                                           u32 depth = 1) noexcept;
 
-} // namespace nxe::rhi
+}

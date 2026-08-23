@@ -1,16 +1,3 @@
-/**
- * @file mtl_upload.mm
- * @brief Asynchronous GPU upload and file/decode streaming.
- *
- * Uploads stage through pooled shared memory and are batched: each call records
- * a blit and returns a ticket, but nothing is committed until the batch flushes
- * (once per frame, or on flush()/wait()). The batch shares the frame's queue
- * and is committed before it, so in-order execution replaces the transfer-queue
- * handoff, acquire barriers and semaphores the Vulkan uploader needs.
- *
- * One worker thread does the slow, device-free half - reading and decoding -
- * and talks to the render thread through lock-free queues and an atomic status.
- */
 
 #include "core/rendering/rhi/metal/mtl_internal.h"
 
@@ -25,8 +12,6 @@ using LoadJob = MetalUploadState::LoadJob;
 using LoadSlot = MetalUploadState::LoadSlot;
 using Source = MetalUploadState::Source;
 
-/// Staging buffers are rounded up so that a stream of slightly different sizes
-/// reuses the same few buffers instead of allocating a new one every time.
 u64 round_staging_size(const u64 bytes) noexcept {
   constexpr u64 MIN = 64u * 1024u;
   u64 size = MIN;
@@ -39,9 +24,6 @@ Staging acquire_staging(MetalDeviceState &state, const u64 bytes,
                         const bool host_read = false) {
   MetalUploadState &up = state.upload;
 
-  // Best fit from the pool: the smallest buffer that still holds the request,
-  // so a single huge upload does not permanently hand its buffer to every
-  // small one that follows.
   usize best = up.free_staging.size();
   for (usize i = 0; i < up.free_staging.size(); ++i) {
     if (up.free_staging[i].capacity < bytes ||
@@ -63,8 +45,6 @@ Staging acquire_staging(MetalDeviceState &state, const u64 bytes,
   staging.capacity = round_staging_size(bytes);
   staging.host_read = host_read;
   @autoreleasepool {
-    // Shared either way, so the copy is coherent with no explicit
-    // synchronizeResource; only the cache mode differs.
     const MTLResourceOptions options =
         MTLResourceStorageModeShared |
         (host_read ? MTLResourceCPUCacheModeDefaultCache
@@ -83,8 +63,6 @@ Staging acquire_staging(MetalDeviceState &state, const u64 bytes,
   return staging;
 }
 
-/// Opens the batch command buffer and its blit encoder if they are not already
-/// open. Returns false when the device is in no state to record.
 bool ensure_batch(MetalDeviceState &state) {
   MetalUploadState &up = state.upload;
   if (up.blit != nil)
@@ -110,8 +88,6 @@ bool ensure_batch(MetalDeviceState &state) {
   return true;
 }
 
-/// Commits the open batch. The returned value is the ticket the caller waits
-/// on; 0 when there was nothing to submit.
 u64 submit_batch(MetalDeviceState &state) {
   MetalUploadState &up = state.upload;
   if (up.blit == nil)
@@ -123,15 +99,8 @@ u64 submit_batch(MetalDeviceState &state) {
     encoder_update_fence(state, up.batch_slot, up.blit);
     [up.blit endEncoding];
 
-    // Heap resources are untracked, and a fence does not reach across command
-    // buffers. The frame's command buffer waits on this event before recording
-    // anything that could read what was just staged.
     [up.batch encodeSignalEvent:state.upload_event value:value];
 
-    // Captured by value: the handler runs on an arbitrary thread at an
-    // arbitrary time, so it must not reach into anything that can be destroyed
-    // before the GPU catches up. `completed` is a member of the state, which
-    // outlives every batch because shutdown waits for them.
     std::atomic<u64> *completed = &up.completed;
     [up.batch addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
       if (buffer.error != nil) {
@@ -158,7 +127,6 @@ u64 submit_batch(MetalDeviceState &state) {
   return value;
 }
 
-/// Records the copies for one image's subresources into the open batch.
 bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
                            const std::span<const u8> src,
                            const std::span<const ImageSubresource> layout) {
@@ -216,9 +184,6 @@ bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
   return true;
 }
 
-// Async loading
-
-/// Claims a request slot. Returns nullptr when the table is full.
 LoadSlot *acquire_load_slot(MetalUploadState &up, u32 &out_id,
                             u32 &out_generation) {
   nx::scoped_lock lock(up.load_mutex);
@@ -238,7 +203,6 @@ LoadSlot *acquire_load_slot(MetalUploadState &up, u32 &out_id,
   return nullptr;
 }
 
-/// Resolves a request to its slot, rejecting one whose slot has been recycled.
 LoadSlot *resolve_load(MetalUploadState &up, const LoadRequest req) noexcept {
   if (req.id == 0 || req.id >= MetalUploadState::MAX_LOADS)
     return nullptr;
@@ -252,14 +216,13 @@ void worker_main(MetalDeviceState *state) {
   while (up.worker_running.load(std::memory_order_acquire)) {
     LoadJob job;
     if (!up.job_queue.try_pop(job)) {
-      // Nothing queued: block until someone posts work or shutdown fires.
       up.job_signal.wait();
       continue;
     }
 
     LoadSlot &slot = up.loads[job.id];
     if (slot.generation != job.generation)
-      continue; // Released before the worker got to it.
+      continue;
 
     slot.status.store(LoadStatus::Decoding, std::memory_order_release);
 
@@ -267,8 +230,6 @@ void worker_main(MetalDeviceState *state) {
         nx::result<ImageData, ImageError>(nx::err(ImageError::Unknown));
 
     if (job.source == Source::Path) {
-      // Through the VFS rather than the filesystem, so an asset inside a
-      // mounted archive loads the same way a loose file does.
       if (auto bytes = nx::vfs::read(slot.path.view())) {
         decoded = load_image_from_memory(
             std::span<const u8>(bytes->data(), bytes->size()));
@@ -291,16 +252,12 @@ void worker_main(MetalDeviceState *state) {
     // The encoded bytes are dead once decoded; drop them before the render
     // thread picks the job up so the peak footprint is one copy, not two.
     slot.encoded = {};
-    // Publish last: Uploading is the render thread's cue that `decoded` is
-    // safe to read.
     slot.status.store(LoadStatus::Uploading, std::memory_order_release);
     (void)up.done_queue.try_push(job);
   }
 }
 
-} // namespace
-
-// Lifecycle
+}
 
 bool uploader_init(MetalDeviceState &state) {
   MetalUploadState &up = state.upload;
@@ -324,12 +281,10 @@ void uploader_shutdown(MetalDeviceState &state) noexcept {
 
   if (up.worker.joinable()) {
     up.worker_running.store(false, std::memory_order_release);
-    up.job_signal.set(); // Wake it so it can notice and exit.
+    up.job_signal.set();
     up.worker.join();
   }
 
-  // Commit whatever is open, then wait: the completion handlers reference
-  // state that is about to be destroyed.
   if (up.blit != nil)
     (void)submit_batch(state);
 
@@ -377,9 +332,6 @@ void uploader_pump(MetalDeviceState &state) {
   if (device == nullptr)
     return;
 
-  // Turn finished decodes into textures. Creating a texture and recording its
-  // copy both belong to the render thread, which is why the worker stops at
-  // "decoded".
   LoadJob job;
   while (up.done_queue.try_pop(job)) {
     LoadSlot &slot = up.loads[job.id];
@@ -403,7 +355,6 @@ void uploader_pump(MetalDeviceState &state) {
 
     const bool uploaded =
         device->uploader().upload_texture(handle, slot.decoded).ok();
-    // The pixels are on their way to the GPU; the CPU copy is dead weight.
     slot.decoded = {};
     // Without this the load reaches Ready and hands out a texture holding
     // whatever was in that memory, which is worse than reporting the failure.
@@ -419,13 +370,9 @@ void uploader_pump(MetalDeviceState &state) {
     ++up.loads_ready;
   }
 
-  // Commit before the frame records anything, so the queue's in-order
-  // execution is what makes these uploads visible to it.
   if (up.blit != nil)
     (void)submit_batch(state);
 }
-
-// MetalUploader
 
 UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
                                            const std::span<const u8> src,
@@ -448,8 +395,6 @@ UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
 
   texture->state = final_state;
 
-  // The ticket names the batch this copy will ride out on, which is one past
-  // whatever has been submitted so far.
   return UploadTicket{m_state->upload.submitted + 1};
 }
 
@@ -467,7 +412,7 @@ UploadTicket MetalUploader::upload_buffer(const BufferHandle handle,
                                           const u64 dst_offset,
                                           const std::span<const u8> src,
                                           const ResourceState final_state) {
-  (void)final_state; // Buffers carry no tracked state in this backend.
+  (void)final_state;
 
   if (m_state == nullptr || src.empty())
     return UploadTicket::failure();
@@ -506,7 +451,7 @@ UploadTicket MetalUploader::upload_buffer(const BufferHandle handle,
 
 UploadTicket MetalUploader::clear_buffer(const BufferHandle handle,
                                          const ResourceState final_state) {
-  (void)final_state; // Buffers carry no tracked state in this backend.
+  (void)final_state;
 
   if (m_state == nullptr)
     return UploadTicket::failure();
@@ -571,7 +516,6 @@ MetalUploader::load_texture_from_memory(const std::span<const u8> bytes,
     return {};
   }
 
-  // Copied: the caller's span may be gone before the worker runs.
   slot->encoded = nx::blob<u8>(bytes.size());
   std::memcpy(slot->encoded.data(), bytes.data(), bytes.size());
   slot->usage = usage;
@@ -614,10 +558,8 @@ void MetalUploader::release(const LoadRequest req) noexcept {
   if (slot == nullptr)
     return;
 
-  // Releasing a request the worker is still reading would free `encoded` (or
-  // `decoded`) out from under it. The contract is to release only once the
-  // status has settled, so refuse rather than corrupt: the slot stays claimed
-  // and the caller can release it again after polling.
+  // The contract is to release only once the status has settled, so refuse rather than corrupt: the
+  // slot stays claimed and the caller can release it again after polling.
   switch (slot->status.load(std::memory_order_acquire)) {
   case LoadStatus::Pending:
   case LoadStatus::Decoding:
@@ -630,8 +572,6 @@ void MetalUploader::release(const LoadRequest req) noexcept {
     break;
   }
 
-  // Bumping the generation is what makes a still-queued job for this slot a
-  // no-op when the worker eventually reaches it.
   ++slot->generation;
   slot->in_use = false;
   slot->status.store(LoadStatus::None, std::memory_order_release);
@@ -647,8 +587,6 @@ bool MetalUploader::is_complete(const UploadTicket ticket) const noexcept {
   return m_state->upload.completed.load(std::memory_order_acquire) >=
          ticket.value;
 }
-
-// Readbacks
 
 ReadbackResult MetalUploader::read_buffer(const BufferHandle handle,
                                           const u64 offset, const u64 size) {
@@ -687,9 +625,6 @@ ReadbackResult MetalUploader::read_buffer(const BufferHandle handle,
         destinationOffset:0
                      size:size];
 
-  // The caller reads through the returned pointer, so the buffer must not go
-  // back to the pool when the batch completes - it is handed over instead, and
-  // reclaimed by the next readback that finds it free.
   up.batch_staging.push_back(staging);
 
   ReadbackResult result;
@@ -785,38 +720,30 @@ UploaderStats MetalUploader::stats() const noexcept {
 
 namespace {
 
-/// Blocks until every batch up to and including @p value has run.
 void wait_for_value(MetalDeviceState &state, const u64 value) noexcept {
   MetalUploadState &up = state.upload;
   if (up.completed.load(std::memory_order_acquire) >= value)
     return;
 
   @autoreleasepool {
-    // One queue, in submission order: the newest batch at or below the target
-    // completing means every earlier one has too.
     for (const MetalUploadState::InFlight &batch : up.in_flight) {
       if (batch.value <= value && batch.cmd != nil)
         [batch.cmd waitUntilCompleted];
     }
   }
 
-  // waitUntilCompleted returns once the GPU is done, but the completion
-  // handler that publishes `completed` may still be in flight on another
-  // thread. It cannot be far behind, so a yield loop is the right shape here.
   while (up.completed.load(std::memory_order_acquire) < value)
     nx::this_thread::yield();
 
   uploader_reclaim(state);
 }
 
-} // namespace
+}
 
 void MetalUploader::wait(const UploadTicket ticket) noexcept {
   if (m_state == nullptr || !ticket.valid() || is_complete(ticket))
     return;
 
-  // The ticket may name the batch that is still open, which nothing will ever
-  // complete until it is submitted.
   MetalUploadState &up = m_state->upload;
   if (ticket.value > up.submitted && up.blit != nil)
     (void)submit_batch(*m_state);
@@ -836,4 +763,4 @@ void MetalUploader::flush() noexcept {
   wait_for_value(*m_state, value);
 }
 
-} // namespace nxe::rhi
+}

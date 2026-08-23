@@ -13,7 +13,7 @@ constexpr u32 CHUNK_CODE = nx::nva::fourcc('C', 'O', 'D', 'E');
 constexpr u32 CHUNK_REFL = nx::nva::fourcc('R', 'E', 'F', 'L');
 constexpr u16 VERSION = 1;
 
-} // namespace
+}
 
 nx::vector<u8> encode_shader(const std::span<const u8> code,
                              const nx::string_view reflection_json,
@@ -48,4 +48,4 @@ bool decode_shader(const std::span<const u8> bytes, ShaderBlob &out) {
   return r.ok();
 }
 
-} // namespace nxe::rhi
+}

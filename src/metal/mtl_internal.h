@@ -1,14 +1,5 @@
 #pragma once
 
-/**
- * @file mtl_internal.h
- * @brief The backend's Objective-C state, shared between the Metal .mm files.
- *
- * Objective-C++ only. ARC owns every `id` here, which is why the state is
- * new/deleted rather than living in MetalDevice - a plain C++ header cannot
- * declare a strong `id` member.
- */
-
 #if !defined(__OBJC__)
 #error "mtl_internal.h is Objective-C++ only"
 #endif
@@ -49,15 +40,13 @@ extern const nx::log::Category log_rhi;
 [[nodiscard]] MTLLoadAction to_mtl_load_action(LoadOp op) noexcept;
 [[nodiscard]] MTLStoreAction to_mtl_store_action(StoreOp op) noexcept;
 
-/// nx::string_view is not NUL-terminated; Metal's labels want an NSString.
 [[nodiscard]] NSString *to_ns_string(nx::string_view text) noexcept;
 
 struct MetalTexture {
   id<MTLTexture> texture = nil;
-  /// One view per mip for the storage-image table; empty unless Storage.
-  /// nx::vector, not small_vector: ARC cannot cast the latter's inline
-  /// std::byte storage to a __strong id*. Same for every container of `id`
-  /// here.
+  /// One view per mip for the storage-image table; empty unless Storage. nx::vector, not
+  /// small_vector: ARC cannot cast the latter's inline std::byte storage to a __strong id*. Same
+  /// for every container of `id` here.
   nx::vector<id<MTLTexture>> uavs;
   nx::small_vector<u32, 12> uav_slots;
   Format format = Format::Unknown;
@@ -69,14 +58,8 @@ struct MetalTexture {
   u32 sample_count = 1;
   TextureUsageFlags usage = TextureUsage::None;
   ResourceState state = ResourceState::Undefined;
-  /// Slot in the bindless argument buffer's texture table; INVALID unless the
-  /// texture is Sampled.
   u32 bindless_slot = BINDLESS_INVALID_INDEX;
-  /// Sub-allocated from a bindless heap, so useHeaps: already covers it and it
-  /// is not in the per-resource residency list.
   bool heap_backed = false;
-  /// False for the backbuffer, whose MTLTexture belongs to the drawable and is
-  /// swapped out from under the handle every frame.
   bool owns_texture = true;
 };
 
@@ -85,16 +68,12 @@ struct MetalBuffer {
   u64 size = 0;
   BufferUsageFlags usage = BufferUsage::None;
   void *mapped = nullptr;
-  /// See MetalTexture::heap_backed.
   bool heap_backed = false;
-  /// Reachable by GPU address from a shader, so it needs residency like a
-  /// bindless texture does.
   bool bindless_visible = false;
 };
 
 struct MetalSampler {
   id<MTLSamplerState> sampler = nil;
-  /// Slot in the bindless argument buffer's sampler table.
   u32 bindless_slot = BINDLESS_INVALID_INDEX;
 };
 
@@ -108,8 +87,6 @@ struct MetalShader {
   ShaderReflection reflection;
 };
 
-/// Metal splits a Vulkan pipeline three ways - PSO, depth/stencil state, and
-/// encoder calls for cull and winding - so bind_pipeline applies all of it.
 struct MetalPipeline {
   id<MTLRenderPipelineState> render = nil;
   id<MTLComputePipelineState> compute = nil;
@@ -141,7 +118,6 @@ struct BindlessHeap {
   // reachable, so every encoder must be told. Per-resource is O(live) per pass,
   // hence heaps - one useHeaps: covers everything inside.
 
-  /// Heaps bindless-visible resources are sub-allocated from.
   nx::vector<id<MTLHeap>> heaps;
   /// Resources that could not come from a heap (shared or memoryless storage,
   /// or an allocation the heaps refused) and must be named individually.
@@ -155,8 +131,6 @@ struct BindlessHeap {
 struct MetalContextSlot {
   id<MTLCommandBuffer> cmd = nil;
   id<MTLRenderCommandEncoder> encoder = nil;
-  /// Open only between begin_compute_pass and end_compute_pass; Metal permits
-  /// exactly one encoder at a time, so this and `encoder` are never both set.
   id<MTLComputeCommandEncoder> compute_encoder = nil;
 
   /// Metal takes the index buffer on the draw call rather than from a bind, so
@@ -181,10 +155,9 @@ struct MetalContextSlot {
   bool in_use = false;
 };
 
-/// Staging and streaming state, owned by the device. Much smaller than the
-/// Vulkan uploader because uploads share the frame's queue and are committed
-/// before it: in-order execution replaces the semaphores, queue-ownership
-/// transfers and acquire barriers vk_upload.cpp needs.
+/// Much smaller than the Vulkan uploader because uploads share the frame's queue and are committed
+/// before it: in-order execution replaces the semaphores, queue-ownership transfers and acquire
+/// barriers vk_upload.cpp needs.
 struct MetalUploadState {
   /// Pooled by size rather than sub-allocated from a ring: no wraparound to
   /// reason about, and a returned buffer is reused verbatim.
@@ -200,7 +173,6 @@ struct MetalUploadState {
   /// done so the buffers can go back to the pool.
   struct InFlight {
     u64 value = 0;
-    /// Kept so wait() can block on the GPU rather than spinning.
     id<MTLCommandBuffer> cmd = nil;
     nx::vector<Staging> staging;
   };
@@ -222,9 +194,6 @@ struct MetalUploadState {
   std::atomic<u64> completed{0};
   u64 bytes_staged = 0;
 
-  // Async loading: one worker reads and decodes, never touching the device;
-  // pump() on the render thread turns finished decodes into textures.
-
   enum class Source : u8 { Path, Memory };
 
   struct LoadJob {
@@ -234,8 +203,6 @@ struct MetalUploadState {
     TextureUsageFlags usage = TextureUsage::Sampled | TextureUsage::CopyDst;
   };
 
-  /// `status` is the only field both threads touch while a job is live, and it
-  /// is the handshake between them.
   struct LoadSlot {
     std::atomic<LoadStatus> status{LoadStatus::None};
     u32 generation = 0;
@@ -251,13 +218,9 @@ struct MetalUploadState {
 
   nx::thread worker;
   nx::mpmc::Queue<LoadJob, 256> job_queue;
-  /// Jobs the worker has finished decoding, waiting for pump() to make them
-  /// into textures.
   nx::mpmc::Queue<LoadJob, 256> done_queue;
   nx::event job_signal{false, false};
   std::atomic<bool> worker_running{false};
-  /// Guards allocation of slots in `loads` only; the payloads are handed
-  /// between threads by the status handshake, not by this lock.
   nx::mutex load_mutex;
   LoadSlot loads[MAX_LOADS];
   u32 next_load_id = 1;
@@ -280,42 +243,20 @@ struct MetalDeviceState {
   Format swapchain_format = Format::Unknown;
   Extent2D extent = {};
   PresentMode present_mode = PresentMode::Fifo;
-  /// One handle for the backbuffer, re-pointed at each frame's drawable
-  /// texture. Metal hands out a different MTLTexture every frame, so there is
-  /// no fixed set of backbuffer images to mirror the Vulkan backend with.
   TextureHandle backbuffer;
 
-  // Frame pacing. Metal has no timeline semaphore; a counting semaphore
-  // released from the command buffer's completion handler is the standard way
-  // to cap how far the CPU may run ahead.
   dispatch_semaphore_t frame_semaphore = nil;
   u32 frames_in_flight = 2;
   u64 frames_submitted = 0;
 
-  // Metal vends these autoreleased and this process has no run loop to drain
-  // the outer pool, so every .mm entry point wraps its body in
-  // @autoreleasepool; the strong members are what survive the drain.
   bool frame_active = false;
   bool headless_frame = false;
 
-  /// Slot 0 is the context begin_frame hands back, and currently the only one
-  /// used. Slots are committed in order at end_frame.
   static constexpr usize MAX_CONTEXTS = 8;
   nx::vector<MetalContextSlot> contexts;
   usize used_contexts = 0;
 
-  /// Bound at buffer index 1 on every encoder, matching where Slang puts the
-  /// ParameterBlock. Index 0 is the push block.
   BindlessHeap bindless;
-  // Synchronisation for untracked heap resources. Only heap-backed resources
-  // are untracked; everything else (the backbuffer, staging, shared buffers)
-  // keeps Metal's automatic tracking, so these cover exactly the bindless set.
-  //
-  //  - `pass_fence` orders encoders inside one command buffer. A fence may only
-  //    be waited on after it has been updated in that same command buffer,
-  //    hence `fence_written`, which resets with each new command buffer.
-  //  - `upload_event` orders the uploader's command buffer against the frame's,
-  //    which a fence cannot span.
   id<MTLFence> pass_fence = nil;
   id<MTLEvent> upload_event = nil;
 
@@ -348,13 +289,9 @@ struct MetalDeviceState {
   MetalDevice *owner = nullptr;
 };
 
-/// Buffer index the push block occupies, matching Slang's [[vk::push_constant]]
-/// lowering. Metal takes it through setVertexBytes / setFragmentBytes.
 inline constexpr u32 PUSH_CONSTANT_BUFFER_INDEX = 0;
-/// Buffer index of the bindless argument buffer (the ParameterBlock).
 inline constexpr u32 BINDLESS_BUFFER_INDEX = 1;
 
-/// Creates the argument buffer and its slot bookkeeping (mtl_bindless.mm).
 [[nodiscard]] bool create_bindless_heap(MetalDeviceState &state,
                                         const DeviceCaps &caps);
 void write_texture_descriptor(MetalDeviceState &state, u32 slot,
@@ -368,36 +305,27 @@ void free_rw_slot(MetalDeviceState &state, u32 slot) noexcept;
 void track_resident(MetalDeviceState &state, id<MTLResource> resource) noexcept;
 void forget_resident(MetalDeviceState &state, id<MTLResource> resource) noexcept;
 
-/// Allocates a bindless-visible resource from a heap, growing the heap set if
-/// none has room. Returns nil when the resource cannot live in a heap at all,
-/// in which case the caller allocates from the device and tracks it
-/// individually.
+/// Allocates a bindless-visible resource from a heap, growing the heap set if none has room.
+/// Returns nil when the resource cannot live in a heap at all, in which case the caller allocates
+/// from the device and tracks it individually.
 [[nodiscard]] id<MTLTexture>
 alloc_bindless_texture(MetalDeviceState &state,
                        MTLTextureDescriptor *descriptor) noexcept;
 [[nodiscard]] id<MTLBuffer>
 alloc_bindless_buffer(MetalDeviceState &state, u64 length,
                       MTLResourceOptions options) noexcept;
-/// Binds the argument buffer and declares every bindless resource resident.
 void bind_bindless(MetalDeviceState &state,
                    id<MTLRenderCommandEncoder> encoder) noexcept;
 void bind_bindless_compute(MetalDeviceState &state,
                            id<MTLComputeCommandEncoder> encoder) noexcept;
 
-// Pipeline binary archive (mtl_pipeline.mm), Metal's answer to
-// VkPipelineCache. Both are best-effort: a miss just means a compile.
-
-/// Loads the archive at @p path, or starts an empty one. Never fails the
-/// device: an unreadable or stale archive is only a cold cache.
 void create_pipeline_archive(MetalDeviceState &state, nx::string_view path);
 void save_pipeline_archive(MetalDeviceState &state) noexcept;
 
-// Pass-granularity ordering within one command buffer (mtl_bindless.mm).
-//
-// A fence cannot reach across command buffers. Cross-encoder hazards are left
-// to Metal's own tracking, which is why the heaps are created tracked.
+// Pass-granularity ordering within one command buffer (mtl_bindless.mm). A fence cannot reach
+// across command buffers. Cross-encoder hazards are left to Metal's own tracking, which is why the
+// heaps are created tracked.
 
-/// Waits on the fence if an earlier encoder in this command buffer updated it.
 void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLRenderCommandEncoder> encoder) noexcept;
 void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
@@ -405,8 +333,6 @@ void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
 void encoder_wait_fence(MetalDeviceState &state, MetalContextSlot &slot,
                         id<MTLBlitCommandEncoder> encoder) noexcept;
 
-/// Updates the fence so later encoders in this command buffer can order
-/// against this one's writes.
 void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
                           id<MTLRenderCommandEncoder> encoder) noexcept;
 void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
@@ -414,26 +340,16 @@ void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
 void encoder_update_fence(MetalDeviceState &state, MetalContextSlot &slot,
                           id<MTLBlitCommandEncoder> encoder) noexcept;
 
-/// Called when a command buffer is created: a fence carries no state across
-/// command buffers, so the "has been updated" flag has to start clear.
 void begin_command_buffer(MetalContextSlot &slot) noexcept;
 
-/// Queues a resource for destruction once the GPU has passed the frame being
-/// recorded (mtl_device.mm). Exactly one handle field should be set.
 void retire(MetalDeviceState &state,
             const MetalDeviceState::PendingDelete &pending);
-/// Really destroys everything retire() queued for a frame the GPU has passed.
-/// Pass ~0ull to force the lot, which is what shutdown wants.
 void collect_garbage(MetalDeviceState &state, u64 completed_frame);
-
-// Uploader internals (mtl_upload.mm), driven by the device's frame loop.
 
 [[nodiscard]] bool uploader_init(MetalDeviceState &state);
 void uploader_shutdown(MetalDeviceState &state) noexcept;
-/// Turns finished decodes into GPU textures, then commits the open batch so it
-/// runs ahead of this frame's rendering.
 void uploader_pump(MetalDeviceState &state);
 /// Returns staging borrowed by batches the GPU has finished with.
 void uploader_reclaim(MetalDeviceState &state) noexcept;
 
-} // namespace nxe::rhi
+}

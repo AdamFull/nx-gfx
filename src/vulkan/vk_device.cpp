@@ -31,7 +31,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
   } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {
     nx::logd(log_rhi, "{}", data->pMessage);
   }
-  return VK_FALSE; // Never abort the offending call.
+  return VK_FALSE;
 }
 
 bool has_extension(const nx::small_vector<VkExtensionProperties, 64> &available,
@@ -42,7 +42,6 @@ bool has_extension(const nx::small_vector<VkExtensionProperties, 64> &available,
   return false;
 }
 
-/// Platform surface extension for the compiled target.
 constexpr const char *platform_surface_extension() noexcept {
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
   return VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
@@ -66,10 +65,8 @@ listed(const nx::small_vector<VkExtensionProperties, 128> &all,
   return false;
 }
 
-} // namespace
+}
 
-/// Which road each capability takes on this device: core where its version has
-/// it, an extension where one carries it, and neither is a device we skip.
 DeviceRoutes
 VulkanDevice::probe_routes(VkPhysicalDevice candidate,
                            const VkPhysicalDeviceProperties &props) {
@@ -93,16 +90,12 @@ VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       listed(available, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
   const bool ext_dynamic_rendering =
       listed(available, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
-  // Feature-only: no entry point of ours, so these are wanted by extension
-  // solely where the version does not carry them.
   const bool ext_descriptor_indexing =
       listed(available, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
   const bool ext_scalar_block_layout =
       listed(available, VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
   const bool ext_draw_indirect_count =
       listed(available, VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
-  // Dynamic rendering is defined in terms of these two; below 1.2 they are
-  // extensions of their own and have to be enabled with it.
   const bool ext_render_pass2 =
       listed(available, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
   const bool ext_depth_stencil_resolve =
@@ -137,7 +130,6 @@ VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   VkPhysicalDeviceShaderDrawParametersFeatures draw_params{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES};
 
-  // Core at the 1.1 floor. It still lives in a feature block of its own.
   chain(draw_params);
 
   if (out.core_12) {
@@ -255,8 +247,6 @@ bool VulkanDevice::supports(const Format format,
 
 VulkanDevice::~VulkanDevice() { shutdown(); }
 
-// Instance
-
 bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   u32 available_version = 0;
   NX_VK_TRY(vkEnumerateInstanceVersion(&available_version));
@@ -313,14 +303,11 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
       }
     }
     if (!found) {
-      // Not fatal: the layer ships with the SDK, which a player will not have.
       nx::logw(log_rhi,
                "validation requested but VK_LAYER_KHRONOS_validation is not "
                "installed; continuing without it");
     }
 
-    // VK_EXT_validation_features comes from the layer, so it is absent from the
-    // global extension list and has to be queried against the layer by name.
     if (found && desc.enable_sync_validation) {
       u32 count = 0;
       NX_VK_TRY(vkEnumerateInstanceExtensionProperties(
@@ -346,9 +333,6 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   info.enabledLayerCount = nx::cast<u32>(layers.size());
   info.ppEnabledLayerNames = layers.data();
 
-  // Chaining the messenger onto instance creation catches errors raised during
-  // vkCreateInstance itself, which a later vkCreateDebugUtilsMessengerEXT
-  // would miss.
   VkDebugUtilsMessengerCreateInfoEXT messenger_info{
       VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
   messenger_info.messageSeverity =
@@ -386,8 +370,6 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   return true;
 }
 
-// Physical device
-
 bool VulkanDevice::select_physical_device() {
   u32 count = 0;
   NX_VK_TRY(vkEnumeratePhysicalDevices(m_instance, &count, nullptr));
@@ -401,8 +383,6 @@ bool VulkanDevice::select_physical_device() {
 
   VkPhysicalDevice best = VK_NULL_HANDLE;
   u64 best_score = 0;
-  // Kept rather than logged and forgotten: while one device is acceptable these
-  // are noise, and when none is they are the whole of the bug report.
   nx::vector<nx::string> rejected;
 
   for (VkPhysicalDevice candidate : devices) {
@@ -432,7 +412,6 @@ bool VulkanDevice::select_physical_device() {
       continue;
     }
 
-    // Prefer discrete.
     u64 score = 0;
     if (props.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
       score += 1ull << 40;
@@ -461,8 +440,6 @@ bool VulkanDevice::select_physical_device() {
              "feature or by extension, whichever the device offers",
              VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
              VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
-    // At error rather than debug: this is the frame where the app does not
-    // start, and "which one, and what did it lack" is the only question.
     for (const nx::string &why : rejected)
       nx::loge(log_rhi, "  {}", why);
     return false;
@@ -523,8 +500,6 @@ bool VulkanDevice::select_physical_device() {
   for (u32 i = 0; i < mem.memoryHeapCount; ++i) {
     if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
       m_caps.device_local_memory += mem.memoryHeaps[i].size;
-    // A lazily-allocated memory type is how a tiler reports that transient
-    // attachments never need real backing storage.
   }
   for (u32 i = 0; i < mem.memoryTypeCount; ++i) {
     if (mem.memoryTypes[i].propertyFlags &
@@ -548,8 +523,6 @@ bool VulkanDevice::select_physical_device() {
   return true;
 }
 
-// Logical device
-
 bool VulkanDevice::create_logical_device() {
   u32 family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &family_count,
@@ -566,8 +539,6 @@ bool VulkanDevice::create_logical_device() {
     const VkQueueFlags flags = families[i].queueFlags;
     if (graphics == INVALID_FAMILY && (flags & VK_QUEUE_GRAPHICS_BIT))
       graphics = i;
-    // Prefer families that are *only* compute / only transfer: those are the
-    // genuinely asynchronous hardware queues.
     if ((flags & VK_QUEUE_COMPUTE_BIT) && !(flags & VK_QUEUE_GRAPHICS_BIT))
       compute = i;
     if ((flags & VK_QUEUE_TRANSFER_BIT) && !(flags & VK_QUEUE_GRAPHICS_BIT) &&
@@ -582,8 +553,6 @@ bool VulkanDevice::create_logical_device() {
 
   m_caps.async_compute = compute != INVALID_FAMILY;
   m_caps.dedicated_transfer = copy != INVALID_FAMILY;
-  // Alias onto graphics where the hardware has nothing dedicated, so callers
-  // never have to ask whether a queue is "real".
   if (compute == INVALID_FAMILY)
     compute = graphics;
   if (copy == INVALID_FAMILY)
@@ -679,14 +648,12 @@ bool VulkanDevice::create_logical_device() {
     chain(address);
     chain(timeline);
     chain(scalar);
-    // Feature-only below 1.2, so wanted here and nowhere else.
     device_extensions.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
     device_extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     device_extensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
     device_extensions.push_back(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
     if (m_routes.draw_indirect_count)
       device_extensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
-    // What dynamic rendering is defined in terms of. Core from 1.2 up.
     device_extensions.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
     device_extensions.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
   }
@@ -708,8 +675,6 @@ bool VulkanDevice::create_logical_device() {
   features.features.multiDrawIndirect = VK_TRUE;
   features.features.shaderInt16 = VK_TRUE;
   features.features.independentBlend = VK_TRUE;
-  // Lets one bindless rwTextures[] array hold images of differing formats: the
-  // shader declares the type, the descriptor carries no format.
   features.features.shaderStorageImageExtendedFormats =
       m_routes.storage_image_extended_formats ? VK_TRUE : VK_FALSE;
 
@@ -757,7 +722,7 @@ bool VulkanDevice::create_logical_device() {
     device_extensions.resize(base_extensions);
     queue_infos.resize(base_queues);
     if (video_link != nullptr)
-      *video_link = nullptr; // unlink the VP9 feature from the chain
+      *video_link = nullptr;
     info.queueCreateInfoCount = nx::cast<u32>(queue_infos.size());
     info.pQueueCreateInfos = queue_infos.data();
     info.enabledExtensionCount = nx::cast<u32>(device_extensions.size());
@@ -770,8 +735,6 @@ bool VulkanDevice::create_logical_device() {
     return false;
   }
 
-  // Swaps every entry point for the device-specific one, skipping the loader's
-  // dispatch trampoline. Worth a measurable amount on call-heavy frames.
   volkLoadDevice(m_device);
   route_promoted_entry_points();
 
@@ -831,9 +794,6 @@ bool VulkanDevice::create_allocator() {
   info.physicalDevice = m_physical_device;
   info.device = m_device;
   info.instance = m_instance;
-  // VMA must follow the same core/extension route as the logical device. In
-  // particular, buffer device address is core on 1.2+ and its KHR extension is
-  // deliberately not enabled on that route.
   info.vulkanApiVersion = m_caps.api_version;
   info.pVulkanFunctions = &functions;
   // Buffers can expose GPU addresses, so the allocator must allocate memory
@@ -845,10 +805,6 @@ bool VulkanDevice::create_allocator() {
 }
 
 bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
-  // Idempotent: the swapchain is rebuilt whenever the OS hands us a new
-  // surface (every Android resume), but the frame contexts outlive it and must
-  // not be recreated underneath in-flight work. The timeline they signal is
-  // older still - init() makes it, since headless submits need it too.
   if (!m_frames.empty())
     return true;
 
@@ -860,7 +816,6 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
   for (u32 i = 0; i < m_frames_in_flight; ++i) {
     FrameContext &frame = m_frames.emplace_back();
 
-    // The slot and its pool are created on demand by open_slot().
     VkSemaphoreCreateInfo binary_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     NX_VK_TRY(vkCreateSemaphore(m_device, &binary_info, nullptr,
                                 &frame.acquire_semaphore));
@@ -873,8 +828,6 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
 bool VulkanDevice::init(const DeviceDesc &desc) {
   m_break_on_error = desc.break_on_validation_error;
 
-  // volk resolves the loader itself; a missing ICD shows up here rather than
-  // as a link error, which is the whole point of using it.
   if (const VkResult result = volkInitialize(); result != VK_SUCCESS) {
     nx::logc(log_rhi,
              "no Vulkan loader found ({}). Install a GPU driver with Vulkan "
@@ -896,9 +849,6 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
   if (!create_pipeline_cache(desc.pipeline_cache_path))
     return false;
 
-  // Device-scoped, not swapchain-scoped: it is what says a graphics submit has
-  // finished, and a headless device (a test, an asset tool) makes those too -
-  // flush_uploads() signals it with no frame contexts anywhere in sight.
   VkSemaphoreTypeCreateInfo type_info{
       VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
   type_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -922,15 +872,12 @@ void VulkanDevice::shutdown() noexcept {
   if (m_device != VK_NULL_HANDLE)
     wait_idle();
 
-  // Before the allocator and device it borrows go away.
   m_uploader.shutdown();
 
   destroy_swapchain();
 
-  // Everything is idle, so the deferred queue can be drained unconditionally.
   collect_garbage(~0ull);
 
-  // Retire whatever the caller left behind.
   for (VulkanTexture &texture : m_textures)
     destroy_texture_now(texture);
   m_textures.clear();
@@ -974,7 +921,6 @@ void VulkanDevice::shutdown() noexcept {
   for (auto &frame : m_frames) {
     if (frame.acquire_semaphore != VK_NULL_HANDLE)
       vkDestroySemaphore(m_device, frame.acquire_semaphore, nullptr);
-    // Destroying a pool frees the command buffers allocated from it.
     if (frame.slot.pool != VK_NULL_HANDLE)
       vkDestroyCommandPool(m_device, frame.slot.pool, nullptr);
   }
@@ -1019,8 +965,6 @@ void VulkanDevice::flush_uploads() noexcept {
 
   m_uploader.flush_batch();
 
-  // One-shot pool: this is an offline path, not something a frame runs, so
-  // there is nothing to amortise a persistent pool over.
   VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
   pool_info.queueFamilyIndex =
@@ -1045,9 +989,6 @@ void VulkanDevice::flush_uploads() noexcept {
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cmd, &begin);
-  // Bumping the timeline only *after* this call keeps the uploader's view of
-  // "the frame about to be recorded" the same as it is under begin_frame,
-  // which is what its staging holds are pinned to.
   const u64 upload_wait = m_uploader.record_acquires(cmd);
   NX_VK_CHECK(vkEndCommandBuffer(cmd));
 
@@ -1143,4 +1084,4 @@ void VulkanDevice::collect_garbage(
   }
 }
 
-} // namespace nxe::rhi
+}

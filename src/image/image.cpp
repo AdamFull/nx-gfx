@@ -1,13 +1,3 @@
-/**
- * @file image.cpp
- * @brief DDS, KTX 1.0 and stb_image decoding into ImageData.
- *
- * Each container parser fills the ImageData header (format, extent, mip/layer
- * counts), sizes the pixel blob to the tightly-packed total, then copies every
- * subresource into it while recording its offset. The on-disk order differs by
- * container - DDS is layer-major, KTX is mip-major - but every ImageSubresource
- * is self-describing, so the uploader does not care which produced it.
- */
 
 #include "core/rendering/rhi/image/image.h"
 
@@ -61,7 +51,6 @@ struct Reader {
   return v == 0 ? 1u : v;
 }
 
-/// Sum of every subresource's tightly-packed size.
 [[nodiscard]] u64 total_size(const Format fmt, const u32 w, const u32 h,
                              const u32 d, const u32 mips, const u32 layers,
                              const bool is_3d) noexcept {
@@ -95,8 +84,6 @@ TextureDimension pick_dimension(const bool cube, const bool is_3d,
     return TextureDimension::Tex3D;
   return layers > 1 ? TextureDimension::Tex2DArray : TextureDimension::Tex2D;
 }
-
-// --- DDS -------------------------------------------------------------------
 
 constexpr u8 DDS_MAGIC[4] = {'D', 'D', 'S', ' '};
 
@@ -204,7 +191,6 @@ Format format_from_dxgi(const u32 dxgi) noexcept {
   }
 }
 
-/// Legacy (pre-DX10) DDS: map the FourCC or RGB masks to an rhi::Format.
 Format format_from_dds_legacy(const DdsPixelFormat &pf) noexcept {
   if (pf.flags & DDPF_FOURCC) {
     if (pf.fourcc == make_fourcc('D', 'X', 'T', '1'))
@@ -222,7 +208,6 @@ Format format_from_dds_legacy(const DdsPixelFormat &pf) noexcept {
     return Format::Unknown;
   }
   if (pf.flags & DDPF_RGB && pf.rgb_bit_count == 32) {
-    // Distinguish RGBA from BGRA by which mask carries red.
     if (pf.r_mask == 0x000000FF)
       return Format::RGBA8_UNORM;
     if (pf.r_mask == 0x00FF0000)
@@ -278,7 +263,6 @@ Result parse_dds(Reader &r) {
   img.pixels = nx::blob<u8>(total);
   img.subresources.reserve(nx::cast<usize>(layers) * img.mip_levels);
 
-  // DDS stores each array slice as a full mip chain: layer-major, mip-minor.
   u64 offset = 0;
   for (u32 layer = 0; layer < layers; ++layer) {
     for (u32 mip = 0; mip < img.mip_levels; ++mip) {
@@ -294,8 +278,6 @@ Result parse_dds(Reader &r) {
   }
   return img;
 }
-
-// --- KTX 1.0 ---------------------------------------------------------------
 
 constexpr u8 KTX_MAGIC[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x31,
                               0x31, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
@@ -316,55 +298,55 @@ u32 swap32(const u32 v) noexcept {
 Format format_from_gl(const u32 gl) noexcept {
   switch (gl) {
   case 0x8058:
-    return Format::RGBA8_UNORM; // RGBA8
+    return Format::RGBA8_UNORM;
   case 0x8C43:
-    return Format::RGBA8_SRGB; // SRGB8_ALPHA8
+    return Format::RGBA8_SRGB;
   case 0x8229:
-    return Format::R8_UNORM; // R8
+    return Format::R8_UNORM;
   case 0x822B:
-    return Format::RG8_UNORM; // RG8
+    return Format::RG8_UNORM;
   case 0x822A:
-    return Format::R16_UNORM; // R16
+    return Format::R16_UNORM;
   case 0x822D:
-    return Format::R16_FLOAT; // R16F
+    return Format::R16_FLOAT;
   case 0x822F:
-    return Format::RG16_FLOAT; // RG16F
+    return Format::RG16_FLOAT;
   case 0x881A:
-    return Format::RGBA16_FLOAT; // RGBA16F
+    return Format::RGBA16_FLOAT;
   case 0x822E:
-    return Format::R32_FLOAT; // R32F
+    return Format::R32_FLOAT;
   case 0x8230:
-    return Format::RG32_FLOAT; // RG32F
+    return Format::RG32_FLOAT;
   case 0x8814:
-    return Format::RGBA32_FLOAT; // RGBA32F
+    return Format::RGBA32_FLOAT;
   case 0x83F0:
-    return Format::BC1_RGB_UNORM; // RGB_S3TC_DXT1
+    return Format::BC1_RGB_UNORM;
   case 0x8C4C:
-    return Format::BC1_RGB_SRGB; // SRGB_S3TC_DXT1
+    return Format::BC1_RGB_SRGB;
   case 0x83F1:
-    return Format::BC1_RGBA_UNORM; // RGBA_S3TC_DXT1
+    return Format::BC1_RGBA_UNORM;
   case 0x8C4D:
-    return Format::BC1_RGBA_SRGB; // SRGB_ALPHA_S3TC_DXT1
+    return Format::BC1_RGBA_SRGB;
   case 0x83F2:
-    return Format::BC2_RGBA_UNORM; // RGBA_S3TC_DXT3
+    return Format::BC2_RGBA_UNORM;
   case 0x8C4E:
-    return Format::BC2_RGBA_SRGB; // SRGB_ALPHA_S3TC_DXT3
+    return Format::BC2_RGBA_SRGB;
   case 0x83F3:
-    return Format::BC3_RGBA_UNORM; // RGBA_S3TC_DXT5
+    return Format::BC3_RGBA_UNORM;
   case 0x8C4F:
-    return Format::BC3_RGBA_SRGB; // SRGB_ALPHA_S3TC_DXT5
+    return Format::BC3_RGBA_SRGB;
   case 0x8DBB:
-    return Format::BC4_R_UNORM; // RED_RGTC1
+    return Format::BC4_R_UNORM;
   case 0x8DBD:
-    return Format::BC5_RG_UNORM; // RG_RGTC2
+    return Format::BC5_RG_UNORM;
   case 0x8E8F:
-    return Format::BC6H_RGB_UFLOAT; // BPTC_UNSIGNED_FLOAT
+    return Format::BC6H_RGB_UFLOAT;
   case 0x8E8E:
-    return Format::BC6H_RGB_SFLOAT; // BPTC_SIGNED_FLOAT
+    return Format::BC6H_RGB_SFLOAT;
   case 0x8E8C:
-    return Format::BC7_RGBA_UNORM; // BPTC_UNORM
+    return Format::BC7_RGBA_UNORM;
   case 0x8E8D:
-    return Format::BC7_RGBA_SRGB; // SRGB_ALPHA_BPTC_UNORM
+    return Format::BC7_RGBA_SRGB;
   case 0x93B0:
     return Format::ASTC_4x4_UNORM;
   case 0x93D0:
@@ -456,8 +438,6 @@ Result parse_ktx(Reader &r) {
   return img;
 }
 
-// --- stb (PNG / JPG / BMP / TGA / HDR / ...) --------------------------------
-
 Result parse_stb(std::span<const u8> bytes) {
   const int len = nx::cast<int>(bytes.size());
   int w = 0, h = 0, comp = 0;
@@ -493,7 +473,7 @@ Result parse_stb(std::span<const u8> bytes) {
   return img;
 }
 
-} // namespace
+}
 
 nx::string_view to_string(const ImageError error) noexcept {
   switch (error) {
@@ -609,4 +589,4 @@ Result load_image(const nx::fs::path_view path) {
       std::span<const u8>(data->data(), data->size()));
 }
 
-} // namespace nxe::rhi
+}

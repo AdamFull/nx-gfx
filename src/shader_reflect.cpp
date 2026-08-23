@@ -9,7 +9,7 @@ namespace {
 
 const nx::log::Category log_rhi = nx::log::category("rhi");
 
-} // namespace
+}
 
 const ReflectMember *
 ReflectBlock::member(const nx::id_string field) const noexcept {
@@ -40,7 +40,7 @@ bool ShaderReflection::local_size(const nx::id_string entry_point,
     if (e.name != entry_point)
       continue;
     if (e.local_size[0] == 0)
-      return false; // Stated through a specialisation constant.
+      return false;
     out_size[0] = e.local_size[0];
     out_size[1] = e.local_size[1];
     out_size[2] = e.local_size[2];
@@ -96,4 +96,4 @@ bool BlockWriter::set_all(const void *data, const u32 size) noexcept {
   return true;
 }
 
-} // namespace nxe::rhi
+}

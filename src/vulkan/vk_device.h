@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file vk_device.h
- * @brief Vulkan 1.3 device, swapchain and bindless heap.
- */
-
 #include "core/foundation/containers/fixed_vector.h"
 #include "core/foundation/containers/slot_map.h"
 #include "core/foundation/containers/small_vector.h"
@@ -36,27 +31,20 @@ struct DeviceDesc {
   bool enable_sync_validation = false;
 #endif
   bool break_on_validation_error = false;
-  /// File the pipeline cache is loaded from and saved to. Empty keeps the cache
-  /// in memory only (recompiled every run).
   nx::string_view pipeline_cache_path;
   u32 frames_in_flight = 2;
 };
 
-/// Which queue family owns an image, as far as the uploader's dedicated-
-/// transfer path is concerned. An image the uploader has never written stays
-/// Unknown and takes no part in ownership transfers - the graphics queue is
-/// the only one that ever touches it, so there is nothing to hand over.
+/// Which queue family owns an image, as far as the uploader's dedicated- transfer path is
+/// concerned.
 enum class ImageOwner : u8 {
-  Unknown, ///< The uploader has not written this image.
-  Copy,    ///< Written, and not yet handed to graphics: the copy queue owns it.
-  Graphics, ///< Released to the graphics family by a frame's hand-off.
+  Unknown,
+  Copy,
+  Graphics,
 };
 
-/// One VkImage, several views: a sampled view spans the whole mip chain, but an
-/// attachment or storage view must address exactly one mip.
-///   - srv: sampling; its bindless slot is the texture's handle index.
-///   - rtv: colour/depth attachment; mip 0.
-///   - uavs[i] / uav_indices[i]: storage view of mip i and its bindless slot.
+/// a sampled view spans the whole mip chain, but an attachment or storage view must address exactly
+/// one mip. - srv:
 struct VulkanTexture {
   VkImage image = VK_NULL_HANDLE;
   VkImageView srv = VK_NULL_HANDLE;
@@ -94,8 +82,6 @@ struct VulkanQueryPool {
   u32 count = 0;
 };
 
-/// A VMA allocation the caller sub-allocates by hand. Aliased images are bound
-/// into it at an offset and own their VkImage but not the memory under it.
 struct VulkanHeap {
   VmaAllocation allocation = VK_NULL_HANDLE;
   u64 size = 0;
@@ -116,9 +102,6 @@ struct VulkanPipeline {
   VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
 };
 
-/// The single bindless descriptor set: sampler[], texture[] (sampled) and
-/// rwTexture[] (storage). Sampler and texture slots are handle indices;
-/// rwTexture slots come from a free list because a texture owns one per mip.
 struct BindlessHeap {
   VkDescriptorPool pool = VK_NULL_HANDLE;
   VkDescriptorSetLayout layout = VK_NULL_HANDLE;
@@ -133,10 +116,7 @@ struct BindlessHeap {
 struct DeviceRoutes {
   bool core_12 = false;
   bool core_13 = false;
-  /// Optional, and core from 1.2 up; below that it is an extension of its own.
   bool draw_indirect_count = false;
-  /// Optional: used when available so uncommon storage formats remain usable,
-  /// but the bindless storage-image model does not require it.
   bool storage_image_extended_formats = false;
   /// Empty when the device can do everything the engine needs, and the first
   /// thing it could not when it cannot.
@@ -153,10 +133,6 @@ public:
   void begin_render_pass(const RenderPassDesc &desc);
   void end_render_pass();
 
-  /// Compute is recorded outside a render pass, never inside one. Vulkan has
-  /// no such rule - these are only a debug label here - but Metal does, so the
-  /// RHI makes the requirement explicit on both rather than letting valid
-  /// Vulkan code fail on Metal.
   void begin_compute_pass(nx::string_view name = "compute");
   void end_compute_pass();
 
@@ -166,14 +142,12 @@ public:
   /// Clears @p count slots. Every slot written must be reset first, and a reset
   /// is invalid inside a render pass - so this belongs at the top of a frame.
   void reset_queries(QueryPoolHandle pool, u32 first, u32 count);
-  /// Records the GPU's clock into @p index once everything before it has run.
   void write_timestamp(QueryPoolHandle pool, u32 index);
 
   void bind_pipeline(PipelineHandle pipeline);
   /// Sets the whole 128-byte push block. Offset/size in bytes.
   void push_constants(const void *data, u32 size, u32 offset = 0);
 
-  /// Pushes what a BlockWriter staged, at the size reflection reported.
   void push_constants(const BlockWriter &block) {
     push_constants(block.bytes().data(), nx::cast<u32>(block.bytes().size()));
   }
@@ -196,7 +170,6 @@ public:
                              u32 draw_count = 1, u32 stride = 0);
   void dispatch_indirect(BufferHandle buffer, u64 offset = 0);
 
-  /// Explicit barriers. The render graph is the intended caller.
   void barrier(const TextureBarrier *textures, u32 texture_count,
                const BufferBarrier *buffers = nullptr, u32 buffer_count = 0,
                StateTracking tracking = StateTracking::Update);
@@ -246,20 +219,11 @@ public:
     return m_frames_in_flight;
   }
 
-  /// The async upload / readback service. Its copies run on the transfer queue
-  /// and are handed off to the graphics queue at frame boundaries.
   [[nodiscard]] VulkanUploader &uploader() noexcept { return m_uploader; }
 
-  /// Runs the uploader's queue hand-off outside a frame and blocks until it is
-  /// done, leaving everything staged so far usable by the graphics queue.
-  ///
-  /// begin_frame does this as part of drawing; a caller with no swapchain - a
-  /// test, an asset tool - otherwise has no way to reach the graphics queue at
-  /// all, and its uploads stay stranded on the transfer family. Does nothing
-  /// inside a frame, which is already handling it.
+  /// a caller with no swapchain - a test, an asset tool - otherwise has no way to reach the
+  /// graphics queue at all, and its uploads stay stranded on the transfer family.
   void flush_uploads() noexcept;
-
-  // Swapchain
 
   [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
   [[nodiscard]] bool resize_swapchain(u32 width, u32 height);
@@ -274,8 +238,6 @@ public:
     return {m_swapchain_extent.width, m_swapchain_extent.height};
   }
 
-  // Frame
-
   [[nodiscard]] AcquireResult begin_frame(VulkanCommandContext &out_context);
   [[nodiscard]] bool end_frame();
 
@@ -289,8 +251,6 @@ public:
   }
 
   void wait_idle() noexcept;
-
-  // Resources
 
   [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
   void destroy_texture(TextureHandle handle) noexcept;
@@ -313,24 +273,17 @@ public:
     return m_query_pools.try_get(handle);
   }
 
-  // Memory aliasing
-  //
-  // Two transients whose lifetimes do not overlap can share bytes. The render
-  // graph knows those lifetimes, so it does the packing: it asks what each
-  // texture needs, creates one heap, and places them at computed offsets.
+  // Memory aliasing Two transients whose lifetimes do not overlap can share bytes. The render graph
+  // knows those lifetimes, so it does the packing: it asks what each texture needs, creates one
+  // heap, and places them at computed offsets.
 
   [[nodiscard]] MemoryRequirements
   texture_requirements(const TextureDesc &desc) const;
   [[nodiscard]] HeapHandle create_heap(const HeapDesc &desc);
   void destroy_heap(HeapHandle handle) noexcept;
-  /// Places a texture at @p offset in @p heap. The offset must satisfy the
-  /// alignment from texture_requirements(). Contents are undefined whenever
-  /// another resource has since used those bytes, so the first use each frame
-  /// must transition from Undefined - which is what the graph already does.
+  /// The offset must satisfy the alignment from texture_requirements().
   [[nodiscard]] TextureHandle
   create_texture_in_heap(const TextureDesc &desc, HeapHandle heap, u64 offset);
-
-  // Shaders and pipelines (vk_pipeline.cpp).
 
   [[nodiscard]] ShaderHandle create_shader(const ShaderDesc &desc);
   void destroy_shader(ShaderHandle handle) noexcept;
@@ -341,19 +294,13 @@ public:
   create_compute_pipeline(const ComputePipelineDesc &desc);
   void destroy_pipeline(PipelineHandle handle) noexcept;
 
-  // Bindless indices, for the push block.
-
-  /// Slot to sample this texture through textures[]; INVALID if not Sampled.
   [[nodiscard]] u32 texture_index(TextureHandle handle) const noexcept;
-  /// Slot for mip @p mip in rwTextures[]; INVALID if not Storage.
   [[nodiscard]] u32 rw_texture_index(TextureHandle handle,
                                      u32 mip = 0) const noexcept;
   [[nodiscard]] u32 sampler_index(SamplerHandle handle) const noexcept;
   [[nodiscard]] VkDeviceAddress
   buffer_address(BufferHandle handle) const noexcept;
 
-  /// Host pointer for a persistently mapped buffer, else null. Per-frame data
-  /// is written straight through this rather than staged and copied.
   [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
 
   [[nodiscard]] bool video_decode_available() const noexcept {
@@ -375,19 +322,14 @@ public:
     return m_queue_families[nx::cast<usize>(QueueType::Graphics)];
   }
 
-  // Internals used by VulkanCommandContext
-
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
   [[nodiscard]] VulkanTexture *texture_mut(TextureHandle handle) noexcept;
 
-  /// The shader's reflected interface. Empty for an unknown handle.
   [[nodiscard]] const ShaderReflection &
   reflection(ShaderHandle handle) const noexcept;
 
-  /// Tracked state, for the graph to resolve transitions against up front.
   [[nodiscard]] ResourceState
   texture_state(TextureHandle handle) const noexcept;
-  /// Pairs with StateTracking::Skip: the caller writes back what it recorded.
   void set_texture_state(TextureHandle handle, ResourceState state) noexcept;
   [[nodiscard]] bool debug_utils_enabled() const noexcept {
     return m_debug_utils;
@@ -402,8 +344,6 @@ public:
   pipeline(PipelineHandle handle) const noexcept;
 
 private:
-  // The uploader reaches straight into the device's queues, allocator and
-  // resource maps to stage and hand off copies.
   friend class VulkanUploader;
 
   bool create_instance(const DeviceDesc &desc);
@@ -425,7 +365,6 @@ private:
   void collect_garbage(u64 completed_timeline_value) noexcept;
   void destroy_texture_now(VulkanTexture &texture) noexcept;
 
-  // Bindless heap writes (vk_bindless.cpp).
   void write_texture_descriptor(u32 index, VkImageView view) noexcept;
   void write_rw_texture_descriptor(u32 index, VkImageView view) noexcept;
   void write_sampler_descriptor(u32 index, VkSampler sampler) noexcept;
@@ -488,10 +427,6 @@ private:
   /// that resources uploaded before the frame are ready; 0 when none pending.
   u64 m_frame_upload_wait = 0;
 
-  /// A resource freed during frame N stays alive - handle and descriptor slot
-  /// included - until the GPU has passed N, then its slot_map entry is retired.
-  /// Deferring the slot_map erase (not just the Vk objects) is what stops a
-  /// reused handle index from stomping a descriptor still in flight.
   struct PendingDelete {
     u64 timeline_value = 0;
     TextureHandle texture;
@@ -502,4 +437,4 @@ private:
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
 };
 
-} // namespace nxe::rhi
+}

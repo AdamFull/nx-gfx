@@ -1,11 +1,5 @@
 #pragma once
 
-/**
- * @file vk_vp9.h
- * @brief Parsing a VP9 frame's uncompressed header into the Std structs and byte
- * offsets a Vulkan Video decode command needs (namespace nxe::rhi).
- */
-
 #include "core/rendering/rhi/vulkan/vk_common.h"
 
 namespace nxe::rhi {
@@ -13,8 +7,6 @@ namespace nxe::rhi {
 struct Vp9FrameHeader {
   bool valid = false;
 
-  // A frame that only re-shows an already-decoded reference: no header past the
-  // index, and nothing to decode.
   bool show_existing_frame = false;
   u8 frame_to_show_map_idx = 0;
 
@@ -35,4 +27,4 @@ struct Vp9FrameHeader {
                                           const u32 ref_height[8],
                                           Vp9FrameHeader &out);
 
-} // namespace nxe::rhi
+}

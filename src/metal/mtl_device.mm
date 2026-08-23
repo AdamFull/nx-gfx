@@ -1,7 +1,3 @@
-/**
- * @file mtl_device.mm
- * @brief Metal device creation, resources, the frame loop and command recording.
- */
 
 #include "core/rendering/rhi/metal/mtl_internal.h"
 
@@ -12,17 +8,13 @@
 namespace nxe::rhi {
 namespace {
 
-/// Metal reads these when the device is created, so setting them here works as
-/// long as no MTLDevice exists yet - which init() guarantees.
 void enable_metal_validation() noexcept {
   if (::getenv("METAL_DEVICE_WRAPPER_TYPE") != nullptr)
-    return; // Respect an explicit setting (including a deliberate 0).
+    return;
   ::setenv("METAL_DEVICE_WRAPPER_TYPE", "1", 0);
-  ::setenv("METAL_ERROR_MODE", "3", 0); // assert on API misuse
+  ::setenv("METAL_ERROR_MODE", "3", 0);
 }
 
-/// MTLScissorRect has no Make helper and unsigned fields, so a negative offset
-/// would wrap to an enormous rectangle. Clamp instead.
 MTLScissorRect to_mtl_scissor(const Rect2D &rect) noexcept {
   return MTLScissorRect{
       nx::cast<NSUInteger>(nx::max<i32>(0, rect.offset.x)),
@@ -32,17 +24,12 @@ MTLScissorRect to_mtl_scissor(const Rect2D &rect) noexcept {
   };
 }
 
-/// No Y flip on purpose. The RHI uses the Metal/D3D convention, which Vulkan
-/// reaches via a negative-height viewport and Metal has natively. Flipping here
-/// too would mirror Metal against Vulkan - invisible when rendering straight to
-/// the backbuffer, obvious the moment a pass samples an offscreen target.
 MTLViewport to_mtl_viewport(const f32 x, const f32 y, const f32 width,
                             const f32 height, const f32 min_depth,
                             const f32 max_depth) noexcept {
   return MTLViewport{x, y, width, height, min_depth, max_depth};
 }
 
-/// Releases bindless heaps that no longer hold anything.
 void sweep_empty_heaps(MetalDeviceState &state) noexcept {
   BindlessHeap &bindless = state.bindless;
   if (bindless.heaps.empty())
@@ -58,7 +45,7 @@ void sweep_empty_heaps(MetalDeviceState &state) noexcept {
       bindless.heap_bytes -= nx::min<u64>(size, bindless.heap_bytes);
       nx::logi(log_rhi, "bindless: heap released ({} MiB, {} MiB total)",
                size >> 20, bindless.heap_bytes >> 20);
-      continue; // dropped: ARC frees it once the vector shrinks
+      continue;
     }
     if (kept != i)
       bindless.heaps[kept] = bindless.heaps[i];
@@ -70,14 +57,13 @@ void sweep_empty_heaps(MetalDeviceState &state) noexcept {
 }
 
 u32 max_texture_dimension(id<MTLDevice> device) noexcept {
-  // Mac2 and Apple3 raised the 2D limit to 16384; everything older is 8192.
   if ([device supportsFamily:MTLGPUFamilyMac2] ||
       [device supportsFamily:MTLGPUFamilyApple3])
     return 16384;
   return 8192;
 }
 
-} // namespace
+}
 
 /// Completion is derived from the frame semaphore: it admits at most
 /// frames_in_flight outstanding frames, so frame T is done by the time
@@ -108,8 +94,6 @@ void collect_garbage(MetalDeviceState &state, const u64 completed_frame) {
         write_texture_descriptor(state, texture->bindless_slot, nil);
       for (const u32 slot : texture->uav_slots)
         free_rw_slot(state, slot);
-      // Heap-backed resources were never listed; the erase below returns their
-      // memory to the heap.
       if (!texture->heap_backed)
         forget_resident(state, texture->texture);
       state.textures.erase(pending.texture);
@@ -135,9 +119,6 @@ void collect_garbage(MetalDeviceState &state, const u64 completed_frame) {
   while (state.pending_deletes.size() > kept)
     state.pending_deletes.pop_back();
 
-  // Give emptied heaps back instead of holding 64 MiB each forever. Safe even
-  // while an older frame still names one in useHeaps:, because command buffers
-  // retain their references until they complete.
   sweep_empty_heaps(state);
 }
 
@@ -179,27 +160,19 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     m_caps.device_name = m_device_name.view();
     m_caps.api_version = metal3 ? 3u : 2u;
     m_caps.discrete = ![device hasUnifiedMemory];
-    // Metal exposes no vendor or driver version. registryID is the closest
-    // stable identifier - unique per GPU per boot - which is enough to tell two
-    // adapters apart in a log, and better than leaving the field zero.
     m_caps.vendor_id = nx::cast<u32>([device registryID] & 0xFFFFFFFFu);
     m_caps.driver_version = m_caps.api_version;
 
-    // Bindless needs argument-buffer Tier 2: Tier 1 permits neither arrays of
-    // resources in an argument buffer nor dynamic indexing into one, which is
-    // the entire binding model. There is deliberately no Tier 1 fallback.
     m_caps.descriptor_indexing = tier2;
-    // Metal has always allowed a shader to hold a `device T*`; reading a
-    // buffer's address back on the CPU (MTLBuffer.gpuAddress) is Metal 3.
     m_caps.buffer_device_address = metal3;
     // Metal has no render pass or pipeline barrier objects at all: attachments
     // are named at encoder creation and hazards are tracked by the driver.
     m_caps.dynamic_rendering = true;
     m_caps.synchronization2 = true;
-    m_caps.timeline_semaphores = true; // MTLSharedEvent
+    m_caps.timeline_semaphores = true;
 
-    m_caps.async_compute = true; // any number of MTLCommandQueues
-    m_caps.dedicated_transfer = false; // no transfer-only queue exists
+    m_caps.async_compute = true;
+    m_caps.dedicated_transfer = false;
     m_caps.draw_indirect_count = metal3;
     m_caps.memoryless_attachments = [device supportsFamily:MTLGPUFamilyApple1];
 
@@ -209,9 +182,6 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     // device limit. The frame format stores u32 counts, so those are the
     // effective limits on both 32- and 64-bit Apple platforms.
     m_caps.max_compute_work_groups = {~0u, ~0u, ~0u};
-    // Tier 2 allows 500,000 textures and 2048 samplers in one argument buffer;
-    // our own ceilings are lower, and the heap is sized to the smaller of the
-    // two.
     m_caps.max_bindless_sampled_images = tier2 ? MAX_BINDLESS_TEXTURES : 0;
     m_caps.max_bindless_storage_images = tier2 ? MAX_BINDLESS_RW_TEXTURES : 0;
     m_caps.max_bindless_samplers =
@@ -229,9 +199,6 @@ bool MetalDevice::init(const DeviceDesc &desc) {
              [device hasUnifiedMemory] ? "yes" : "no");
     nx::logi(log_rhi, "argument buffers: tier {}", tier2 ? 2 : 1);
 
-    // The binding model is bindless or nothing: everything above the RHI
-    // addresses resources by slot, and there is no non-bindless path to fall
-    // back to. Refusing here is clearer than failing at the first draw.
     if (!create_bindless_heap(*state, m_caps)) {
       delete state;
       m_caps = {};
@@ -239,8 +206,6 @@ bool MetalDevice::init(const DeviceDesc &desc) {
       return false;
     }
 
-    // Metal 3 writes argument buffers through MTLResourceID, which is how the
-    // bindless heap fills its slots.
     if (!metal3) {
       nx::loge(log_rhi, "the Metal backend needs Metal 3 (macOS 13 / iOS 16) "
                         "for resource IDs in argument buffers");
@@ -250,7 +215,6 @@ bool MetalDevice::init(const DeviceDesc &desc) {
       return false;
     }
 
-    // Synchronisation for the untracked bindless heaps.
     state->pass_fence = [device newFence];
     state->upload_event = [device newEvent];
     if (state->pass_fence == nil || state->upload_event == nil) {
@@ -266,9 +230,6 @@ bool MetalDevice::init(const DeviceDesc &desc) {
 
     create_pipeline_archive(*state, desc.pipeline_cache_path);
 
-    // Before any swapchain, so that frames_in_flight() is the truth from here
-    // on and everything cycling per-frame buffers can size itself off it at
-    // construction rather than guessing. The pacing semaphore goes with it.
     state->frames_in_flight = nx::clamp<u32>(desc.frames_in_flight, 1, 3);
     state->frame_semaphore =
         dispatch_semaphore_create(state->frames_in_flight);
@@ -304,23 +265,15 @@ void MetalDevice::shutdown() noexcept {
   if (m_state == nullptr)
     return;
 
-  // Written before teardown, while the archive still holds this run's
-  // pipelines.
   save_pipeline_archive(*m_state);
 
-  // Drain the decode worker and any batch still in flight before anything it
-  // could be touching is destroyed.
   uploader_shutdown(*m_state);
 
   wait_idle();
   destroy_swapchain();
-  // The GPU is idle, so every deferred delete is safe to run now regardless of
-  // which frame queued it.
   collect_garbage(*m_state, ~0ull);
 
   @autoreleasepool {
-    // ARC releases every id member when the state is deleted, but the resource
-    // maps hold objects too and their destructors run in the same delete.
     m_uploader.m_state = nullptr;
     delete m_state;
     m_state = nullptr;
@@ -334,9 +287,6 @@ void MetalDevice::wait_idle() noexcept {
   if (m_state == nullptr || m_state->queue == nil)
     return;
 
-  // Metal has no device-wide idle wait. A command queue runs in submission
-  // order, so an empty buffer that has completed proves everything committed
-  // before it has too.
   @autoreleasepool {
     id<MTLCommandBuffer> cmd = [m_state->queue commandBuffer];
     cmd.label = @"wait_idle";
@@ -352,8 +302,6 @@ void MetalDevice::flush_uploads() noexcept {
   m_uploader.flush();
 }
 
-// Frame
-
 AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
   if (m_state == nullptr || m_state->layer == nil)
     return AcquireResult::SurfaceLost;
@@ -364,16 +312,8 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     return AcquireResult::SurfaceLost;
   }
 
-  // Block until a frame slot frees up. This is the counting semaphore that
-  // stands in for Vulkan's per-frame timeline wait.
   dispatch_semaphore_wait(s->frame_semaphore, DISPATCH_TIME_FOREVER);
 
-  // Return staging the GPU has finished with, then turn finished decodes into
-  // textures and commit the upload batch. Committing here - before the frame's
-  // own command buffer - is the whole synchronisation story on Metal: the
-  // queue runs them in order, so anything uploaded above is ready below.
-  // The semaphore just let us through, so at most frames_in_flight frames are
-  // outstanding: everything older than that has run to completion.
   collect_garbage(*s, s->frames_submitted >= s->frames_in_flight
                           ? s->frames_submitted - s->frames_in_flight
                           : 0);
@@ -383,13 +323,10 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
   @autoreleasepool {
     s->drawable = [s->layer nextDrawable];
     if (s->drawable == nil) {
-      // The layer is mid-resize, or every drawable is still held by the
-      // compositor. Neither is an error; drop the frame and try again.
       dispatch_semaphore_signal(s->frame_semaphore);
       return AcquireResult::OutOfDate;
     }
 
-    // Every slot is released at end_frame; slot 0 is this context's.
     s->contexts.resize(MetalDeviceState::MAX_CONTEXTS);
     for (MetalContextSlot &slot : s->contexts)
       slot.in_use = false;
@@ -406,9 +343,6 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     slot.cmd.label = @"nx2d frame";
     slot.in_use = true;
 
-    // Fences carry nothing across command buffers; the uploader's writes are
-    // ordered by this event instead. Encoded here, before any encoder exists -
-    // a wait only orders the commands that follow it.
     begin_command_buffer(slot);
     if (s->upload.submitted > 0) {
       [slot.cmd encodeWaitForEvent:s->upload_event value:s->upload.submitted];
@@ -421,8 +355,6 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     backbuffer->texture = s->drawable.texture;
     backbuffer->width = s->extent.width;
     backbuffer->height = s->extent.height;
-    // Every drawable comes back undefined: its previous contents belong to a
-    // frame the compositor has already consumed.
     backbuffer->state = ResourceState::Undefined;
   }
 
@@ -431,9 +363,6 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
   out_context.m_slot = 0;
   out_context.m_in_render_pass = false;
 
-  // A drawable whose size no longer matches the layer means the surface moved
-  // under us; the frame is still renderable, so report it and let the caller
-  // rebuild afterwards.
   const CGSize drawable_size = s->layer.drawableSize;
   if (nx::cast<u32>(drawable_size.width) != s->extent.width ||
       nx::cast<u32>(drawable_size.height) != s->extent.height)
@@ -446,8 +375,6 @@ bool MetalDevice::end_frame() {
   MetalDeviceState *s = m_state;
   if (s == nullptr || !s->frame_active)
     return false;
-  // The mirror of the check in end_headless_frame: crossing the two would
-  // present a drawable that was never acquired.
   if (s->headless_frame) {
     nx::loge(log_rhi, "end_frame on a headless frame; use end_headless_frame");
     return false;
@@ -472,7 +399,6 @@ bool MetalDevice::end_frame() {
       }
     }
 
-    // Present and the completion signal go on the last buffer.
     const usize last = s->used_contexts - 1;
     for (usize i = 0; i < s->used_contexts; ++i) {
       MetalContextSlot &slot = s->contexts[i];
@@ -480,9 +406,6 @@ bool MetalDevice::end_frame() {
         continue;
 
       if (i == last) {
-        // Captured by the block rather than reaching through `s`, so the
-        // handler stays valid even if the device is torn down before the GPU
-        // catches up.
         dispatch_semaphore_t semaphore = s->frame_semaphore;
         [slot.cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
           dispatch_semaphore_signal(semaphore);
@@ -501,8 +424,6 @@ bool MetalDevice::end_frame() {
   s->frame_active = false;
   ++s->frames_submitted;
 
-  // The drawable's texture is the compositor's again the moment it is
-  // presented; leaving an alias in the slot map would outlive it.
   if (MetalTexture *backbuffer = s->textures.try_get(s->backbuffer))
     backbuffer->texture = nil;
 
@@ -595,7 +516,6 @@ bool MetalDevice::end_headless_frame() {
         [slot.cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
           dispatch_semaphore_signal(semaphore);
         }];
-        // Retained past the pool drain: the wait below happens after it.
         last_cmd = slot.cmd;
       }
       [slot.cmd commit];
@@ -604,9 +524,6 @@ bool MetalDevice::end_headless_frame() {
     }
   }
 
-  // Block, rather than pipelining: the caller is about to read the target.
-  // Waiting on the last buffer covers the whole chain, since the events order
-  // the earlier ones ahead of it.
   if (last_cmd != nil)
     [last_cmd waitUntilCompleted];
 
@@ -621,14 +538,10 @@ TextureHandle MetalDevice::current_backbuffer() const noexcept {
   return m_state != nullptr ? m_state->backbuffer : TextureHandle{};
 }
 
-// Resources
-
 namespace {
 
-/// The MTLTextureDescriptor a TextureDesc maps to. Shared by the owning and the
-/// heap-placed paths, so the two cannot drift - which would make the size and
-/// alignment measured for one wrong for the other. Autoreleased: call inside an
-/// @autoreleasepool.
+/// Shared by the owning and the heap-placed paths, so the two cannot drift - which would make the
+/// size and alignment measured for one wrong for the other.
 MTLTextureDescriptor *make_texture_descriptor(const TextureDesc &desc) {
   const bool is_3d = desc.dimension == TextureDimension::Tex3D;
   const u32 layers = is_3d ? 1 : nx::max<u32>(1, desc.depth_or_layers);
@@ -641,8 +554,6 @@ MTLTextureDescriptor *make_texture_descriptor(const TextureDesc &desc) {
   info.height = desc.height;
   info.depth = is_3d ? nx::max<u32>(1, desc.depth_or_layers) : 1;
   info.mipmapLevelCount = nx::max<u32>(1, desc.mip_levels);
-  // A cube's six faces are its slices, not its array length; Metal counts
-  // arrayLength in whole cubes.
   info.arrayLength = desc.dimension == TextureDimension::TexCube
                          ? nx::max<u32>(1, layers / 6)
                          : layers;
@@ -653,7 +564,7 @@ MTLTextureDescriptor *make_texture_descriptor(const TextureDesc &desc) {
   return info;
 }
 
-} // namespace
+}
 
 bool MetalDevice::supports(const Format format,
                            const TextureUsageFlags usage) const {
@@ -701,10 +612,6 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
   @autoreleasepool {
     MTLTextureDescriptor *info = make_texture_descriptor(desc);
 
-    // Anything a shader reaches through the bindless tables comes from a heap
-    // where possible, so that one useHeaps: per encoder covers it instead of
-    // an entry in the per-resource residency list. A pure render target is
-    // named by the render pass descriptor and needs neither.
     const bool bindless_visible = desc.usage.has(TextureUsage::Sampled) ||
                                   desc.usage.has(TextureUsage::Storage);
     if (bindless_visible) {
@@ -733,8 +640,6 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
   texture.state = desc.initial_state;
   texture.owns_texture = true;
 
-  // A storage image is addressed one mip at a time, so each mip needs its own
-  // view and its own slot in the rwTexture table.
   if (desc.usage.has(TextureUsage::Storage)) {
     @autoreleasepool {
       for (u32 mip = 0; mip < texture.mip_levels; ++mip) {
@@ -757,17 +662,12 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
   if (!handle.valid())
     return {};
 
-  // The sampled slot *is* the handle index - that is the whole point of the
-  // handle layout - so the descriptor can only be written once the slot map
-  // has assigned one.
   MetalTexture &stored = m_state->textures[handle];
   if (desc.usage.has(TextureUsage::Sampled)) {
     stored.bindless_slot = bindless_index(handle);
     write_texture_descriptor(*m_state, stored.bindless_slot, stored.texture);
   }
 
-  // Heap-backed resources are already covered by useHeaps:; only the ones that
-  // fell back to a device allocation need naming individually.
   if (!stored.heap_backed && (desc.usage.has(TextureUsage::Sampled) ||
                               desc.usage.has(TextureUsage::Storage)))
     track_resident(*m_state, stored.texture);
@@ -775,12 +675,8 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
   return handle;
 }
 
-// Memory aliasing
-//
-// MTLHeap with placement type is Metal's equivalent of a hand-suballocated
-// VkDeviceMemory: the caller picks the offsets, and two textures placed on
-// overlapping bytes alias. Metal has no memory-type constraint, so
-// memory_type_bits stays all-ones.
+// Memory aliasing MTLHeap with placement type is Metal's equivalent of a hand-suballocated
+// VkDeviceMemory: the caller picks the offsets, and two textures placed on overlapping bytes alias.
 
 MemoryRequirements
 MetalDevice::texture_requirements(const TextureDesc &desc) const {
@@ -808,11 +704,7 @@ HeapHandle MetalDevice::create_heap(const HeapDesc &desc) {
   @autoreleasepool {
     MTLHeapDescriptor *info = [[MTLHeapDescriptor alloc] init];
     info.size = desc.size;
-    // Placement, not automatic: automatic heaps sub-allocate themselves and
-    // would ignore the offsets the graph computed.
     info.type = MTLHeapTypePlacement;
-    // Explicit: a heap defaults to untracked, and these hold every transient
-    // the graph aliases. See the note in mtl_bindless.mm's grow_heaps.
     info.hazardTrackingMode = MTLHazardTrackingModeTracked;
     info.storageMode = desc.memory == MemoryUsage::DeviceLocal
                            ? MTLStorageModePrivate
@@ -833,7 +725,7 @@ void MetalDevice::destroy_heap(const HeapHandle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
   if (MetalHeap *heap = m_state->heaps.try_get(handle)) {
-    heap->heap = nil; // ARC releases once every placed texture has gone
+    heap->heap = nil;
     m_state->heaps.erase(handle);
   }
 }
@@ -868,8 +760,6 @@ TextureHandle MetalDevice::create_texture_in_heap(const TextureDesc &desc,
     }
     texture.texture.label = to_ns_string(desc.name);
   }
-  // Placed in a heap, so one useHeaps: covers residency - same as the
-  // bindless-heap path in create_texture.
   texture.heap_backed = true;
 
   texture.format = desc.format;
@@ -916,10 +806,6 @@ TextureHandle MetalDevice::create_texture_in_heap(const TextureDesc &desc,
 void MetalDevice::destroy_texture(const TextureHandle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
-  // Deferred: the texture keeps its bindless slot and its slot_map entry until
-  // the GPU has passed the frame being recorded. Freeing the slot now would
-  // let the next create_texture hand the same index - hence the same
-  // descriptor - to a different texture mid-flight.
   retire(*m_state, {.texture = handle});
 }
 
@@ -948,9 +834,6 @@ BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
       break;
     }
 
-    // A buffer a shader reaches by GPU address needs residency exactly as a
-    // bindless texture does - naming it in a push block does not make its
-    // memory reachable - so it goes in a heap for the same reason.
     buffer.bindless_visible = desc.usage.has(BufferUsage::DeviceAddress);
     if (buffer.bindless_visible) {
       buffer.buffer = alloc_bindless_buffer(*m_state, desc.size, options);
@@ -968,8 +851,6 @@ BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
     }
     buffer.buffer.label = to_ns_string(desc.name);
 
-    // A private buffer has no CPU address at all; asking for contents on one
-    // returns null rather than failing, so gate it on the storage mode.
     if (desc.persistently_mapped && desc.memory != MemoryUsage::DeviceLocal)
       buffer.mapped = [buffer.buffer contents];
   }
@@ -1013,9 +894,6 @@ SamplerHandle MetalDevice::create_sampler(const SamplerDesc &desc) {
         nx::cast<NSUInteger>(nx::max<f32>(1.f, desc.max_anisotropy));
     info.compareFunction = to_mtl_compare(desc.compare);
     info.label = to_ns_string(desc.name);
-    // Required before a sampler may be encoded into an argument buffer, which
-    // is where every sampler ends up once the bindless heap exists. Setting it
-    // on a Tier 1 device is not allowed, hence the capability check.
     info.supportArgumentBuffers = m_caps.descriptor_indexing ? YES : NO;
 
     sampler.sampler = [m_state->device newSamplerStateWithDescriptor:info];
@@ -1040,10 +918,6 @@ void MetalDevice::destroy_sampler(const SamplerHandle handle) noexcept {
     return;
   retire(*m_state, {.sampler = handle});
 }
-
-// Bindless indices, for the push block. A texture's sampled slot and a
-// sampler's slot are their handle indices; storage-image slots come from a
-// free list because a texture owns one per mip.
 
 void MetalDevice::set_texture_state(const TextureHandle handle,
                                     const ResourceState state) noexcept {
@@ -1103,11 +977,6 @@ u64 MetalDevice::buffer_address(const BufferHandle handle) const noexcept {
   return 0;
 }
 
-// MetalCommandContext
-
-/// The recording slot this context owns. Contexts come from begin_frame and
-/// never outlive the frame, so the index is always in range while one is
-/// valid.
 MetalContextSlot &MetalCommandContext::ctx_slot() const noexcept {
   return m_state->contexts[m_slot];
 }
@@ -1126,8 +995,6 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
         [MTLRenderPassDescriptor renderPassDescriptor];
 
     u32 attached = 0;
-    // Extent of the first attachment at its mip, which is what the default
-    // viewport and scissor cover.
     u32 pass_width = 0;
     u32 pass_height = 0;
 
@@ -1218,14 +1085,10 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     }
     ctx_slot().encoder.label = to_ns_string(desc.name);
 
-    // Heap resources carry no automatic tracking, so order against any earlier
-    // encoder in this command buffer.
     encoder_wait_fence(*m_state, ctx_slot(), ctx_slot().encoder);
 
-    // The bindless argument buffer is bound once per encoder and never
-    // rebound, matching how the Vulkan backend binds its descriptor set once
-    // per frame. Encoder state does not survive endEncoding, so "once per
-    // frame" has to become "once per pass" here.
+    // The bindless argument buffer is bound once per encoder and never rebound, matching how the
+    // Vulkan backend binds its descriptor set once per frame.
     bind_bindless(*m_state, ctx_slot().encoder);
     ctx_slot().has_bound_pipeline = false;
 
@@ -1236,7 +1099,6 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
         setViewport:to_mtl_viewport(0.f, 0.f, nx::cast<f32>(pass_width),
                                     nx::cast<f32>(pass_height), 0.f, 1.f)];
 
-    // Metal has no render area on the pass itself; it is a scissor rectangle.
     if (desc.render_area.extent.width != 0 &&
         desc.render_area.extent.height != 0)
       [ctx_slot().encoder setScissorRect:to_mtl_scissor(desc.render_area)];
@@ -1272,9 +1134,6 @@ void MetalCommandContext::begin_compute_pass(const nx::string_view name) {
   }
 
   @autoreleasepool {
-    // Concurrent dispatch would let independent dispatches overlap, but it
-    // also drops the automatic ordering between them. Serial matches what a
-    // caller coming from vkCmdDispatch expects.
     ctx_slot().compute_encoder = [ctx_slot().cmd
         computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
     if (ctx_slot().compute_encoder == nil) {
@@ -1325,16 +1184,13 @@ void MetalCommandContext::barrier(const TextureBarrier *textures,
   if (m_state == nullptr || tracking == StateTracking::Skip)
     return;
 
-  // Metal tracks read-after-write hazards between encoders itself, so there is
-  // no barrier to record. What the RHI still needs is the bookkeeping: a
-  // texture's ResourceState decides the load action a later pass picks, and
-  // whether the swapchain considers the backbuffer written.
+  // Metal tracks read-after-write hazards between encoders itself, so there is no barrier to
+  // record.
   for (u32 i = 0; i < texture_count; ++i) {
     if (MetalTexture *texture = m_state->textures.try_get(textures[i].texture))
       texture->state = textures[i].to;
   }
 
-  // Buffers carry no tracked state in this backend.
   (void)buffers;
   (void)buffer_count;
 }
@@ -1347,7 +1203,7 @@ void MetalCommandContext::push_debug_group(const nx::string_view name,
 
   (void)r;
   (void)g;
-  (void)b; // Metal debug groups carry no colour.
+  (void)b;
 
   @autoreleasepool {
     NSString *label = to_ns_string(name);
@@ -1368,4 +1224,4 @@ void MetalCommandContext::pop_debug_group() {
     [ctx_slot().cmd popDebugGroup];
 }
 
-} // namespace nxe::rhi
+}

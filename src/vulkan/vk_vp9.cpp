@@ -1,10 +1,3 @@
-/**
- * @file vk_vp9.cpp
- * @brief The VP9 uncompressed-header parser. Pure bitstream reading, no Vulkan
- * calls - it turns the leading bytes of a frame into the Std structs the decode
- * command references. Follows the uncompressed_header() syntax of the VP9
- * bitstream spec section 6.2.
- */
 
 #include "core/rendering/rhi/vulkan/vk_vp9.h"
 
@@ -52,7 +45,6 @@ public:
   // A probability: present flag, then eight bits, else the neutral 255.
   u8 prob() noexcept { return bit() ? nx::cast<u8>(f(8)) : nx::cast<u8>(255); }
 
-  // A delta-coded quantizer adjustment: present flag, then s(4), else 0.
   i8 delta_q() noexcept { return bit() ? nx::cast<i8>(s(4)) : nx::cast<i8>(0); }
 
   [[nodiscard]] u32 byte_pos_ceil() const noexcept { return (m_pos + 7u) >> 3; }
@@ -79,14 +71,14 @@ void color_config(BitReader &r, const u32 profile, Vp9FrameHeader &out) {
     if (profile == 1 || profile == 3) {
       subsampling_x = nx::cast<u8>(r.bit());
       subsampling_y = nx::cast<u8>(r.bit());
-      r.bit(); // reserved_zero
+      r.bit();
     }
   } else {
     color_range = 1;
     subsampling_x = 0;
     subsampling_y = 0;
     if (profile == 1 || profile == 3)
-      r.bit(); // reserved_zero
+      r.bit();
   }
 
   out.color.BitDepth = bit_depth;
@@ -207,7 +199,7 @@ StdVideoVP9InterpolationFilter read_interpolation_filter(BitReader &r) {
   return literal[r.f(2)];
 }
 
-} // namespace
+}
 
 bool parse_vp9_frame_header(const u8 *const data, const u32 size,
                             const u32 ref_width[8], const u32 ref_height[8],
@@ -224,17 +216,17 @@ bool parse_vp9_frame_header(const u8 *const data, const u32 size,
   const u32 profile_high = r.bit();
   const u32 profile = (profile_high << 1) | profile_low;
   if (profile == 3)
-    r.bit(); // reserved_zero
+    r.bit();
   out.picture.profile = nx::cast<StdVideoVP9Profile>(profile);
 
-  if (r.bit()) { // show_existing_frame
+  if (r.bit()) {
     out.show_existing_frame = true;
     out.frame_to_show_map_idx = nx::cast<u8>(r.f(3));
     out.valid = !r.overrun();
     return out.valid;
   }
 
-  const u32 frame_type = r.bit(); // 0 key, 1 non-key
+  const u32 frame_type = r.bit();
   const u32 show_frame = r.bit();
   const u32 error_resilient = r.bit();
   out.picture.frame_type = frame_type == 0 ? STD_VIDEO_VP9_FRAME_TYPE_KEY
@@ -251,13 +243,13 @@ bool parse_vp9_frame_header(const u8 *const data, const u32 size,
     frame_height = r.f(16) + 1;
   };
   const auto render_size = [&] {
-    if (r.bit()) { // render_and_frame_size_different
-      r.f(16);     // render_width_minus_1
-      r.f(16);     // render_height_minus_1
+    if (r.bit()) {
+      r.f(16);
+      r.f(16);
     }
   };
 
-  if (frame_type == 0) { // KEY_FRAME
+  if (frame_type == 0) {
     if (r.f(24) != VP9_SYNC_CODE)
       return false;
     color_config(r, profile, out);
@@ -293,14 +285,13 @@ bool parse_vp9_frame_header(const u8 *const data, const u32 size,
       bool found_ref = false;
       for (u32 i = 0; i < STD_VIDEO_VP9_REFS_PER_FRAME; ++i) {
         out.ref_frame_idx[i] = nx::cast<u8>(r.f(3));
-        if (r.bit()) // ref_frame_sign_bias for LAST + i
+        if (r.bit())
           sign_bias_mask |= 1u << (i + 1);
       }
       out.picture.ref_frame_sign_bias_mask = nx::cast<u8>(sign_bias_mask);
 
-      // frame_size_with_refs: inherit a reference's size, or state one.
       for (u32 i = 0; i < STD_VIDEO_VP9_REFS_PER_FRAME; ++i) {
-        if (r.bit()) { // found_ref
+        if (r.bit()) {
           const u32 slot = out.ref_frame_idx[i];
           if (ref_width != nullptr && slot < 8) {
             frame_width = ref_width[slot];
@@ -335,7 +326,7 @@ bool parse_vp9_frame_header(const u8 *const data, const u32 size,
   segmentation_params(r, out);
   tile_info(r, frame_width, out);
 
-  out.compressed_header_size = r.f(16); // header_size_in_bytes
+  out.compressed_header_size = r.f(16);
   out.uncompressed_header_size = r.byte_pos_ceil();
   out.frame_width = frame_width;
   out.frame_height = frame_height;
@@ -345,4 +336,4 @@ bool parse_vp9_frame_header(const u8 *const data, const u32 size,
   return out.valid;
 }
 
-} // namespace nxe::rhi
+}

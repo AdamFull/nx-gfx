@@ -13,8 +13,6 @@ struct FormatInfo {
   bool srgb;
 };
 
-// Indexed by Format. Kept in the same order as the enum; the static_assert
-// below catches any drift.
 constexpr FormatInfo FORMAT_TABLE[] = {
     {"Unknown", 0, 1, 1, false, false, false},
 
@@ -153,7 +151,7 @@ constexpr UsageName BUFFER_USAGE_NAMES[] = {
     {"device_address", nx::cast<u16>(BufferUsage::DeviceAddress)},
 };
 
-} // namespace
+}
 
 nx::string_view to_string(const Format format) noexcept {
   return info_of(format).name;
@@ -246,4 +244,4 @@ u64 format_subresource_size(const Format format, const u32 width,
   return format_row_pitch(format, width) * blocks_y * (depth == 0 ? 1u : depth);
 }
 
-} // namespace nxe::rhi
+}

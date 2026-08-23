@@ -1,10 +1,3 @@
-/**
- * @file mtl_swapchain.mm
- * @brief CAMetalLayer setup and presentation.
- *
- * Metal has no swapchain object: a CAMetalLayer is the surface, and recreating
- * it is just a change of drawableSize.
- */
 
 #include "core/rendering/rhi/metal/mtl_internal.h"
 
@@ -37,8 +30,6 @@ MTLPixelFormat pick_layer_format(const Format preferred) noexcept {
   case Format::RGB10A2_UNORM:
     return to_mtl_format(preferred);
   case Format::RGBA8_UNORM:
-    // Metal layers are BGRA; the channel order is invisible to a shader
-    // writing through SV_Target, so this is a silent, lossless substitution.
     return MTLPixelFormatBGRA8Unorm;
   case Format::RGBA8_SRGB:
     return MTLPixelFormatBGRA8Unorm_sRGB;
@@ -47,7 +38,7 @@ MTLPixelFormat pick_layer_format(const Format preferred) noexcept {
   }
 }
 
-} // namespace
+}
 
 bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
   if (m_state == nullptr) {
@@ -87,16 +78,9 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
         layer = [CAMetalLayer layer];
         layer.device = device;
         layer.pixelFormat = pixel_format;
-        // The backbuffer is only ever rendered into, never sampled or copied
-        // from. Saying so lets Metal keep it in a compressed, display-only
-        // layout.
         layer.framebufferOnly = YES;
-        // Ask for pixels, not points: the caller's extent is already in
-        // physical pixels (IWindow reports the framebuffer size).
         layer.contentsScale = window.backingScaleFactor;
 
-        // Layer-hosting, not layer-backed: we own the layer. This leaves
-        // layer.delegate nil, so remember the view for the detach later.
         view.wantsLayer = YES;
         view.layer = layer;
         layer_host = view;
@@ -106,8 +90,6 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
     }
 #else
     case nx::NativeWindowKind::UIKit: {
-      // The iOS backend owns a CAMetalLayer-backed UIView already and hands the
-      // layer straight over.
       layer = (__bridge CAMetalLayer *)desc.window.window;
       if (layer == nil) {
         nx::loge(log_rhi, "create_swapchain: null CAMetalLayer");
@@ -133,22 +115,12 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
     return false;
   }
 
-  // Fixed at device init; the swapchain only reads it to size the drawable
-  // pool.
   const u32 frames_in_flight = s->frames_in_flight;
 
   @autoreleasepool {
     layer.drawableSize = CGSizeMake(desc.width, desc.height);
-    // One more than frames in flight, not the same number. frames_in_flight
-    // caps how far the CPU may run ahead; this caps how many drawables the
-    // compositor will vend, and with only as many as there are frames the next
-    // frame has nowhere to render until vblank frees one - which locks the app
-    // to half the refresh rate. Measured on an A15: 30 fps at 2, 60 at 3.
-    // frames_in_flight = 1 still gets 2, for callers that want the latency.
     layer.maximumDrawableCount = nx::clamp<u32>(frames_in_flight + 1, 2, 3);
 #if TARGET_OS_OSX
-    // Only Immediate differs: Fifo and Mailbox both wait for the display and
-    // CAMetalLayer has no queue-depth knob to tell them apart.
     layer.displaySyncEnabled = desc.present_mode != PresentMode::Immediate;
 #endif
   }
@@ -187,8 +159,6 @@ bool MetalDevice::resize_swapchain(const u32 width, const u32 height) {
   if (s->extent.width == width && s->extent.height == height)
     return true;
 
-  // Changing drawableSize while a drawable is outstanding is undefined; the
-  // frame loop only resizes between frames, but make it explicit.
   if (s->frame_active) {
     nx::loge(log_rhi, "resize_swapchain during a frame");
     return false;
@@ -216,8 +186,6 @@ void MetalDevice::destroy_swapchain() noexcept {
   wait_idle();
 
   @autoreleasepool {
-    // Abandon any frame caught mid-record: wait_idle() means nothing is still
-    // executing, and its drawable is about to stop existing.
     for (MetalContextSlot &slot : s->contexts) {
       if (slot.encoder != nil) {
         [slot.encoder endEncoding];
@@ -272,4 +240,4 @@ Extent2D MetalDevice::swapchain_extent() const noexcept {
   return m_state != nullptr ? m_state->extent : Extent2D{};
 }
 
-} // namespace nxe::rhi
+}

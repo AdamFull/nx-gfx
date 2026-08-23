@@ -1,7 +1,3 @@
-/**
- * @file vk_resources.cpp
- * @brief Texture and buffer creation, and command recording.
- */
 
 #include "core/rendering/rhi/vulkan/vk_device.h"
 
@@ -34,9 +30,7 @@ VmaAllocationCreateFlags to_vma_flags(const MemoryUsage usage,
   return flags;
 }
 
-} // namespace
-
-// Textures
+}
 
 bool VulkanDevice::create_texture_views(VulkanTexture &texture,
                                         const nx::string_view name) {
@@ -92,9 +86,6 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
 
 namespace {
 
-/// The VkImageCreateInfo a TextureDesc maps to. Shared by the owning and the
-/// heap-placed paths, so the two cannot drift - which would make the memory
-/// requirements queried for one wrong for the other.
 [[nodiscard]] VkImageCreateInfo
 to_image_create_info(const TextureDesc &desc) noexcept {
   const bool is_cube = desc.dimension == TextureDimension::TexCube;
@@ -117,7 +108,7 @@ to_image_create_info(const TextureDesc &desc) noexcept {
   return info;
 }
 
-} // namespace
+}
 
 TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   if (desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
@@ -168,8 +159,6 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
                   desc.name);
 
-  // Register in the bindless heap. The SRV slot is the handle index; each UAV
-  // (one per mip) takes a slot from the storage free list.
   if (stored.srv != VK_NULL_HANDLE)
     write_texture_descriptor(nx::cast<u32>(handle.index()), stored.srv);
   for (const VkImageView uav : stored.uavs) {
@@ -181,14 +170,10 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   return handle;
 }
 
-// Memory aliasing
-
 MemoryRequirements
 VulkanDevice::texture_requirements(const TextureDesc &desc) const {
   const VkImageCreateInfo info = to_image_create_info(desc);
 
-  // Vulkan 1.3 answers this from the descriptor alone, so there is no throwaway
-  // VkImage to create and destroy just to ask.
   VkDeviceImageMemoryRequirements query{
       VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS};
   query.pCreateInfo = &info;
@@ -209,17 +194,11 @@ HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
     return {};
   }
 
-  // The heap is raw memory, so its requirements are stated rather than derived
-  // from a resource. memory_type_bits is the intersection the caller computed
-  // across everything it intends to place here.
   VkMemoryRequirements requirements{};
   requirements.size = desc.size;
   requirements.alignment = desc.alignment < 1 ? 1 : desc.alignment;
   requirements.memoryTypeBits = desc.memory_type_bits;
 
-  // VMA_MEMORY_USAGE_AUTO* is rejected here: it infers the memory type from the
-  // resource being created, and a raw allocation has none. State the properties
-  // wanted instead.
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = VMA_MEMORY_USAGE_UNKNOWN;
   alloc_info.flags = to_vma_flags(desc.memory, false);
@@ -290,8 +269,6 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
   texture.state = ResourceState::Undefined;
-  // Owns the VkImage but not the memory: allocation stays null so teardown
-  // destroys the image and leaves the heap alone.
   texture.owns_image = true;
   texture.allocation = VK_NULL_HANDLE;
 
@@ -325,8 +302,6 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
 void VulkanDevice::destroy_texture(const TextureHandle handle) noexcept {
   if (!m_textures.contains(handle))
     return;
-  // The slot_map entry - and its descriptor slots - stay live until the GPU
-  // has passed this frame; collect_garbage does the actual teardown.
   m_pending_deletes.push_back({m_timeline_value, handle, {}, {}});
 }
 
@@ -350,8 +325,6 @@ void VulkanDevice::set_texture_state(const TextureHandle handle,
   if (VulkanTexture *texture = m_textures.try_get(handle))
     texture->state = state;
 }
-
-// Buffers
 
 BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
   if (desc.size == 0) {
@@ -407,8 +380,6 @@ const VulkanBuffer *
 VulkanDevice::buffer(const BufferHandle handle) const noexcept {
   return m_buffers.try_get(handle);
 }
-
-// Samplers
 
 SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
   VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -518,8 +489,6 @@ void *VulkanDevice::buffer_mapped(const BufferHandle handle) const noexcept {
   return buffer != nullptr ? buffer->mapped : nullptr;
 }
 
-// Command recording
-
 void VulkanCommandContext::barrier(const TextureBarrier *textures,
                                    const u32 texture_count,
                                    const BufferBarrier *buffers,
@@ -537,9 +506,6 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
     if (texture == nullptr)
       continue;
 
-    // The tracked state is authoritative: callers may state `from`, but the
-    // texture knows where it actually is, which avoids a whole class of
-    // mismatched-layout validation errors.
     const ResourceState from = desc.discard ? ResourceState::Undefined
                                : desc.from == ResourceState::Undefined
                                    ? texture->state
@@ -626,7 +592,6 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     if (texture == nullptr)
       continue;
 
-    // Zero render area means "the whole first attachment".
     if (width == 0 || height == 0) {
       width = texture->width;
       height = texture->height;
@@ -684,9 +649,6 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
   vkCmdBeginRenderingKHR(m_cmd, &info);
   m_in_render_pass = true;
 
-  // Dynamic rendering leaves viewport and scissor unset; defaulting them to
-  // the render area is what every caller wants and forgetting it draws
-  // nothing, silently.
   const Viewport viewport{0.f, 0.f, nx::cast<f32>(width), nx::cast<f32>(height),
                           0.f, 1.f};
   set_viewport(viewport);
@@ -746,9 +708,6 @@ void VulkanCommandContext::write_timestamp(const QueryPoolHandle pool,
   const VulkanQueryPool *const queries = m_device->query_pool(pool);
   if (queries == nullptr || index >= queries->count)
     return;
-  // BOTTOM_OF_PIPE: the stamp lands once everything recorded before it has
-  // finished, which is what makes the gap between two of them a pass's time
-  // rather than the time it took to record.
   vkCmdWriteTimestamp2KHR(m_cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                           queries->pool, index);
 }
@@ -777,4 +736,4 @@ void VulkanCommandContext::pop_debug_group() {
   vkCmdEndDebugUtilsLabelEXT(m_cmd);
 }
 
-} // namespace nxe::rhi
+}

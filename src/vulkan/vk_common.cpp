@@ -76,7 +76,7 @@ constexpr VkFormat VK_FORMATS[] = {
 static_assert(std::size(VK_FORMATS) == nx::cast<usize>(Format::Count),
               "VK_FORMATS is out of sync with Format");
 
-} // namespace
+}
 
 nx::string_view vk_result_string(const VkResult result) noexcept {
   switch (result) {
@@ -139,8 +139,6 @@ nx::string_view vk_result_string(const VkResult result) noexcept {
 
 VkResult vk_report(const VkResult result, const char *call, const char *file,
                    const i32 line) noexcept {
-  // Not every non-VK_SUCCESS is a failure: the swapchain codes are normal
-  // control flow and the caller decides what to do with them.
   if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ||
       result == VK_NOT_READY || result == VK_TIMEOUT)
     return result;
@@ -178,8 +176,6 @@ VkImageUsageFlags to_vk_image_usage(const TextureUsageFlags usage,
   if (usage & TextureUsage::CopyDst)
     flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   if (usage & TextureUsage::Transient) {
-    // On a tiler this keeps the attachment in tile memory and never backs it
-    // with real allocation. Elsewhere the flag is accepted and ignored.
     flags |= VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
     flags |= format_is_depth(format)
                  ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
@@ -415,4 +411,4 @@ VkStateInfo to_vk_state(const ResourceState state) noexcept {
   }
 }
 
-} // namespace nxe::rhi
+}

@@ -1,13 +1,5 @@
 #pragma once
 
-/**
- * @file shader_reflect.h
- * @brief Backend-neutral shader interface reflection (namespace nxe::rhi).
- *
- * Populated from SPIR-V on Vulkan and from Metal's own reflection on Metal, so
- * these types carry no graphics API types and mean the same thing on both.
- */
-
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/strings/id_string.h"
 #include "core/rendering/rhi/types.h"
@@ -25,12 +17,11 @@ enum class ReflectKind : u8 {
   Sampler,
 };
 
-/// One field of a block, at the offset the shader's layout rules put it.
 struct ReflectMember {
   nx::id_string name;
   u32 offset = 0;
   u32 size = 0;
-  u32 array_count = 1; ///< 1 when the field is not an array.
+  u32 array_count = 1;
 };
 
 struct ReflectBlock {
@@ -55,24 +46,14 @@ struct ShaderReflection {
   nx::small_vector<ReflectComputeEntry, 4> compute_entries;
 
   [[nodiscard]] const ReflectBlock *block(nx::id_string name) const noexcept;
-  /// The push constant block, whatever the shader named it.
   [[nodiscard]] const ReflectBlock *push_block() const noexcept;
   [[nodiscard]] bool local_size(nx::id_string entry_point,
                                 u32 out_size[3]) const noexcept;
 };
 
-/// Fills @p out from slangc's -reflection-json sidecar. The same parser serves
-/// both backends; each reads the sidecar built for its own target.
 [[nodiscard]] bool reflect_from_json(nx::string_view text,
                                      ShaderReflection &out);
 
-/**
- * @brief CPU staging for one block: write fields by name, then upload.
- *
- * Every write is checked against the reflected layout, so a field that was
- * renamed or resized in the shader fails loudly at the first frame instead of
- * silently corrupting whatever sits next to it.
- */
 class BlockWriter {
 public:
   BlockWriter() = default;
@@ -81,8 +62,6 @@ public:
   [[nodiscard]] bool valid() const noexcept { return m_block != nullptr; }
   [[nodiscard]] const ReflectBlock *block() const noexcept { return m_block; }
 
-  /// False - having written nothing - if the field is absent or @p size does
-  /// not match what the shader declares.
   bool set(nx::id_string field, const void *data, u32 size) noexcept;
 
   template <typename T>
@@ -108,4 +87,4 @@ private:
   nx::small_vector<std::byte, 128> m_data;
 };
 
-} // namespace nxe::rhi
+}

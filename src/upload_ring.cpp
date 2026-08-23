@@ -12,7 +12,7 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
 
 inline constexpr u64 CAPACITY_FLOOR = 4096;
 
-} // namespace
+}
 
 u64 grow_capacity(const u64 needed) noexcept {
   u64 capacity = CAPACITY_FLOOR;
@@ -97,8 +97,6 @@ GrowableBuffer *UploadRing::acquire(const u32 array, const u64 bytes) {
           *m_device, bytes,
           {
               .name = m_names[slot].view(),
-              // DeviceAddress is what keeps these bindless: without
-              // it every array would need a descriptor of its own.
               .usage = BufferUsage::Storage | BufferUsage::DeviceAddress,
               .memory = MemoryUsage::Upload,
               .persistently_mapped = true,
@@ -127,4 +125,4 @@ u64 UploadRing::reserve(const u32 array, const u64 bytes) {
   return buffer != nullptr ? m_device->buffer_address(buffer->handle()) : 0;
 }
 
-} // namespace nxe::rhi
+}

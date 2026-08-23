@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file vk_video.h
- * @brief A hardware video-decode session (namespace nxe::rhi).
- */
-
 #include "core/foundation/containers/small_vector.h"
 #include "core/rendering/rhi/types.h"
 #include "core/rendering/rhi/vulkan/vk_common.h"
@@ -94,8 +89,6 @@ private:
   nx::small_vector<VkDeviceMemory, 4> m_memories;
   nx::small_vector<VideoImage, 16> m_dpb;
   VideoImage m_output;
-  // A plain sampled NV12 image the decoded picture is copied into, so it can be
-  // read without disturbing the DPB slots.
   VideoImage m_sampleable;
   bool m_coincide = false;
   VkFormat m_picture_format = VK_FORMAT_UNDEFINED;
@@ -103,7 +96,6 @@ private:
   VkExtent2D m_extent = {};
   u32 m_max_dpb_slots = 0;
 
-  // Decode-command plumbing.
   VkCommandPool m_pool = VK_NULL_HANDLE;
   VkCommandBuffer m_cmd = VK_NULL_HANDLE;
   VkFence m_fence = VK_NULL_HANDLE;
@@ -117,8 +109,6 @@ private:
   u64 m_bitstream_offset_align = 1;
   u64 m_bitstream_size_align = 1;
 
-  // VP9 keeps eight reference buffers; this maps each to the DPB slot that holds
-  // it, and remembers each slot's coded size for building picture resources.
   u32 m_vp9_to_dpb[8] = {};
   bool m_vp9_valid[8] = {};
   u32 m_slot_width[16] = {};
@@ -127,13 +117,11 @@ private:
   u32 m_last_slot = 0;
   bool m_have_last = false;
 
-  // The plane resolve runs on the graphics queue: it copies the presented NV12
-  // picture out into two bindless-sampled device textures.
   VkCommandPool m_gfx_pool = VK_NULL_HANDLE;
   VkCommandBuffer m_gfx_cmd = VK_NULL_HANDLE;
   VkFence m_gfx_fence = VK_NULL_HANDLE;
-  TextureHandle m_y;    ///< R8 luma
-  TextureHandle m_cbcr; ///< R8G8 interleaved chroma
+  TextureHandle m_y;
+  TextureHandle m_cbcr;
 };
 
-} // namespace nxe::rhi
+}

@@ -1,7 +1,3 @@
-/**
- * @file vk_pipeline.cpp
- * @brief Shader modules, graphics/compute pipelines, and the disk cache.
- */
 
 #include "core/rendering/rhi/vulkan/vk_device.h"
 
@@ -42,7 +38,6 @@ VkCullModeFlags to_vk_cull(const CullMode cull) noexcept {
   }
 }
 
-/// Expands a blend preset into a colour-attachment blend state.
 VkPipelineColorBlendAttachmentState
 to_vk_blend(const BlendState &state) noexcept {
   VkPipelineColorBlendAttachmentState out{};
@@ -108,9 +103,7 @@ VkShaderModule create_module(VkDevice device, const void *code,
   return module;
 }
 
-} // namespace
-
-// Pipeline cache
+}
 
 bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
   m_pipeline_cache_path = path;
@@ -121,9 +114,6 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
   if (!path.empty() && nx::fs::exists(path)) {
     if (auto read = nx::fs::file_read(path)) {
       initial = std::move(*read);
-      // A cache blob is tied to the exact driver/GPU. The loader ignores an
-      // incompatible one, but checking the UUID up front avoids feeding it
-      // megabytes it will only discard.
       VkPhysicalDeviceProperties props{};
       vkGetPhysicalDeviceProperties(m_physical_device, &props);
       if (initial.size() >= 16 + VK_UUID_SIZE) {
@@ -169,8 +159,6 @@ void VulkanDevice::save_pipeline_cache() noexcept {
              m_pipeline_cache_path);
 }
 
-// Shaders
-
 ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   if (desc.code == nullptr || desc.code_size == 0 || desc.code_size % 4 != 0) {
     nx::loge(log_rhi, "create_shader('{}'): invalid SPIR-V blob", desc.name);
@@ -209,15 +197,11 @@ VulkanDevice::reflection(const ShaderHandle handle) const noexcept {
 }
 
 void VulkanDevice::destroy_shader(const ShaderHandle handle) noexcept {
-  // A shader module is consumed at pipeline-creation time and never touched by
-  // the GPU, so it can go immediately.
   if (VulkanShader *shader = m_shaders.try_get(handle)) {
     vkDestroyShaderModule(m_device, shader->module, nullptr);
     m_shaders.erase(handle);
   }
 }
-
-// Pipelines
 
 PipelineHandle
 VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
@@ -228,8 +212,6 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
     return {};
   }
 
-  // The fragment shader is optional: a depth-only pass (shadow map, depth
-  // prepass) runs the vertex stage and writes depth with no colour output.
   const VulkanShader *fs = m_shaders.try_get(desc.fragment.shader);
 
   const nx::string vs_entry(desc.vertex.entry_point);
@@ -249,7 +231,6 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
     stage_count = 2;
   }
 
-  // No vertex input: geometry is pulled from buffers by device address.
   VkPipelineVertexInputStateCreateInfo vertex_input{
       VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
 
@@ -324,7 +305,6 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   info.pRasterizationState = &raster;
   info.pMultisampleState = &multisample;
   info.pDepthStencilState = &depth_stencil;
-  // A depth-only pipeline has no colour attachments; the blend state is unused.
   info.pColorBlendState = desc.color_count > 0 ? &color_blend : nullptr;
   info.pDynamicState = &dynamic;
   info.layout = m_pipeline_layout;
@@ -409,8 +389,6 @@ const VulkanPipeline *
 VulkanDevice::pipeline(const PipelineHandle handle) const noexcept {
   return m_pipelines.try_get(handle);
 }
-
-// Command recording
 
 void VulkanCommandContext::bind_pipeline(const PipelineHandle handle) {
   if (m_device == nullptr)
@@ -506,4 +484,4 @@ void VulkanCommandContext::begin_compute_pass(const nx::string_view name) {
 
 void VulkanCommandContext::end_compute_pass() { pop_debug_group(); }
 
-} // namespace nxe::rhi
+}

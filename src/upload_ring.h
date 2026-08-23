@@ -1,10 +1,5 @@
 #pragma once
 
-/**
- * @file upload_ring.h
- * @brief Device buffers that resize themselves (namespace nxe::rhi).
- */
-
 #include "core/rendering/rhi/device.h"
 
 #include "core/foundation/strings/utf8_string.h"
@@ -17,10 +12,9 @@ namespace nxe::rhi {
 /// filling from being recreated on every addition.
 [[nodiscard]] u64 grow_capacity(u64 needed) noexcept;
 
-/// A device buffer that is recreated whenever it has to be bigger.
-///
-/// Not RAII: the device outlives every buffer taken from it and is what frees
-/// them, so the owner calls release() from its own shutdown().
+/// A device buffer that is recreated whenever it has to be bigger. Not RAII: the device outlives
+/// every buffer taken from it and is what frees them, so the owner calls release() from its own
+/// shutdown().
 class GrowableBuffer {
 public:
   /// Recreates the buffer if it is smaller than @p bytes. @p desc carries the
@@ -45,9 +39,6 @@ public:
   UploadRing(const UploadRing &) = delete;
   UploadRing &operator=(const UploadRing &) = delete;
 
-  /// @p arrays names one buffer set each, and is what indexes write() from
-  /// then on. Names are the buffers' debug names, so they read as
-  /// "scene instances 2" once the frame is appended.
   [[nodiscard]] bool init(Device *device,
                           std::span<const nx::string_view> arrays);
   void shutdown() noexcept;
@@ -71,7 +62,6 @@ private:
   [[nodiscard]] GrowableBuffer *acquire(u32 array, u64 bytes);
 
   Device *m_device = nullptr;
-  /// Frame-major: frame * m_arrays + array.
   nx::vector<GrowableBuffer> m_buffers;
   /// Built once at init. Formatting these per frame would be a heap allocation
   /// per array per frame to name a buffer that almost always already exists.
@@ -81,4 +71,4 @@ private:
   u32 m_frame = 0;
 };
 
-} // namespace nxe::rhi
+}

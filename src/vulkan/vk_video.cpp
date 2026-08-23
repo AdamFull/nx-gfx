@@ -1,9 +1,3 @@
-/**
- * @file vk_video.cpp
- * @brief Vulkan Video: what the device can hardware-decode, and (later) the
- * decode itself. Kept apart from vk_device.cpp because the video queue is its
- * own world of sessions, DPB slots and codec std structs.
- */
 
 #include "core/rendering/rhi/vulkan/vk_common.h"
 #include "core/rendering/rhi/vulkan/vk_device.h"
@@ -33,14 +27,13 @@ namespace {
   return false;
 }
 
-} // namespace
+}
 
 u32 VulkanDevice::find_video_decode_family() const {
   constexpr u32 NONE = ~0u;
   if (m_physical_device == VK_NULL_HANDLE)
     return NONE;
 
-  // All three extensions, or there is no session to build later.
   if (!extension_offered(m_physical_device, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME) ||
       !extension_offered(m_physical_device,
                          VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME) ||
@@ -48,7 +41,6 @@ u32 VulkanDevice::find_video_decode_family() const {
                          VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME))
     return NONE;
 
-  // VP9 decode is a feature that has to be enable-able, not just an extension.
   VkPhysicalDeviceVideoDecodeVP9FeaturesKHR vp9{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_DECODE_VP9_FEATURES_KHR};
   VkPhysicalDeviceFeatures2 features{
@@ -106,8 +98,6 @@ VideoDecodeCaps query_video_decode_caps(const VulkanDevice &device,
   VkVideoCapabilitiesKHR caps{VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR};
   caps.pNext = &decode;
 
-  // The codec-specific caps struct has to be chained too, or some drivers (Intel
-  // among them) fault reaching for it inside the query rather than skipping it.
   VkVideoDecodeVP9ProfileInfoKHR vp9{
       VK_STRUCTURE_TYPE_VIDEO_DECODE_VP9_PROFILE_INFO_KHR};
   VkVideoDecodeVP9CapabilitiesKHR vp9_caps{
@@ -237,8 +227,6 @@ const nx::log::Category log_video = nx::log::category("rhi");
   if (vkBindImageMemory(dev, out.image, out.memory, 0) != VK_SUCCESS)
     return false;
 
-  // A plain colour view spanning both planes: video decode reads and writes the
-  // whole picture, so no ycbcr conversion here - that arrives with sampling.
   VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   vi.image = out.image;
   vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -303,7 +291,7 @@ void destroy_video_image(const VkDevice dev, VideoImage &image) {
   return vkMapMemory(dev, memory, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS;
 }
 
-} // namespace
+}
 
 VideoDecoder::~VideoDecoder() { shutdown(); }
 
@@ -312,7 +300,6 @@ void VideoDecoder::shutdown() noexcept {
     const VkDevice dev = m_device->vk_device();
     vkDeviceWaitIdle(dev);
 
-    // The plane resolve's textures and command plumbing.
     if (m_y.valid())
       m_device->destroy_texture(m_y);
     if (m_cbcr.valid())
@@ -379,7 +366,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
                         const u32 width, const u32 height) {
   shutdown();
   if (!device.video_decode_available() || codec != VideoCodec::VP9)
-    return false; // only VP9 is wired up so far
+    return false;
 
   m_device = &device;
   const VkPhysicalDevice phys = device.vk_physical_device();
@@ -470,8 +457,6 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     return false;
   }
 
-  // The session needs backing memory, handed over in one or more binds the
-  // driver names by index.
   u32 requirement_count = 0;
   vkGetVideoSessionMemoryRequirementsKHR(dev, m_session, &requirement_count,
                                          nullptr);
@@ -519,8 +504,6 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     return false;
   }
 
-  // TRANSFER_SRC so a decoded picture can be copied back out for verification;
-  // the images are shared with the graphics family for that copy.
   const u32 families[2] = {device.video_decode_family(),
                            device.graphics_family()};
   const VkImageUsageFlags dpb_usage =
@@ -601,8 +584,6 @@ bool VideoDecoder::create_bitstream_buffer(
 }
 
 u32 VideoDecoder::allocate_slot() noexcept {
-  // A slot no live VP9 reference buffer points at, cycling so references stay
-  // put. With more slots than the eight VP9 buffers, one is always free.
   for (u32 tries = 0; tries < m_max_dpb_slots; ++tries) {
     const u32 slot = m_next_slot;
     m_next_slot = (m_next_slot + 1) % m_max_dpb_slots;
@@ -636,7 +617,6 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
   if (!parse_vp9_frame_header(frame, size, ref_w, ref_h, hdr))
     return false;
 
-  // A show-existing frame decodes nothing; it re-presents a buffer already held.
   if (hdr.show_existing_frame) {
     const u32 buf = hdr.frame_to_show_map_idx;
     if (buf >= 8 || !m_vp9_valid[buf])
@@ -692,7 +672,6 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
   setup_res.baseArrayLayer = 0;
   setup_res.imageViewBinding = m_dpb[setup].view;
 
-  // The unique DPB slots this frame reads from, each as a reference resource.
   VkVideoPictureResourceInfoKHR ref_res[8];
   VkVideoReferenceSlotInfoKHR decode_refs[8];
   u32 unique[8];
@@ -722,8 +701,6 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
     ++ref_count;
   }
 
-  // Begin lists every active slot: the references, plus the setup slot as -1 to
-  // say it is being activated by this decode.
   VkVideoReferenceSlotInfoKHR begin_slots[9];
   for (u32 j = 0; j < ref_count; ++j)
     begin_slots[j] = decode_refs[j];
@@ -917,7 +894,6 @@ bool VideoDecoder::present(const u32 slot) {
   barrier(src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
   barrier(m_sampleable, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-  // Both planes: full-res luma, then half-res interleaved chroma.
   VkImageCopy2 regions[2];
   regions[0] = VkImageCopy2{VK_STRUCTURE_TYPE_IMAGE_COPY_2};
   regions[0].srcSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
@@ -954,7 +930,6 @@ bool VideoDecoder::present(const u32 slot) {
 bool VideoDecoder::create_plane_resources() {
   const VkDevice dev = m_device->vk_device();
 
-  // Command plumbing for the graphics-queue plane resolve.
   VkCommandPoolCreateInfo cpc{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   cpc.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   cpc.queueFamilyIndex = m_device->graphics_family();
@@ -971,8 +946,6 @@ bool VideoDecoder::create_plane_resources() {
   if (vkCreateFence(dev, &fci, nullptr, &m_gfx_fence) != VK_SUCCESS)
     return false;
 
-  // The two sampled planes the caller draws: full-res luma, half-res interleaved
-  // chroma. Ordinary device textures, so they carry bindless slots for free.
   TextureDesc luma;
   luma.name = "video luma";
   luma.format = Format::R8_UNORM;
@@ -1017,9 +990,6 @@ void VideoDecoder::reset_stream() noexcept {
 }
 
 bool VideoDecoder::show_last() {
-  // present() copied the picture into the sampleable NV12 image on the decode
-  // queue. Now resolve its two planes into the bindless luma/chroma textures on
-  // the graphics queue, where a caller can sample them.
   if (!m_have_last || !present(m_last_slot))
     return false;
 
@@ -1056,8 +1026,6 @@ bool VideoDecoder::show_last() {
     vkCmdPipelineBarrier2(m_gfx_cmd, &d);
   };
 
-  // The sampleable image is concurrent, so this queue can read it; the plane
-  // textures are fully overwritten, so their old contents need no preserving.
   barrier(m_sampleable.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
   barrier(y->image, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1107,4 +1075,4 @@ bool VideoDecoder::show_last() {
   return true;
 }
 
-} // namespace nxe::rhi
+}

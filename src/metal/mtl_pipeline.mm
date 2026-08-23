@@ -1,11 +1,3 @@
-/**
- * @file mtl_pipeline.mm
- * @brief Shader libraries and pipeline state objects.
- *
- * Metal splits a Vulkan pipeline three ways - the PSO, MTLDepthStencilState,
- * and encoder calls for cull, winding and topology - so MetalPipeline holds all
- * of it and bind_pipeline applies the lot.
- */
 
 #include "core/rendering/rhi/metal/mtl_internal.h"
 
@@ -36,8 +28,6 @@ MTLPrimitiveType to_mtl_topology(const PrimitiveTopology topology) noexcept {
   }
 }
 
-/// Only strictly needed for point size or tessellation, but reporting it
-/// always is harmless and keeps validation quiet.
 MTLPrimitiveTopologyClass
 to_mtl_topology_class(const PrimitiveTopology topology) noexcept {
   switch (topology) {
@@ -63,9 +53,6 @@ MTLCullMode to_mtl_cull(const CullMode cull) noexcept {
   }
 }
 
-/// Straight through, as the Vulkan backend also passes front_face unmodified.
-/// Both define the front face in framebuffer space and both invert Y on the way
-/// there, so no compensation is needed.
 MTLWinding to_mtl_winding(const FrontFace face) noexcept {
   return face == FrontFace::Clockwise ? MTLWindingClockwise
                                       : MTLWindingCounterClockwise;
@@ -135,8 +122,6 @@ void apply_blend(MTLRenderPipelineColorAttachmentDescriptor *attachment,
   }
 }
 
-/// Slang emits Metal entry points under their original names, so entry_point
-/// maps straight across.
 id<MTLFunction> lookup_function(const MetalDeviceState &state,
                                 const ShaderEntry &entry,
                                 const nx::string_view pipeline_name,
@@ -157,15 +142,13 @@ id<MTLFunction> lookup_function(const MetalDeviceState &state,
   return function;
 }
 
-} // namespace
-
-// Binary archive
+}
 
 void create_pipeline_archive(MetalDeviceState &state,
                              const nx::string_view path) {
   state.pipeline_archive_path = nx::string(path);
   if (path.empty())
-    return; // In-memory only: every run recompiles.
+    return;
 
   @autoreleasepool {
     MTLBinaryArchiveDescriptor *info =
@@ -179,9 +162,6 @@ void create_pipeline_archive(MetalDeviceState &state,
     state.pipeline_archive =
         [state.device newBinaryArchiveWithDescriptor:info error:&error];
 
-    // An archive is tied to the exact GPU and driver build, so one written by
-    // a previous OS version simply will not load. That is a cold cache, not a
-    // failure - drop the url and start over.
     if (state.pipeline_archive == nil && have_existing) {
       nx::logi(log_rhi, "pipeline archive is stale or unreadable, starting a "
                         "fresh one");
@@ -208,8 +188,6 @@ void save_pipeline_archive(MetalDeviceState &state) noexcept {
   if (state.pipeline_archive == nil || state.pipeline_archive_path.empty())
     return;
 
-  // The path usually lives under the app's data directory, which may not exist
-  // on a first run.
   const nx::string_view parent =
       nx::fs::path::parent_path(state.pipeline_archive_path.view());
   if (!parent.empty() && !nx::fs::exists(parent))
@@ -220,9 +198,6 @@ void save_pipeline_archive(MetalDeviceState &state) noexcept {
     if (![state.pipeline_archive
             serializeToURL:archive_url(state.pipeline_archive_path.view())
                      error:&error]) {
-      // Serialising an archive nothing was ever added to is an error rather
-      // than a no-op, so a run that built no pipelines lands here. Not worth
-      // more than a debug line.
       nx::logd(log_rhi, "pipeline archive not written: {}",
                error != nil ? [[error localizedDescription] UTF8String]
                             : "unknown error");
@@ -231,8 +206,6 @@ void save_pipeline_archive(MetalDeviceState &state) noexcept {
   }
   nx::logi(log_rhi, "pipeline archive: saved {}", state.pipeline_archive_path);
 }
-
-// Shaders
 
 ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {
   if (m_state == nullptr)
@@ -263,9 +236,6 @@ ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {
     shader.library.label = to_ns_string(desc.name);
   }
 
-  // Same sidecar, same parser as the Vulkan backend - a metallib carries no
-  // [numthreads] and Metal's own reflection only comes with a pipeline state,
-  // so this is where the workgroup size and the push block come from.
   if (!desc.reflection_json.empty() &&
       !reflect_from_json(desc.reflection_json, shader.reflection))
     nx::logw(log_rhi, "create_shader('{}'): reflection sidecar unusable",
@@ -286,12 +256,8 @@ MetalDevice::reflection(const ShaderHandle handle) const noexcept {
 void MetalDevice::destroy_shader(const ShaderHandle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
-  // A library is only referenced while a pipeline is being built, but deferring
-  // costs nothing and keeps every destroy path on the same rule.
   retire(*m_state, {.shader = handle});
 }
-
-// Pipelines
 
 PipelineHandle
 MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
@@ -305,8 +271,6 @@ MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
     if (vertex == nil)
       return {};
 
-    // A fragment-less pipeline is legal (depth prepass), so an unset handle is
-    // not an error - only a named entry point that fails to resolve is.
     id<MTLFunction> fragment = nil;
     if (desc.fragment.shader.valid()) {
       fragment = lookup_function(*m_state, desc.fragment, desc.name, "fragment");
@@ -341,9 +305,6 @@ MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
         info.stencilAttachmentPixelFormat = format;
     }
 
-    // Vertices are pulled from SV_VertexID or from bindless buffers, never
-    // from a vertex buffer, so there is deliberately no vertexDescriptor.
-
     // Offering the archive lets Metal reuse a previously compiled binary
     // instead of running the shader compiler. A miss is not an error - without
     // MTLPipelineOptionFailOnBinaryArchiveMiss it just compiles as usual.
@@ -361,8 +322,6 @@ MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
       return {};
     }
 
-    // Feed the compiled result back so the next run gets a hit. Failure only
-    // costs a recompile next time, so it is not worth failing creation over.
     if (m_state->pipeline_archive != nil) {
       NSError *add_error = nil;
       if (![m_state->pipeline_archive
@@ -375,8 +334,6 @@ MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
       }
     }
 
-    // Depth state is a separate object in Metal, and only exists when the
-    // pipeline actually tests or writes depth.
     if (desc.depth_test || desc.depth_write) {
       MTLDepthStencilDescriptor *depth =
           [[MTLDepthStencilDescriptor alloc] init];
@@ -425,8 +382,6 @@ MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
     if (function == nil)
       return {};
 
-    // The descriptor form rather than newComputePipelineStateWithFunction:,
-    // because only a descriptor can carry binaryArchives.
     MTLComputePipelineDescriptor *info =
         [[MTLComputePipelineDescriptor alloc] init];
     info.label = to_ns_string(desc.name);
@@ -480,12 +435,8 @@ MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
 void MetalDevice::destroy_pipeline(const PipelineHandle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
-  // A pipeline state is referenced by every command buffer that bound it, so
-  // it outlives the destroy call by up to frames_in_flight frames.
   retire(*m_state, {.pipeline = handle});
 }
-
-// Command context: pipeline binding and draw submission.
 
 void MetalCommandContext::bind_pipeline(const PipelineHandle handle) {
   if (m_state == nullptr)
@@ -541,9 +492,6 @@ void MetalCommandContext::push_constants(const void *data, const u32 size,
     return;
   }
 
-  // Metal has no partial update for a setBytes argument: the whole buffer
-  // binding is replaced each time. Shadow the block so a partial write keeps
-  // whatever the previous writes put there.
   std::memcpy(ctx_slot().push_constants + offset, data, size);
 
   if (ctx_slot().compute_encoder != nil) {
@@ -590,8 +538,6 @@ void MetalCommandContext::bind_index_buffer(const BufferHandle handle,
     return;
   }
 
-  // Nothing is recorded here. Metal names the index buffer on the draw call,
-  // so this only remembers what the next draw_indexed should pass along.
   ctx_slot().index_buffer = buffer->buffer;
   ctx_slot().index_type =
       type == IndexType::U32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
@@ -725,4 +671,4 @@ void MetalCommandContext::dispatch_indirect(const BufferHandle handle,
                                                       .bound_threads_per_group];
 }
 
-} // namespace nxe::rhi
+}
