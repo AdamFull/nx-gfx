@@ -12,10 +12,14 @@
 
 namespace nxe::rhi {
 
+/// Backends expose array layers through 32-bit descriptors, but current
+/// desktop GPU APIs cap the usable count at 2048.
+inline constexpr u32 MAX_IMAGE_ARRAY_LAYERS = 2048;
+
 enum class ImageError : u8 {
   Unknown = 0,
   Io,
-  Empty,             ///< Zero-byte input.
+  Empty, ///< Zero-byte input.
   UnknownContainer,
   UnsupportedFormat,
   Corrupt,
@@ -69,4 +73,4 @@ load_image(nx::fs::path_view path);
 
 void generate_mip_chain(ImageData &image);
 
-}
+} // namespace nxe::rhi

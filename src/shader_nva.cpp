@@ -13,7 +13,7 @@ constexpr u32 CHUNK_CODE = nx::nva::fourcc('C', 'O', 'D', 'E');
 constexpr u32 CHUNK_REFL = nx::nva::fourcc('R', 'E', 'F', 'L');
 constexpr u16 VERSION = 1;
 
-}
+} // namespace
 
 nx::vector<u8> encode_shader(const std::span<const u8> code,
                              const nx::string_view reflection_json,
@@ -31,7 +31,7 @@ nx::vector<u8> encode_shader(const std::span<const u8> code,
 
 bool decode_shader(const std::span<const u8> bytes, ShaderBlob &out) {
   const std::optional<nx::nva::View> view = nx::nva::View::open(bytes, FORMAT);
-  if (!view)
+  if (!view || view->version() != VERSION)
     return false;
   const std::span<const u8> meta = view->chunk(CHUNK_META);
   const std::span<const u8> code = view->chunk(CHUNK_CODE);
@@ -40,12 +40,17 @@ bool decode_shader(const std::span<const u8> bytes, ShaderBlob &out) {
     return false;
 
   nx::nva::Reader r(meta);
-  out.target = nx::cast<ShaderTarget>(r.u32v());
-  out.code.resize(code.size());
-  std::memcpy(out.code.data(), code.data(), code.size());
-  out.reflection_json = nx::string(
-      nx::string_view(reinterpret_cast<const char *>(refl.data()), refl.size()));
-  return r.ok();
+  const u32 target = r.u32v();
+  if (!r.ok() || target > nx::cast<u32>(ShaderTarget::Metallib))
+    return false;
+  ShaderBlob decoded;
+  decoded.target = nx::cast<ShaderTarget>(target);
+  decoded.code.resize(code.size());
+  std::memcpy(decoded.code.data(), code.data(), code.size());
+  decoded.reflection_json = nx::string(nx::string_view(
+      reinterpret_cast<const char *>(refl.data()), refl.size()));
+  out = std::move(decoded);
+  return true;
 }
 
-}
+} // namespace nxe::rhi

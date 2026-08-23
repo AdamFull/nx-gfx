@@ -18,11 +18,6 @@ const nx::log::Category log_img = nx::log::category("image");
 
 using Result = nx::result<ImageData, ImageError>;
 
-// Both backends expose texture arrays through a 32-bit descriptor, but current
-// desktop GPU APIs cap usable array layers at 2048. Reject larger metadata here
-// instead of constructing a subresource table that no backend can consume.
-constexpr u32 MAX_IMAGE_ARRAY_LAYERS = 2048;
-
 /// Sequential cursor over the input bytes, bounds-checked on every read.
 struct Reader {
   const u8 *data = nullptr;
