@@ -57,8 +57,9 @@ constexpr const char *platform_surface_extension() noexcept {
 #endif
 }
 
-[[nodiscard]] bool listed(const nx::small_vector<VkExtensionProperties, 128> &all,
-                         const char *name) {
+[[nodiscard]] bool
+listed(const nx::small_vector<VkExtensionProperties, 128> &all,
+       const char *name) {
   for (const VkExtensionProperties &one : all)
     if (std::strcmp(one.extensionName, name) == 0)
       return true;
@@ -69,8 +70,9 @@ constexpr const char *platform_surface_extension() noexcept {
 
 /// Which road each capability takes on this device: core where its version has
 /// it, an extension where one carries it, and neither is a device we skip.
-DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
-                                        const VkPhysicalDeviceProperties &props) {
+DeviceRoutes
+VulkanDevice::probe_routes(VkPhysicalDevice candidate,
+                           const VkPhysicalDeviceProperties &props) {
   DeviceRoutes out;
   out.core_12 = props.apiVersion >= VK_API_VERSION_1_2;
   out.core_13 = props.apiVersion >= VK_API_VERSION_1_3;
@@ -410,21 +412,22 @@ bool VulkanDevice::select_physical_device() {
 
     const u32 version = props.properties.apiVersion;
     if (version < REQUIRED_API_VERSION) {
-      rejected.push_back(nx::format(
-          "{}: Vulkan {}.{}, below the {}.{} floor", props.properties.deviceName,
-          VK_API_VERSION_MAJOR(version), VK_API_VERSION_MINOR(version),
-          VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
-          VK_API_VERSION_MINOR(REQUIRED_API_VERSION)));
+      rejected.push_back(
+          nx::format("{}: Vulkan {}.{}, below the {}.{} floor",
+                     props.properties.deviceName, VK_API_VERSION_MAJOR(version),
+                     VK_API_VERSION_MINOR(version),
+                     VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
+                     VK_API_VERSION_MINOR(REQUIRED_API_VERSION)));
       nx::logd(log_rhi, "skipping {}", rejected.back());
       continue;
     }
 
     const DeviceRoutes routes = probe_routes(candidate, props.properties);
     if (!routes.missing.empty()) {
-      rejected.push_back(nx::format(
-          "{} (Vulkan {}.{}): no {}", props.properties.deviceName,
-          VK_API_VERSION_MAJOR(version), VK_API_VERSION_MINOR(version),
-          routes.missing));
+      rejected.push_back(
+          nx::format("{} (Vulkan {}.{}): no {}", props.properties.deviceName,
+                     VK_API_VERSION_MAJOR(version),
+                     VK_API_VERSION_MINOR(version), routes.missing));
       nx::logd(log_rhi, "skipping {}", rejected.back());
       continue;
     }
@@ -499,9 +502,9 @@ bool VulkanDevice::select_physical_device() {
   const VkSampleCountFlags color_samples =
       props.properties.limits.framebufferColorSampleCounts &
       props.properties.limits.sampledImageColorSampleCounts;
-  for (u32 count = 64; count >= 1; count >>= 1)
-    if ((color_samples & nx::cast<VkSampleCountFlags>(count)) != 0) {
-      m_caps.max_msaa_samples = count;
+  for (u32 sample_count = 64; sample_count >= 1; sample_count >>= 1)
+    if ((color_samples & nx::cast<VkSampleCountFlags>(sample_count)) != 0) {
+      m_caps.max_msaa_samples = sample_count;
       break;
     }
   m_caps.max_push_constant_size = props.properties.limits.maxPushConstantsSize;
@@ -714,9 +717,9 @@ bool VulkanDevice::create_logical_device() {
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
   const u32 video_family = find_video_decode_family();
-  const bool try_video =
-      video_family != INVALID_FAMILY && video_family != graphics &&
-      video_family != compute && video_family != copy;
+  const bool try_video = video_family != INVALID_FAMILY &&
+                         video_family != graphics && video_family != compute &&
+                         video_family != copy;
   const usize base_extensions = device_extensions.size();
   const usize base_queues = queue_infos.size();
   VkPhysicalDeviceVideoDecodeVP9FeaturesKHR vp9_feature{
@@ -745,10 +748,12 @@ bool VulkanDevice::create_logical_device() {
   info.ppEnabledExtensionNames = device_extensions.data();
 
   bool video_enabled = try_video;
-  VkResult created = vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
+  VkResult created =
+      vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
   if (created != VK_SUCCESS && video_enabled) {
-    nx::logw(log_rhi, "driver rejected the video-decode setup; the device comes "
-                      "up without hardware decode");
+    nx::logw(log_rhi,
+             "driver rejected the video-decode setup; the device comes "
+             "up without hardware decode");
     device_extensions.resize(base_extensions);
     queue_infos.resize(base_queues);
     if (video_link != nullptr)
@@ -851,15 +856,14 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
       frames_in_flight < 1 ? 1 : (frames_in_flight > 3 ? 3 : frames_in_flight);
 
   m_frames.clear();
+  m_frames.reserve(m_frames_in_flight);
   for (u32 i = 0; i < m_frames_in_flight; ++i) {
-    FrameContext frame;
+    FrameContext &frame = m_frames.emplace_back();
 
     // The slot and its pool are created on demand by open_slot().
     VkSemaphoreCreateInfo binary_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     NX_VK_TRY(vkCreateSemaphore(m_device, &binary_info, nullptr,
                                 &frame.acquire_semaphore));
-
-    m_frames.push_back(std::move(frame));
   }
   return true;
 }

@@ -114,7 +114,7 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
       if (tgs.is_array() && tgs.size() == 3)
         for (usize axis = 0; axis < 3; ++axis)
           out_entry.local_size[axis] = nx::cast<u32>(tgs[axis].get_u64(0));
-      out.compute_entries.push_back(std::move(out_entry));
+      out.compute_entries.push_back(out_entry);
     }
   }
 

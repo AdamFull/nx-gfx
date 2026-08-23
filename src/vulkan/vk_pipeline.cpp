@@ -196,10 +196,9 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
     shader.compute_entries.push_back(std::move(entry));
   }
 
-  const ShaderHandle handle = m_shaders.insert(std::move(shader));
   set_object_name(vk_handle_value(shader.module), VK_OBJECT_TYPE_SHADER_MODULE,
                   desc.name);
-  return handle;
+  return m_shaders.insert(std::move(shader));
 }
 
 const ShaderReflection &

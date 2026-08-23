@@ -15,7 +15,6 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
 VmaMemoryUsage to_vma_usage(const MemoryUsage usage) noexcept {
   switch (usage) {
   case MemoryUsage::Upload:
-    return VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
   case MemoryUsage::Readback:
     return VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
   default:
@@ -246,7 +245,7 @@ HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
              desc.size / 1024);
     return {};
   }
-  return m_heaps.insert(std::move(heap));
+  return m_heaps.insert(heap);
 }
 
 void VulkanDevice::destroy_heap(const HeapHandle handle) noexcept {
@@ -388,7 +387,8 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
     VkBufferDeviceAddressInfo address_info{
         VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     address_info.buffer = buffer.buffer;
-    buffer.device_address = vkGetBufferDeviceAddressKHR(m_device, &address_info);
+    buffer.device_address =
+        vkGetBufferDeviceAddressKHR(m_device, &address_info);
   }
 
   const BufferHandle handle = m_buffers.insert(buffer);
@@ -483,8 +483,8 @@ bool VulkanDevice::read_timestamps(const QueryPoolHandle handle,
   // the caller reads an older one rather than stalling the frame to time it.
   return vkGetQueryPoolResults(m_device, queries->pool, 0, count,
                                nx::cast<usize>(count) * sizeof(u64), out.data(),
-                               sizeof(u64), VK_QUERY_RESULT_64_BIT) ==
-         VK_SUCCESS;
+                               sizeof(u64),
+                               VK_QUERY_RESULT_64_BIT) == VK_SUCCESS;
 }
 
 u32 VulkanDevice::texture_index(const TextureHandle handle) const noexcept {
@@ -540,10 +540,10 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
     // The tracked state is authoritative: callers may state `from`, but the
     // texture knows where it actually is, which avoids a whole class of
     // mismatched-layout validation errors.
-    const ResourceState from =
-        desc.discard ? ResourceState::Undefined
-        : desc.from == ResourceState::Undefined ? texture->state
-                                                : desc.from;
+    const ResourceState from = desc.discard ? ResourceState::Undefined
+                               : desc.from == ResourceState::Undefined
+                                   ? texture->state
+                                   : desc.from;
     if (!desc.discard && from == desc.to)
       continue;
 
@@ -750,7 +750,7 @@ void VulkanCommandContext::write_timestamp(const QueryPoolHandle pool,
   // finished, which is what makes the gap between two of them a pass's time
   // rather than the time it took to record.
   vkCmdWriteTimestamp2KHR(m_cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                       queries->pool, index);
+                          queries->pool, index);
 }
 
 void VulkanCommandContext::push_debug_group(const nx::string_view name,
