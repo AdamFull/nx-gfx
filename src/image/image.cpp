@@ -8,6 +8,8 @@
 #include <stb_image_resize2.h>
 
 #include <cstring>
+#include <limits>
+#include <memory>
 
 namespace nxe::rhi {
 namespace {
@@ -15,6 +17,11 @@ namespace {
 const nx::log::Category log_img = nx::log::category("image");
 
 using Result = nx::result<ImageData, ImageError>;
+
+// Both backends expose texture arrays through a 32-bit descriptor, but current
+// desktop GPU APIs cap usable array layers at 2048. Reject larger metadata here
+// instead of constructing a subresource table that no backend can consume.
+constexpr u32 MAX_IMAGE_ARRAY_LAYERS = 2048;
 
 /// Sequential cursor over the input bytes, bounds-checked on every read.
 struct Reader {
@@ -43,7 +50,7 @@ struct Reader {
     pos += n;
     return true;
   }
-  void align4() noexcept { pos = (pos + 3u) & ~usize{3}; }
+  bool align4() noexcept { return skip((4u - (pos & 3u)) & 3u); }
 };
 
 [[nodiscard]] u32 dim_at(const u32 base, const u32 mip) noexcept {
@@ -51,15 +58,81 @@ struct Reader {
   return v == 0 ? 1u : v;
 }
 
-[[nodiscard]] u64 total_size(const Format fmt, const u32 w, const u32 h,
-                             const u32 d, const u32 mips, const u32 layers,
-                             const bool is_3d) noexcept {
-  u64 total = 0;
-  for (u32 layer = 0; layer < layers; ++layer)
-    for (u32 mip = 0; mip < mips; ++mip)
-      total += format_subresource_size(fmt, dim_at(w, mip), dim_at(h, mip),
-                                       is_3d ? dim_at(d, mip) : 1u);
-  return total;
+[[nodiscard]] bool checked_add(const u64 a, const u64 b, u64 &value) noexcept {
+  if (b > std::numeric_limits<u64>::max() - a)
+    return false;
+  value = a + b;
+  return true;
+}
+
+[[nodiscard]] bool checked_mul(const u64 a, const u64 b, u64 &value) noexcept {
+  if (a != 0 && b > std::numeric_limits<u64>::max() / a)
+    return false;
+  value = a * b;
+  return true;
+}
+
+[[nodiscard]] bool checked_align4(const u64 value, u64 &aligned) noexcept {
+  return checked_add(value, (4u - (value & 3u)) & 3u, aligned);
+}
+
+struct SubresourceLayout {
+  u64 row_pitch = 0;
+  u64 size = 0;
+};
+
+[[nodiscard]] bool subresource_layout(const Format fmt, const u32 w,
+                                      const u32 h, const u32 d,
+                                      SubresourceLayout &layout) noexcept {
+  if (w == 0 || h == 0 || d == 0)
+    return false;
+
+  u32 block_w = 0;
+  u32 block_h = 0;
+  format_block_extent(fmt, block_w, block_h);
+  const u64 texel_size = format_texel_size(fmt);
+  if (block_w == 0 || block_h == 0 || texel_size == 0)
+    return false;
+
+  const u64 blocks_x = (nx::cast<u64>(w) + block_w - 1) / block_w;
+  const u64 blocks_y = (nx::cast<u64>(h) + block_h - 1) / block_h;
+  if (!checked_mul(blocks_x, texel_size, layout.row_pitch) ||
+      layout.row_pitch > std::numeric_limits<u32>::max())
+    return false;
+
+  u64 slice_size = 0;
+  return checked_mul(layout.row_pitch, blocks_y, slice_size) &&
+         checked_mul(slice_size, d, layout.size);
+}
+
+[[nodiscard]] u32 maximum_mip_levels(const u32 w, const u32 h,
+                                     const u32 d) noexcept {
+  u32 largest = nx::max(w, nx::max(h, d));
+  u32 levels = 0;
+  while (largest != 0) {
+    ++levels;
+    largest >>= 1;
+  }
+  return levels;
+}
+
+[[nodiscard]] bool image_total_size(const Format fmt, const u32 w, const u32 h,
+                                    const u32 d, const u32 mips,
+                                    const u32 layers, const bool is_3d,
+                                    u64 &total) noexcept {
+  if (w == 0 || h == 0 || d == 0 || mips == 0 || layers == 0 ||
+      mips > maximum_mip_levels(w, h, d))
+    return false;
+
+  total = 0;
+  for (u32 mip = 0; mip < mips; ++mip) {
+    SubresourceLayout layout;
+    if (!subresource_layout(fmt, dim_at(w, mip), dim_at(h, mip),
+                            is_3d ? dim_at(d, mip) : 1u, layout) ||
+        !checked_add(total, layout.size, total))
+      return false;
+  }
+  return checked_mul(total, layers, total);
 }
 
 void push_subresource(ImageData &img, const u64 offset, const u32 mip,
@@ -218,7 +291,8 @@ Format format_from_dds_legacy(const DdsPixelFormat &pf) noexcept {
 
 Result parse_dds(Reader &r) {
   DdsHeader header{};
-  if (!r.read(header) || header.size != sizeof(DdsHeader))
+  if (!r.read(header) || header.size != sizeof(DdsHeader) ||
+      header.ddspf.size != sizeof(DdsPixelFormat))
     return nx::err(ImageError::Corrupt);
 
   ImageData img;
@@ -232,10 +306,15 @@ Result parse_dds(Reader &r) {
     DdsHeaderDX10 ext{};
     if (!r.read(ext))
       return nx::err(ImageError::Corrupt);
+    if (ext.array_size == 0 || (ext.resource_dimension != 3 &&
+                                ext.resource_dimension != DDS_DIM_TEXTURE3D))
+      return nx::err(ImageError::Corrupt);
     img.format = format_from_dxgi(ext.dxgi_format);
-    layers = ext.array_size == 0 ? 1 : ext.array_size;
+    layers = ext.array_size;
     cube = (ext.misc_flag & DDS_MISC_TEXTURECUBE) != 0;
     is_3d = ext.resource_dimension == DDS_DIM_TEXTURE3D;
+    if (is_3d && (cube || layers != 1))
+      return nx::err(ImageError::Corrupt);
   } else {
     img.format = format_from_dds_legacy(header.ddspf);
     cube = (header.caps2 & DDSCAPS2_CUBEMAP) != 0;
@@ -245,23 +324,32 @@ Result parse_dds(Reader &r) {
   if (img.format == Format::Unknown)
     return nx::err(ImageError::UnsupportedFormat);
 
+  if (cube && layers > std::numeric_limits<u32>::max() / 6u)
+    return nx::err(ImageError::Corrupt);
   if (cube)
     layers *= 6;
+  if (layers > MAX_IMAGE_ARRAY_LAYERS)
+    return nx::err(ImageError::Corrupt);
 
   img.width = header.width;
-  img.height = header.height == 0 ? 1 : header.height;
-  img.depth = is_3d ? (header.depth == 0 ? 1 : header.depth) : 1;
+  img.height = header.height;
+  img.depth = is_3d ? header.depth : 1;
   img.mip_levels = header.mip_count == 0 ? 1 : header.mip_count;
   img.array_layers = layers;
   img.dimension = pick_dimension(cube, is_3d, layers);
 
-  const u64 total = total_size(img.format, img.width, img.height, img.depth,
-                               img.mip_levels, layers, is_3d);
-  if (!r.ok(total))
+  if (cube && img.width != img.height)
     return nx::err(ImageError::Corrupt);
 
-  img.pixels = nx::blob<u8>(total);
-  img.subresources.reserve(nx::cast<usize>(layers) * img.mip_levels);
+  u64 total = 0;
+  if (!image_total_size(img.format, img.width, img.height, img.depth,
+                        img.mip_levels, layers, is_3d, total) ||
+      total > r.remaining())
+    return nx::err(ImageError::Corrupt);
+
+  img.pixels = nx::blob<u8>(nx::cast<usize>(total));
+  img.subresources.reserve(
+      nx::cast<usize>(nx::cast<u64>(layers) * img.mip_levels));
 
   u64 offset = 0;
   for (u32 layer = 0; layer < layers; ++layer) {
@@ -270,8 +358,9 @@ Result parse_dds(Reader &r) {
       const u32 h = dim_at(img.height, mip);
       const u32 d = is_3d ? dim_at(img.depth, mip) : 1u;
       const u64 sz = format_subresource_size(img.format, w, h, d);
-      std::memcpy(img.pixels.data() + offset, r.data + r.pos, sz);
-      r.pos += sz;
+      std::memcpy(img.pixels.data() + nx::cast<usize>(offset), r.data + r.pos,
+                  nx::cast<usize>(sz));
+      r.pos += nx::cast<usize>(sz);
       push_subresource(img, offset, mip, layer, w, h, d);
       offset += sz;
     }
@@ -281,6 +370,7 @@ Result parse_dds(Reader &r) {
 
 constexpr u8 KTX_MAGIC[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x31,
                               0x31, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+constexpr u32 KTX_ENDIAN_NATIVE = 0x04030201;
 constexpr u32 KTX_ENDIAN_REVERSED = 0x01020304;
 
 struct KtxHeader {
@@ -289,6 +379,17 @@ struct KtxHeader {
       array_elements, faces, mip_levels, key_value_bytes;
 };
 static_assert(sizeof(KtxHeader) == 52, "KTX 1.0 header must be 52 bytes");
+
+struct KtxLevelLayout {
+  u32 width = 0;
+  u32 height = 0;
+  u32 depth = 0;
+  u32 rows = 0;
+  u64 decoded_row = 0;
+  u64 encoded_row = 0;
+  u64 decoded_per_layer = 0;
+  u64 encoded_per_layer = 0;
+};
 
 u32 swap32(const u32 v) noexcept {
   return ((v & 0xFF000000u) >> 24) | ((v & 0x00FF0000u) >> 8) |
@@ -364,14 +465,67 @@ Format format_from_gl(const u32 gl) noexcept {
   }
 }
 
+[[nodiscard]] bool ktx_level_layout(const Format format, const u32 width,
+                                    const u32 height, const u32 depth,
+                                    KtxLevelLayout &level) noexcept {
+  SubresourceLayout decoded;
+  if (!subresource_layout(format, width, height, depth, decoded))
+    return false;
+
+  u32 block_w = 0;
+  u32 block_h = 0;
+  format_block_extent(format, block_w, block_h);
+  const u64 rows = (nx::cast<u64>(height) + block_h - 1) / block_h;
+  if (rows > std::numeric_limits<u32>::max())
+    return false;
+
+  level.width = width;
+  level.height = height;
+  level.depth = depth;
+  level.rows = nx::cast<u32>(rows);
+  level.decoded_row = decoded.row_pitch;
+  level.decoded_per_layer = decoded.size;
+  level.encoded_row = decoded.row_pitch;
+  if (!format_is_compressed(format) &&
+      !checked_align4(level.encoded_row, level.encoded_row))
+    return false;
+
+  u64 encoded_slice = 0;
+  return checked_mul(level.encoded_row, rows, encoded_slice) &&
+         checked_mul(encoded_slice, depth, level.encoded_per_layer);
+}
+
+void copy_ktx_row(u8 *dst, const u8 *src, const usize bytes,
+                  const u32 element_size, const bool swapped) noexcept {
+  std::memcpy(dst, src, bytes);
+  if (!swapped || element_size <= 1)
+    return;
+
+  for (usize element = 0; element < bytes; element += element_size) {
+    for (u32 left = 0, right = element_size - 1; left < right;
+         ++left, --right) {
+      const u8 value = dst[element + left];
+      dst[element + left] = dst[element + right];
+      dst[element + right] = value;
+    }
+  }
+}
+
 Result parse_ktx(Reader &r) {
   KtxHeader h{};
   if (!r.read(h))
     return nx::err(ImageError::Corrupt);
 
+  if (h.endianness != KTX_ENDIAN_NATIVE && h.endianness != KTX_ENDIAN_REVERSED)
+    return nx::err(ImageError::Corrupt);
+
   const bool swapped = h.endianness == KTX_ENDIAN_REVERSED;
   if (swapped) {
+    h.gl_type = swap32(h.gl_type);
+    h.gl_type_size = swap32(h.gl_type_size);
+    h.gl_format = swap32(h.gl_format);
     h.gl_internal_format = swap32(h.gl_internal_format);
+    h.gl_base_internal_format = swap32(h.gl_base_internal_format);
     h.pixel_width = swap32(h.pixel_width);
     h.pixel_height = swap32(h.pixel_height);
     h.pixel_depth = swap32(h.pixel_depth);
@@ -386,11 +540,31 @@ Result parse_ktx(Reader &r) {
   if (img.format == Format::Unknown)
     return nx::err(ImageError::UnsupportedFormat);
 
-  const bool cube = h.faces > 1;
-  const bool is_3d = h.pixel_depth > 1;
+  const bool compressed = format_is_compressed(img.format);
+  if ((compressed &&
+       (h.gl_type != 0 || h.gl_format != 0 || h.gl_type_size != 1)) ||
+      (!compressed && (h.gl_type == 0 || h.gl_format == 0 ||
+                       (h.gl_type_size != 1 && h.gl_type_size != 2 &&
+                        h.gl_type_size != 4 && h.gl_type_size != 8))))
+    return nx::err(ImageError::Corrupt);
+
+  if (h.pixel_width == 0 || (h.faces != 1 && h.faces != 6) ||
+      (h.key_value_bytes & 3u) != 0)
+    return nx::err(ImageError::Corrupt);
+
+  const bool cube = h.faces == 6;
+  const bool is_3d = h.pixel_depth != 0;
+  if ((cube && (h.pixel_height == 0 || is_3d)) ||
+      (is_3d && (h.pixel_height == 0 || h.array_elements != 0)))
+    return nx::err(ImageError::Corrupt);
+
   u32 layers = h.array_elements == 0 ? 1 : h.array_elements;
+  if (cube && layers > std::numeric_limits<u32>::max() / 6u)
+    return nx::err(ImageError::Corrupt);
   if (cube)
     layers *= 6;
+  if (layers > MAX_IMAGE_ARRAY_LAYERS)
+    return nx::err(ImageError::Corrupt);
 
   img.width = h.pixel_width;
   img.height = h.pixel_height == 0 ? 1 : h.pixel_height;
@@ -399,46 +573,103 @@ Result parse_ktx(Reader &r) {
   img.array_layers = layers;
   img.dimension = pick_dimension(cube, is_3d, layers);
 
+  if (cube && img.width != img.height)
+    return nx::err(ImageError::Corrupt);
   if (!r.skip(h.key_value_bytes))
     return nx::err(ImageError::Corrupt);
 
-  const u64 total = total_size(img.format, img.width, img.height, img.depth,
-                               img.mip_levels, layers, is_3d);
-  img.pixels = nx::blob<u8>(total);
-  img.subresources.reserve(nx::cast<usize>(layers) * img.mip_levels);
+  if (img.mip_levels > maximum_mip_levels(img.width, img.height, img.depth))
+    return nx::err(ImageError::Corrupt);
 
-  // KTX stores mip-major: [imageSize u32][all layers of the level], each level
-  // padded to a 4-byte boundary.
-  u64 offset = 0;
+  KtxLevelLayout levels[32]{};
+  Reader scan = r;
+  u64 total = 0;
+  const bool non_array_cube = cube && h.array_elements == 0;
   for (u32 mip = 0; mip < img.mip_levels; ++mip) {
     u32 image_size = 0;
-    if (!r.read(image_size))
+    if (!scan.read(image_size))
       return nx::err(ImageError::Corrupt);
     if (swapped)
       image_size = swap32(image_size);
 
-    const u32 w = dim_at(img.width, mip);
-    const u32 hgt = dim_at(img.height, mip);
-    const u32 d = is_3d ? dim_at(img.depth, mip) : 1u;
-    const u64 per_layer = format_subresource_size(img.format, w, hgt, d);
-    const u64 level_bytes = per_layer * layers;
-    if (!r.ok(level_bytes))
+    KtxLevelLayout &level = levels[mip];
+    const u32 width = dim_at(img.width, mip);
+    const u32 height = dim_at(img.height, mip);
+    const u32 depth = is_3d ? dim_at(img.depth, mip) : 1u;
+    if (!ktx_level_layout(img.format, width, height, depth, level) ||
+        level.decoded_row % h.gl_type_size != 0)
+      return nx::err(ImageError::Corrupt);
+
+    u64 expected_image_size = level.encoded_per_layer;
+    if (!non_array_cube &&
+        !checked_mul(expected_image_size, layers, expected_image_size))
+      return nx::err(ImageError::Corrupt);
+    if (expected_image_size > std::numeric_limits<u32>::max() ||
+        image_size != expected_image_size)
       return nx::err(ImageError::Corrupt);
 
     for (u32 layer = 0; layer < layers; ++layer) {
-      const u64 dst = offset + per_layer * layer;
-      std::memcpy(img.pixels.data() + dst, r.data + r.pos + per_layer * layer,
-                  per_layer);
-      push_subresource(img, dst, mip, layer, w, hgt, d);
+      if (level.encoded_per_layer > scan.remaining() ||
+          !scan.skip(nx::cast<usize>(level.encoded_per_layer)))
+        return nx::err(ImageError::Corrupt);
+      if (non_array_cube && !scan.align4())
+        return nx::err(ImageError::Corrupt);
     }
-    r.pos += level_bytes;
-    r.align4();
-    offset += level_bytes;
+    if (!scan.align4())
+      return nx::err(ImageError::Corrupt);
+
+    u64 decoded_level = 0;
+    if (!checked_mul(level.decoded_per_layer, layers, decoded_level) ||
+        !checked_add(total, decoded_level, total))
+      return nx::err(ImageError::Corrupt);
+  }
+
+  if (total > std::numeric_limits<usize>::max())
+    return nx::err(ImageError::Corrupt);
+  img.pixels = nx::blob<u8>(nx::cast<usize>(total));
+  img.subresources.reserve(
+      nx::cast<usize>(nx::cast<u64>(layers) * img.mip_levels));
+
+  // KTX stores mip-major data. Decode its aligned rows into the RHI's tightly
+  // packed subresources, validating the entire encoded layout before
+  // allocation.
+  u64 offset = 0;
+  for (u32 mip = 0; mip < img.mip_levels; ++mip) {
+    if (!r.skip(sizeof(u32)))
+      return nx::err(ImageError::Corrupt);
+
+    const KtxLevelLayout &level = levels[mip];
+    for (u32 layer = 0; layer < layers; ++layer) {
+      const u64 dst_layer = offset + level.decoded_per_layer * layer;
+      for (u32 z = 0; z < level.depth; ++z) {
+        for (u32 row = 0; row < level.rows; ++row) {
+          const u64 src_offset =
+              level.encoded_row * (nx::cast<u64>(z) * level.rows + row);
+          const u64 dst_offset =
+              dst_layer +
+              level.decoded_row * (nx::cast<u64>(z) * level.rows + row);
+          copy_ktx_row(img.pixels.data() + nx::cast<usize>(dst_offset),
+                       r.data + r.pos + nx::cast<usize>(src_offset),
+                       nx::cast<usize>(level.decoded_row), h.gl_type_size,
+                       swapped);
+        }
+      }
+      if (!r.skip(nx::cast<usize>(level.encoded_per_layer)) ||
+          (non_array_cube && !r.align4()))
+        return nx::err(ImageError::Corrupt);
+      push_subresource(img, dst_layer, mip, layer, level.width, level.height,
+                       level.depth);
+    }
+    if (!r.align4())
+      return nx::err(ImageError::Corrupt);
+    offset += level.decoded_per_layer * layers;
   }
   return img;
 }
 
 Result parse_stb(std::span<const u8> bytes) {
+  if (bytes.size() > nx::cast<usize>(std::numeric_limits<int>::max()))
+    return nx::err(ImageError::Corrupt);
   const int len = nx::cast<int>(bytes.size());
   int w = 0, h = 0, comp = 0;
 
@@ -461,19 +692,20 @@ Result parse_stb(std::span<const u8> bytes) {
     nx::loge(log_img, "stb decode failed: {}", stbi_failure_reason());
     return nx::err(ImageError::Corrupt);
   }
+  const std::unique_ptr<void, decltype(&stbi_image_free)> decoded(
+      pixels, &stbi_image_free);
 
   img.width = nx::cast<u32>(w);
   img.height = nx::cast<u32>(h);
   const u64 size = nx::cast<u64>(w) * nx::cast<u64>(h) * stride;
   img.pixels = nx::blob<u8>(size);
-  std::memcpy(img.pixels.data(), pixels, size);
-  stbi_image_free(pixels);
+  std::memcpy(img.pixels.data(), decoded.get(), size);
 
   push_subresource(img, 0, 0, 0, img.width, img.height, 1);
   return img;
 }
 
-}
+} // namespace
 
 nx::string_view to_string(const ImageError error) noexcept {
   switch (error) {
@@ -547,9 +779,12 @@ void generate_mip_chain(ImageData &image) {
     return;
 
   // UNORM, not sRGB: the format tag says these texels are linear data, so they
-  // are averaged as-is. A texture tagged sRGB would want a gamma-correct filter.
-  const u64 total =
-      total_size(image.format, image.width, image.height, 1, mips, 1, false);
+  // are averaged as-is. A texture tagged sRGB would want a gamma-correct
+  // filter.
+  u64 total = 0;
+  if (!image_total_size(image.format, image.width, image.height, 1, mips, 1,
+                        false, total))
+    return;
   nx::blob<u8> dst(total);
   std::memcpy(dst.data(), image.pixels.data(), image.subresources[0].size);
 
@@ -589,4 +824,4 @@ Result load_image(const nx::fs::path_view path) {
       std::span<const u8>(data->data(), data->size()));
 }
 
-}
+} // namespace nxe::rhi
