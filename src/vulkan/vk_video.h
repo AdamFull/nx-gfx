@@ -18,8 +18,8 @@ struct VideoDecodeCaps {
   bool dpb_and_output_coincide = false;
 };
 
-[[nodiscard]] VideoDecodeCaps query_video_decode_caps(const VulkanDevice &device,
-                                                      VideoCodec codec);
+[[nodiscard]] VideoDecodeCaps
+query_video_decode_caps(const VulkanDevice &device, VideoCodec codec);
 
 struct VideoImage {
   VkImage image = VK_NULL_HANDLE;
@@ -79,8 +79,8 @@ private:
   [[nodiscard]] bool
   create_bitstream_buffer(u64 capacity,
                           const VkVideoProfileListInfoKHR &profiles);
-  [[nodiscard]] bool
-  create_sampleable_image(const u32 *families, u32 family_count);
+  [[nodiscard]] bool create_sampleable_image(const u32 *families,
+                                             u32 family_count);
   [[nodiscard]] bool create_plane_resources();
   [[nodiscard]] u32 allocate_slot() noexcept;
 
@@ -94,6 +94,7 @@ private:
   VkFormat m_picture_format = VK_FORMAT_UNDEFINED;
   VkFormat m_dpb_format = VK_FORMAT_UNDEFINED;
   VkExtent2D m_extent = {};
+  VkExtent2D m_coded_limit = {};
   u32 m_max_dpb_slots = 0;
 
   VkCommandPool m_pool = VK_NULL_HANDLE;
@@ -124,4 +125,4 @@ private:
   TextureHandle m_cbcr;
 };
 
-}
+} // namespace nxe::rhi
