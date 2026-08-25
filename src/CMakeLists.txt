@@ -11,7 +11,7 @@ add_library(nx_rhi_image STATIC
         shader_nva.h
         shader_nva.cpp)
 add_library(nx::rhi_image ALIAS nx_rhi_image)
-target_include_directories(nx_rhi_image PUBLIC "${CMAKE_SOURCE_DIR}/engine")
+target_include_directories(nx_rhi_image PUBLIC "${NX_ENGINE_ROOT}/engine")
 target_link_libraries(nx_rhi_image
         PUBLIC nx::foundation
         PRIVATE nx::compile_options nx::stb)
