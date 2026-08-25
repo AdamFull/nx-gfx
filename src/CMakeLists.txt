@@ -18,11 +18,7 @@ target_link_libraries(nx_rhi_image
 
 set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 
-if (MSVC)
-    set_source_files_properties(
-            image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
-            PROPERTIES COMPILE_OPTIONS "/w")
-else ()
+if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set_source_files_properties(
             image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
             PROPERTIES COMPILE_OPTIONS "-w")
@@ -136,10 +132,7 @@ else ()
 
     target_link_libraries(nx_rhi PUBLIC nx::volk nx::vma nx::vulkan_headers)
 
-    if (MSVC)
-        set_source_files_properties(vulkan/vk_vma.cpp PROPERTIES
-                COMPILE_OPTIONS "/w")
-    else ()
+    if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         set_source_files_properties(vulkan/vk_vma.cpp PROPERTIES
                 COMPILE_OPTIONS "-w")
     endif ()
