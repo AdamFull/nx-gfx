@@ -5,7 +5,6 @@
 #include "core/foundation/diagnostics/profiler.h"
 
 #include <stb_image.h>
-#include <stb_image_resize2.h>
 #include <webp/decode.h>
 
 #include <cstring>
@@ -808,65 +807,6 @@ Result load_image_from_memory(const std::span<const u8> bytes) {
   if (is_webp(bytes))
     return parse_webp(bytes);
   return parse_stb(bytes);
-}
-
-void generate_mip_chain(ImageData &image) {
-  // Only a freshly decoded 2D single-layer 8-bit RGBA image. Anything already
-  // mipped, compressed, layered, 3D or float carries its own chain (or cannot
-  // be resized by averaging texels), so leave it exactly as it arrived.
-  if (image.mip_levels != 1 || image.array_layers != 1 ||
-      image.dimension != TextureDimension::Tex2D ||
-      (image.format != Format::RGBA8_UNORM &&
-       image.format != Format::RGBA8_SRGB) ||
-      image.subresources.size() != 1)
-    return;
-
-  u32 mips = 1;
-  for (u32 d = nx::max(image.width, image.height); d > 1; d >>= 1)
-    ++mips;
-  if (mips <= 1)
-    return;
-
-  // The format tag controls filtering space. Color textures decode to linear
-  // light for averaging and encode back to sRGB; data textures are averaged as
-  // raw UNORM values. Alpha remains linear in both paths.
-  u64 total = 0;
-  if (!image_total_size(image.format, image.width, image.height, 1, mips, 1,
-                        false, total))
-    return;
-  nx::blob<u8> dst(total);
-  std::memcpy(dst.data(), image.pixels.data(), image.subresources[0].size);
-
-  const u32 base_w = image.width;
-  const u32 base_h = image.height;
-  image.subresources.clear();
-  u64 offset = 0;
-  u32 prev_w = base_w;
-  u32 prev_h = base_h;
-  u64 prev_off = 0;
-  for (u32 mip = 0; mip < mips; ++mip) {
-    const u32 w = dim_at(base_w, mip);
-    const u32 h = dim_at(base_h, mip);
-    if (mip > 0) {
-      if (image.format == Format::RGBA8_SRGB)
-        stbir_resize_uint8_srgb(dst.data() + prev_off, nx::cast<int>(prev_w),
-                                nx::cast<int>(prev_h), 0, dst.data() + offset,
-                                nx::cast<int>(w), nx::cast<int>(h), 0,
-                                STBIR_RGBA);
-      else
-        stbir_resize_uint8_linear(dst.data() + prev_off, nx::cast<int>(prev_w),
-                                  nx::cast<int>(prev_h), 0, dst.data() + offset,
-                                  nx::cast<int>(w), nx::cast<int>(h), 0,
-                                  STBIR_RGBA);
-    }
-    push_subresource(image, offset, mip, 0, w, h, 1);
-    prev_off = offset;
-    prev_w = w;
-    prev_h = h;
-    offset += format_subresource_size(image.format, w, h, 1);
-  }
-  image.pixels = std::move(dst);
-  image.mip_levels = mips;
 }
 
 Result load_image(const nx::fs::path_view path) {

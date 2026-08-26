@@ -71,6 +71,4 @@ load_image_from_memory(std::span<const u8> bytes);
 [[nodiscard]] nx::result<ImageData, ImageError>
 load_image(nx::fs::path_view path);
 
-void generate_mip_chain(ImageData &image);
-
 } // namespace nxe::rhi

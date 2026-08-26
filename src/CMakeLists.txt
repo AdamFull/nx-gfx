@@ -5,7 +5,6 @@ add_library(nx_rhi_image STATIC
         image/image.h
         image/image.cpp
         image/stb_image_impl.cpp
-        image/stb_image_resize_impl.cpp
         image/texture_import.h
         image/texture_import.cpp
         image/texture_nva.h
@@ -22,7 +21,7 @@ set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 
 if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set_source_files_properties(
-            image/stb_image_impl.cpp image/stb_image_resize_impl.cpp
+            image/stb_image_impl.cpp
             PROPERTIES COMPILE_OPTIONS "-w")
 endif ()
 
