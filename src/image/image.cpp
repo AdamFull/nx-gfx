@@ -6,6 +6,7 @@
 
 #include <stb_image.h>
 #include <stb_image_resize2.h>
+#include <webp/decode.h>
 
 #include <cstring>
 #include <limits>
@@ -154,6 +155,14 @@ TextureDimension pick_dimension(const bool cube, const bool is_3d,
 }
 
 constexpr u8 DDS_MAGIC[4] = {'D', 'D', 'S', ' '};
+constexpr u8 WEBP_RIFF[4] = {'R', 'I', 'F', 'F'};
+constexpr u8 WEBP_FORM[4] = {'W', 'E', 'B', 'P'};
+
+[[nodiscard]] bool is_webp(const std::span<const u8> bytes) noexcept {
+  return bytes.size() >= 12 &&
+         std::memcmp(bytes.data(), WEBP_RIFF, sizeof(WEBP_RIFF)) == 0 &&
+         std::memcmp(bytes.data() + 8, WEBP_FORM, sizeof(WEBP_FORM)) == 0;
+}
 
 constexpr u32 make_fourcc(const char a, const char b, const char c,
                           const char d) noexcept {
@@ -662,7 +671,48 @@ Result parse_ktx(Reader &r) {
   return img;
 }
 
-Result parse_stb(std::span<const u8> bytes) {
+Result parse_webp(const std::span<const u8> bytes) {
+  WebPBitstreamFeatures features{};
+  const VP8StatusCode status =
+      WebPGetFeatures(bytes.data(), bytes.size(), &features);
+  if (status != VP8_STATUS_OK) {
+    nx::loge(log_img, "WebP header decode failed: status {}",
+             nx::cast<i32>(status));
+    return nx::err(status == VP8_STATUS_UNSUPPORTED_FEATURE
+                       ? ImageError::UnsupportedFormat
+                       : ImageError::Corrupt);
+  }
+  if (features.has_animation != 0) {
+    nx::loge(log_img, "animated WebP is not a static texture");
+    return nx::err(ImageError::UnsupportedFormat);
+  }
+  if (features.width <= 0 || features.height <= 0)
+    return nx::err(ImageError::Corrupt);
+
+  const u32 width = nx::cast<u32>(features.width);
+  const u32 height = nx::cast<u32>(features.height);
+  SubresourceLayout layout;
+  if (!subresource_layout(Format::RGBA8_UNORM, width, height, 1, layout) ||
+      layout.size > std::numeric_limits<usize>::max())
+    return nx::err(ImageError::Corrupt);
+
+  ImageData img;
+  img.format = Format::RGBA8_UNORM;
+  img.width = width;
+  img.height = height;
+  img.pixels = nx::blob<u8>(nx::cast<usize>(layout.size));
+  if (WebPDecodeRGBAInto(bytes.data(), bytes.size(), img.pixels.data(),
+                         img.pixels.size(),
+                         nx::cast<int>(layout.row_pitch)) == nullptr) {
+    nx::loge(log_img, "WebP pixel decode failed");
+    return nx::err(ImageError::Corrupt);
+  }
+
+  push_subresource(img, 0, 0, 0, width, height, 1);
+  return img;
+}
+
+Result parse_stb(const std::span<const u8> bytes) {
   if (bytes.size() > nx::cast<usize>(std::numeric_limits<int>::max()))
     return nx::err(ImageError::Corrupt);
   const int len = nx::cast<int>(bytes.size());
@@ -755,6 +805,8 @@ Result load_image_from_memory(const std::span<const u8> bytes) {
     reader.pos = sizeof(KTX_MAGIC);
     return parse_ktx(reader);
   }
+  if (is_webp(bytes))
+    return parse_webp(bytes);
   return parse_stb(bytes);
 }
 

@@ -14,7 +14,7 @@ add_library(nx::rhi_image ALIAS nx_rhi_image)
 target_include_directories(nx_rhi_image PUBLIC "${NX_ENGINE_ROOT}/engine")
 target_link_libraries(nx_rhi_image
         PUBLIC nx::foundation
-        PRIVATE nx::compile_options nx::stb)
+        PRIVATE nx::compile_options nx::stb nx::webp_decoder)
 
 set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 
