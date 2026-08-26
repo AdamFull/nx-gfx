@@ -816,7 +816,9 @@ void generate_mip_chain(ImageData &image) {
   // be resized by averaging texels), so leave it exactly as it arrived.
   if (image.mip_levels != 1 || image.array_layers != 1 ||
       image.dimension != TextureDimension::Tex2D ||
-      image.format != Format::RGBA8_UNORM || image.subresources.size() != 1)
+      (image.format != Format::RGBA8_UNORM &&
+       image.format != Format::RGBA8_SRGB) ||
+      image.subresources.size() != 1)
     return;
 
   u32 mips = 1;
@@ -825,9 +827,9 @@ void generate_mip_chain(ImageData &image) {
   if (mips <= 1)
     return;
 
-  // UNORM, not sRGB: the format tag says these texels are linear data, so they
-  // are averaged as-is. A texture tagged sRGB would want a gamma-correct
-  // filter.
+  // The format tag controls filtering space. Color textures decode to linear
+  // light for averaging and encode back to sRGB; data textures are averaged as
+  // raw UNORM values. Alpha remains linear in both paths.
   u64 total = 0;
   if (!image_total_size(image.format, image.width, image.height, 1, mips, 1,
                         false, total))
@@ -845,11 +847,18 @@ void generate_mip_chain(ImageData &image) {
   for (u32 mip = 0; mip < mips; ++mip) {
     const u32 w = dim_at(base_w, mip);
     const u32 h = dim_at(base_h, mip);
-    if (mip > 0)
-      stbir_resize_uint8_linear(dst.data() + prev_off, nx::cast<int>(prev_w),
+    if (mip > 0) {
+      if (image.format == Format::RGBA8_SRGB)
+        stbir_resize_uint8_srgb(dst.data() + prev_off, nx::cast<int>(prev_w),
                                 nx::cast<int>(prev_h), 0, dst.data() + offset,
                                 nx::cast<int>(w), nx::cast<int>(h), 0,
                                 STBIR_RGBA);
+      else
+        stbir_resize_uint8_linear(dst.data() + prev_off, nx::cast<int>(prev_w),
+                                  nx::cast<int>(prev_h), 0, dst.data() + offset,
+                                  nx::cast<int>(w), nx::cast<int>(h), 0,
+                                  STBIR_RGBA);
+    }
     push_subresource(image, offset, mip, 0, w, h, 1);
     prev_off = offset;
     prev_w = w;
