@@ -6,6 +6,8 @@ add_library(nx_rhi_image STATIC
         image/image.cpp
         image/stb_image_impl.cpp
         image/stb_image_resize_impl.cpp
+        image/texture_import.h
+        image/texture_import.cpp
         image/texture_nva.h
         image/texture_nva.cpp
         shader_nva.h
