@@ -305,6 +305,29 @@ void VulkanDevice::destroy_texture(const TextureHandle handle) noexcept {
   m_pending_deletes.push_back({m_timeline_value, handle, {}, {}});
 }
 
+bool VulkanDevice::replace_texture(const TextureHandle target,
+                                   const TextureHandle replacement) {
+  if (!target.valid() || !replacement.valid() || target == replacement ||
+      !m_textures.contains(target) || !m_textures.contains(replacement))
+    return false;
+
+  VulkanTexture *const held = m_textures.try_get(target);
+  VulkanTexture *const fresh = m_textures.try_get(replacement);
+  if (held == nullptr || fresh == nullptr || held->usage != fresh->usage ||
+      held->usage.has(TextureUsage::Storage))
+    return false;
+
+  wait_idle();
+  std::swap(*held, *fresh);
+  if (held->srv != VK_NULL_HANDLE)
+    write_texture_descriptor(nx::cast<u32>(target.index()), held->srv);
+
+  // replacement now owns the old target allocation. Its handle was never
+  // published, so it is safe to consume through the normal deferred path.
+  m_pending_deletes.push_back({m_timeline_value, replacement, {}, {}});
+  return true;
+}
+
 const VulkanTexture *
 VulkanDevice::texture(const TextureHandle handle) const noexcept {
   return m_textures.try_get(handle);

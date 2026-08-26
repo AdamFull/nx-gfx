@@ -254,6 +254,8 @@ public:
 
   [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
   void destroy_texture(TextureHandle handle) noexcept;
+  [[nodiscard]] bool replace_texture(TextureHandle target,
+                                     TextureHandle replacement);
   [[nodiscard]] const VulkanTexture *
   texture(TextureHandle handle) const noexcept;
 

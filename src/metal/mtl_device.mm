@@ -809,6 +809,41 @@ void MetalDevice::destroy_texture(const TextureHandle handle) noexcept {
   retire(*m_state, {.texture = handle});
 }
 
+bool MetalDevice::replace_texture(const TextureHandle target,
+                                  const TextureHandle replacement) {
+  if (m_state == nullptr || !target.valid() || !replacement.valid() ||
+      target == replacement)
+    return false;
+
+  MetalTexture *const held = m_state->textures.try_get(target);
+  MetalTexture *const fresh = m_state->textures.try_get(replacement);
+  if (held == nullptr || fresh == nullptr || held->usage != fresh->usage ||
+      held->usage.has(TextureUsage::Storage))
+    return false;
+
+  // Per-mip storage slots may be cached outside the device. Restrict adoption
+  // to resources whose complete external identity is the stable texture
+  // handle (and sampled slot), which is the editor asset-reload use case.
+  wait_idle();
+  std::swap(*held, *fresh);
+  const u32 target_slot = bindless_index(target);
+  const u32 replacement_slot = bindless_index(replacement);
+  if (held->usage.has(TextureUsage::Sampled)) {
+    held->bindless_slot = target_slot;
+    write_texture_descriptor(*m_state, target_slot, held->texture);
+  } else {
+    held->bindless_slot = BINDLESS_INVALID_INDEX;
+    write_texture_descriptor(*m_state, target_slot, nil);
+  }
+
+  // The old target now sits behind the unpublished replacement handle. Do not
+  // let its retirement clear the target slot we just rebound.
+  fresh->bindless_slot = BINDLESS_INVALID_INDEX;
+  write_texture_descriptor(*m_state, replacement_slot, nil);
+  retire(*m_state, {.texture = replacement});
+  return true;
+}
+
 BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
   if (m_state == nullptr)
     return {};

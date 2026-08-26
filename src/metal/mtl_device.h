@@ -214,6 +214,8 @@ public:
 
   [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
   void destroy_texture(TextureHandle handle) noexcept;
+  [[nodiscard]] bool replace_texture(TextureHandle target,
+                                     TextureHandle replacement);
 
   [[nodiscard]] BufferHandle create_buffer(const BufferDesc &desc);
   void destroy_buffer(BufferHandle handle) noexcept;
