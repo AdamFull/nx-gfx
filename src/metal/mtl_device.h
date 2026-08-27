@@ -159,6 +159,14 @@ public:
                StateTracking tracking = StateTracking::Update);
   void barrier(const TextureBarrier &texture) { barrier(&texture, 1); }
 
+  /// Copies one tightly packed colour mip into a host-readable buffer. The
+  /// source must already be in CopySrc and this must be called outside a
+  /// render/compute pass. row_pitch may include padding between rows.
+  [[nodiscard]] bool copy_texture_to_buffer(TextureHandle texture,
+                                            BufferHandle buffer,
+                                            u64 row_pitch, u32 mip = 0,
+                                            u32 layer = 0);
+
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
                         f32 b = 1.f);
   void pop_debug_group();
@@ -216,6 +224,8 @@ public:
   void destroy_texture(TextureHandle handle) noexcept;
   [[nodiscard]] bool replace_texture(TextureHandle target,
                                      TextureHandle replacement);
+  [[nodiscard]] TextureUsageFlags
+  texture_usage(TextureHandle handle) const noexcept;
 
   [[nodiscard]] BufferHandle create_buffer(const BufferDesc &desc);
   void destroy_buffer(BufferHandle handle) noexcept;
@@ -259,6 +269,7 @@ public:
   [[nodiscard]] u64 buffer_address(BufferHandle handle) const noexcept;
 
   [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
+  void invalidate_buffer(BufferHandle, u64 = 0, u64 = ~0ull) noexcept {}
 
 private:
   DeviceCaps m_caps;

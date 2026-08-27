@@ -538,6 +538,14 @@ TextureHandle MetalDevice::current_backbuffer() const noexcept {
   return m_state != nullptr ? m_state->backbuffer : TextureHandle{};
 }
 
+TextureUsageFlags
+MetalDevice::texture_usage(const TextureHandle handle) const noexcept {
+  if (m_state == nullptr)
+    return TextureUsage::None;
+  const MetalTexture *texture = m_state->textures.try_get(handle);
+  return texture != nullptr ? texture->usage : TextureUsage::None;
+}
+
 namespace {
 
 /// Shared by the owning and the heap-placed paths, so the two cannot drift - which would make the
@@ -999,6 +1007,49 @@ void *MetalDevice::buffer_mapped(const BufferHandle handle) const noexcept {
     return nullptr;
   const MetalBuffer *buffer = m_state->buffers.try_get(handle);
   return buffer != nullptr ? buffer->mapped : nullptr;
+}
+
+bool MetalCommandContext::copy_texture_to_buffer(
+    const TextureHandle texture_handle, const BufferHandle buffer_handle,
+    const u64 row_pitch, const u32 mip, const u32 layer) {
+  if (m_state == nullptr || m_in_render_pass)
+    return false;
+  MetalContextSlot &slot = ctx_slot();
+  if (slot.cmd == nil || slot.encoder != nil || slot.compute_encoder != nil)
+    return false;
+  const MetalTexture *texture = m_state->textures.try_get(texture_handle);
+  const MetalBuffer *buffer = m_state->buffers.try_get(buffer_handle);
+  if (texture == nullptr || texture->texture == nil || buffer == nullptr ||
+      buffer->buffer == nil || !(texture->usage & TextureUsage::CopySrc) ||
+      !(buffer->usage & BufferUsage::CopyDst) ||
+      texture->state != ResourceState::CopySrc ||
+      format_is_depth(texture->format) || format_is_compressed(texture->format) ||
+      mip >= texture->mip_levels || layer >= texture->layers)
+    return false;
+
+  const u32 width = nx::max<u32>(1, texture->width >> mip);
+  const u32 height = nx::max<u32>(1, texture->height >> mip);
+  const u64 tight = format_row_pitch(texture->format, width);
+  if (row_pitch < tight || row_pitch > buffer->size / height)
+    return false;
+
+  @autoreleasepool {
+    id<MTLBlitCommandEncoder> blit = [slot.cmd blitCommandEncoder];
+    if (blit == nil)
+      return false;
+    blit.label = @"nx2d frame capture";
+    [blit copyFromTexture:texture->texture
+              sourceSlice:layer
+              sourceLevel:mip
+             sourceOrigin:MTLOriginMake(0, 0, 0)
+               sourceSize:MTLSizeMake(width, height, 1)
+                 toBuffer:buffer->buffer
+        destinationOffset:0
+   destinationBytesPerRow:row_pitch
+ destinationBytesPerImage:row_pitch * height];
+    [blit endEncoding];
+  }
+  return true;
 }
 
 u64 MetalDevice::buffer_address(const BufferHandle handle) const noexcept {

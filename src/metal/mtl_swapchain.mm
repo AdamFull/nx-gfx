@@ -78,7 +78,10 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
         layer = [CAMetalLayer layer];
         layer.device = device;
         layer.pixelFormat = pixel_format;
-        layer.framebufferOnly = YES;
+        // Final-frame capture uses a blit from the drawable before it is
+        // presented. framebufferOnly drawables cannot participate in that
+        // copy on Metal.
+        layer.framebufferOnly = NO;
         layer.contentsScale = window.backingScaleFactor;
 
         view.wantsLayer = YES;
@@ -97,7 +100,7 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
       }
       layer.device = s->device;
       layer.pixelFormat = pixel_format;
-      layer.framebufferOnly = YES;
+      layer.framebufferOnly = NO;
       ok = true;
       break;
     }
@@ -138,7 +141,7 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
   backbuffer.dimension = TextureDimension::Tex2D;
   backbuffer.width = desc.width;
   backbuffer.height = desc.height;
-  backbuffer.usage = TextureUsage::RenderTarget;
+  backbuffer.usage = TextureUsage::RenderTarget | TextureUsage::CopySrc;
   backbuffer.state = ResourceState::Undefined;
   backbuffer.owns_texture = false;
   s->backbuffer = s->textures.insert(std::move(backbuffer));

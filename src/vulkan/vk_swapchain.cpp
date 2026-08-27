@@ -260,6 +260,8 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
   info.imageArrayLayers = 1;
   info.imageUsage =
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0)
+    info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   info.preTransform =
       (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
@@ -293,6 +295,8 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     texture.width = extent.width;
     texture.height = extent.height;
     texture.usage = TextureUsage::RenderTarget;
+    if ((info.imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0)
+      texture.usage |= TextureUsage::CopySrc;
     texture.state = ResourceState::Undefined;
     texture.owns_image = false;
 

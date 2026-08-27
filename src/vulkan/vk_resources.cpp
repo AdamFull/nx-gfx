@@ -333,6 +333,12 @@ VulkanDevice::texture(const TextureHandle handle) const noexcept {
   return m_textures.try_get(handle);
 }
 
+TextureUsageFlags
+VulkanDevice::texture_usage(const TextureHandle handle) const noexcept {
+  const VulkanTexture *texture = m_textures.try_get(handle);
+  return texture != nullptr ? texture->usage : TextureUsage::None;
+}
+
 VulkanTexture *VulkanDevice::texture_mut(const TextureHandle handle) noexcept {
   return m_textures.try_get(handle);
 }
@@ -510,6 +516,67 @@ VulkanDevice::buffer_address(const BufferHandle handle) const noexcept {
 void *VulkanDevice::buffer_mapped(const BufferHandle handle) const noexcept {
   const VulkanBuffer *buffer = m_buffers.try_get(handle);
   return buffer != nullptr ? buffer->mapped : nullptr;
+}
+
+void VulkanDevice::invalidate_buffer(const BufferHandle handle,
+                                     const u64 offset,
+                                     const u64 size) noexcept {
+  const VulkanBuffer *buffer = m_buffers.try_get(handle);
+  if (buffer == nullptr || buffer->allocation == VK_NULL_HANDLE)
+    return;
+  const u64 available = offset < buffer->size ? buffer->size - offset : 0;
+  const u64 bytes = size == ~0ull ? available : nx::min(size, available);
+  if (bytes != 0)
+    (void)vmaInvalidateAllocation(m_allocator, buffer->allocation, offset,
+                                  bytes);
+}
+
+bool VulkanCommandContext::copy_texture_to_buffer(
+    const TextureHandle texture_handle, const BufferHandle buffer_handle,
+    const u64 row_pitch, const u32 mip, const u32 layer) {
+  if (m_device == nullptr || m_cmd == VK_NULL_HANDLE || m_in_render_pass)
+    return false;
+  const VulkanTexture *texture = m_device->texture(texture_handle);
+  const VulkanBuffer *buffer = m_device->buffer(buffer_handle);
+  if (texture == nullptr || buffer == nullptr ||
+      !(texture->usage & TextureUsage::CopySrc) ||
+      !(buffer->usage & BufferUsage::CopyDst) ||
+      texture->state != ResourceState::CopySrc ||
+      format_is_depth(texture->format) || format_is_compressed(texture->format) ||
+      mip >= texture->mip_levels || layer >= texture->layers)
+    return false;
+
+  const u32 width = nx::max<u32>(1, texture->width >> mip);
+  const u32 height = nx::max<u32>(1, texture->height >> mip);
+  const u32 texel = format_texel_size(texture->format);
+  const u64 tight = format_row_pitch(texture->format, width);
+  if (texel == 0 || row_pitch < tight || row_pitch % texel != 0 ||
+      row_pitch / texel > ~u32{0} || row_pitch > buffer->size / height)
+    return false;
+
+  VkBufferImageCopy copy{};
+  copy.bufferRowLength = nx::cast<u32>(row_pitch / texel);
+  copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1};
+  copy.imageExtent = {width, height, 1};
+  vkCmdCopyImageToBuffer(m_cmd, texture->image,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer->buffer,
+                         1, &copy);
+
+  VkBufferMemoryBarrier2 host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+  host.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+  host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+  host.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  host.buffer = buffer->buffer;
+  host.offset = 0;
+  host.size = row_pitch * height;
+  VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dependency.bufferMemoryBarrierCount = 1;
+  dependency.pBufferMemoryBarriers = &host;
+  vkCmdPipelineBarrier2KHR(m_cmd, &dependency);
+  return true;
 }
 
 void VulkanCommandContext::barrier(const TextureBarrier *textures,
