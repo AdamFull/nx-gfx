@@ -35,9 +35,9 @@ struct ReadbackResult {
 };
 
 struct UploaderStats {
-  u64 total_submits = 0;     ///< Lifetime queue submissions (one per batch).
+  u64 total_submits = 0; ///< Lifetime queue submissions (one per batch).
   u64 completed_submits = 0;
-  u64 ring_used = 0;         ///< Staging-ring bytes not yet reclaimed.
+  u64 ring_used = 0; ///< Staging-ring bytes not yet reclaimed.
   u64 ring_capacity = 0;
   usize extra_buffers = 0;
   usize inflight_submits = 0;
@@ -88,8 +88,8 @@ public:
   [[nodiscard]] TextureHandle loaded_texture(LoadRequest req) const noexcept;
   void release(LoadRequest req) noexcept;
 
-  // The source must not be in concurrent use on the graphics queue - read after wait_idle(), or
-  // from a resource only the copy queue touches.
+  // The source must not be in concurrent use on the graphics queue - read after
+  // wait_idle(), or from a resource only the copy queue touches.
 
   ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
   ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
@@ -120,8 +120,9 @@ private:
     bool host_read = false;
   };
 
-  /// Bytes a graphics replay reads are held by `gfx_value` on the device timeline too, since the
-  /// copy timeline says nothing about when the frame has run.
+  /// Bytes a graphics replay reads are held by `gfx_value` on the device
+  /// timeline too, since the copy timeline says nothing about when the frame
+  /// has run.
   struct Marker {
     u64 head = 0;
     u64 value = 0;
@@ -134,9 +135,10 @@ private:
     VkImageLayout old_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     ResourceState new_state = ResourceState::ShaderReadOnly;
   };
-  /// An image the copy queue still owns and must hand to graphics at the next frame hand-off. One
-  /// record per image however many copies touched it, so the release/acquire pair is emitted once
-  /// and always names the layout the image is actually in.
+  /// An image the copy queue still owns and must hand to graphics at the next
+  /// frame hand-off. One record per image however many copies touched it, so
+  /// the release/acquire pair is emitted once and always names the layout the
+  /// image is actually in.
   struct ImageRelease {
     TextureHandle handle;
     VkImage image = VK_NULL_HANDLE;
@@ -209,9 +211,9 @@ private:
   /// Finds or starts the pending hand-off record for @p image, so several
   /// copies into one texture share a single release/acquire pair.
   ImageRelease &pending_release(TextureHandle handle, VkImage image,
-                                 VkImageAspectFlags aspect, ResourceState state);
+                                VkImageAspectFlags aspect, ResourceState state);
   BufferRelease &pending_release(BufferHandle handle, VkBuffer buffer,
-                                  u64 offset, u64 size, ResourceState state);
+                                 u64 offset, u64 size, ResourceState state);
   /// Emits the copy-side half of the hand-off into the open batch and turns
   /// each record into the acquire record_acquires() will emit.
   void record_releases();
@@ -222,6 +224,10 @@ private:
   LoadRequest enqueue_load(LoadPayload *payload);
 
   VulkanDevice *m_device = nullptr;
+  /// Upload recording is fed by the update thread while frame hand-off and
+  /// reclaim run on the render thread. Keep command-buffer and staging state
+  /// as one critical section so a frame cannot submit a batch being recorded.
+  mutable nx::mutex m_command_mutex;
   VkDevice m_vk = VK_NULL_HANDLE;
   VmaAllocator m_allocator = VK_NULL_HANDLE;
   VkQueue m_queue = VK_NULL_HANDLE;
@@ -280,4 +286,4 @@ private:
   std::atomic<u64> m_loads_failed{0};
 };
 
-}
+} // namespace nxe::rhi
