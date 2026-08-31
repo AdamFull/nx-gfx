@@ -224,6 +224,10 @@ public:
   void destroy_texture(TextureHandle handle) noexcept;
   [[nodiscard]] bool replace_texture(TextureHandle target,
                                      TextureHandle replacement);
+  /// Mip-residency streaming is not yet wired on Metal; returns false so the
+  /// engine uploads the full chain instead (see the Vulkan implementation).
+  [[nodiscard]] bool set_texture_view_base_mip(TextureHandle handle,
+                                               u32 base_mip);
   [[nodiscard]] TextureUsageFlags
   texture_usage(TextureHandle handle) const noexcept;
 

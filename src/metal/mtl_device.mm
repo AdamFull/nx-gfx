@@ -852,6 +852,13 @@ bool MetalDevice::replace_texture(const TextureHandle target,
   return true;
 }
 
+bool MetalDevice::set_texture_view_base_mip(const TextureHandle, u32) {
+  // Not yet implemented on Metal: a base-mip SRV would need a retained
+  // newTextureView bound into the sampled slot. Returning false makes the
+  // engine upload the full mip chain (correct, just no streaming benefit here).
+  return false;
+}
+
 BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
   if (m_state == nullptr)
     return {};

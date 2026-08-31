@@ -264,6 +264,8 @@ public:
   void destroy_texture(TextureHandle handle) noexcept;
   [[nodiscard]] bool replace_texture(TextureHandle target,
                                      TextureHandle replacement);
+  [[nodiscard]] bool set_texture_view_base_mip(TextureHandle handle,
+                                               u32 base_mip);
   [[nodiscard]] const VulkanTexture *
   texture(TextureHandle handle) const noexcept;
   [[nodiscard]] TextureUsageFlags
@@ -449,6 +451,12 @@ private:
     PipelineHandle pipeline;
   };
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
+
+  struct PendingViewDelete {
+    u64 timeline_value = 0;
+    VkImageView view = VK_NULL_HANDLE;
+  };
+  nx::small_vector<PendingViewDelete, 16> m_pending_view_deletes;
 };
 
 }

@@ -328,6 +328,37 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
   return true;
 }
 
+bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,
+                                             u32 base_mip) {
+  VulkanTexture *const tex = m_textures.try_get(handle);
+  if (tex == nullptr || !(tex->usage & TextureUsage::Sampled) ||
+      tex->image == VK_NULL_HANDLE)
+    return false;
+  if (tex->mip_levels == 0)
+    return false;
+  if (base_mip >= tex->mip_levels)
+    base_mip = tex->mip_levels - 1u;
+
+  VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  info.image = tex->image;
+  info.viewType = to_vk_view_type(tex->dimension);
+  info.format = to_vk_format(tex->format);
+  info.subresourceRange.aspectMask = to_vk_aspect(tex->format);
+  info.subresourceRange.baseMipLevel = base_mip;
+  info.subresourceRange.levelCount = tex->mip_levels - base_mip;
+  info.subresourceRange.layerCount = tex->layers;
+  VkImageView view = VK_NULL_HANDLE;
+  if (NX_VK_CHECK(vkCreateImageView(m_device, &info, nullptr, &view)) !=
+      VK_SUCCESS)
+    return false;
+
+  if (tex->srv != VK_NULL_HANDLE)
+    m_pending_view_deletes.push_back({m_timeline_value, tex->srv});
+  tex->srv = view;
+  write_texture_descriptor(nx::cast<u32>(handle.index()), view);
+  return true;
+}
+
 const VulkanTexture *
 VulkanDevice::texture(const TextureHandle handle) const noexcept {
   return m_textures.try_get(handle);

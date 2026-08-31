@@ -1082,6 +1082,16 @@ void VulkanDevice::collect_garbage(
 
     m_pending_deletes.erase(m_pending_deletes.begin() + nx::cast<isize>(i - 1));
   }
+
+  for (usize i = m_pending_view_deletes.size(); i > 0; --i) {
+    PendingViewDelete &pending = m_pending_view_deletes[i - 1];
+    if (pending.timeline_value > completed_timeline_value)
+      continue;
+    if (pending.view != VK_NULL_HANDLE)
+      vkDestroyImageView(m_device, pending.view, nullptr);
+    m_pending_view_deletes.erase(m_pending_view_deletes.begin() +
+                                 nx::cast<isize>(i - 1));
+  }
 }
 
 }
