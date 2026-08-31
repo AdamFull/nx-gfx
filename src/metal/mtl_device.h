@@ -228,6 +228,7 @@ public:
   /// engine uploads the full chain instead (see the Vulkan implementation).
   [[nodiscard]] bool set_texture_view_base_mip(TextureHandle handle,
                                                u32 base_mip);
+  [[nodiscard]] bool supports_mip_streaming() const noexcept { return false; }
   [[nodiscard]] TextureUsageFlags
   texture_usage(TextureHandle handle) const noexcept;
 

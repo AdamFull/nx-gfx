@@ -1048,6 +1048,8 @@ void VulkanDevice::destroy_texture_now(VulkanTexture &texture) noexcept {
     free_rw_slot(slot);
   for (const VkImageView uav : texture.uavs)
     vkDestroyImageView(m_device, uav, nullptr);
+  for (const VkImageView retired : texture.retired_srvs)
+    vkDestroyImageView(m_device, retired, nullptr);
   if (texture.srv != VK_NULL_HANDLE)
     vkDestroyImageView(m_device, texture.srv, nullptr);
   if (texture.rtv != VK_NULL_HANDLE)
@@ -1081,16 +1083,6 @@ void VulkanDevice::collect_garbage(
     }
 
     m_pending_deletes.erase(m_pending_deletes.begin() + nx::cast<isize>(i - 1));
-  }
-
-  for (usize i = m_pending_view_deletes.size(); i > 0; --i) {
-    PendingViewDelete &pending = m_pending_view_deletes[i - 1];
-    if (pending.timeline_value > completed_timeline_value)
-      continue;
-    if (pending.view != VK_NULL_HANDLE)
-      vkDestroyImageView(m_device, pending.view, nullptr);
-    m_pending_view_deletes.erase(m_pending_view_deletes.begin() +
-                                 nx::cast<isize>(i - 1));
   }
 }
 

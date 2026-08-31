@@ -353,7 +353,7 @@ bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,
     return false;
 
   if (tex->srv != VK_NULL_HANDLE)
-    m_pending_view_deletes.push_back({m_timeline_value, tex->srv});
+    tex->retired_srvs.push_back(tex->srv);
   tex->srv = view;
   write_texture_descriptor(nx::cast<u32>(handle.index()), view);
   return true;

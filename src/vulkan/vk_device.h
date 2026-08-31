@@ -49,6 +49,7 @@ struct VulkanTexture {
   VkImage image = VK_NULL_HANDLE;
   VkImageView srv = VK_NULL_HANDLE;
   VkImageView rtv = VK_NULL_HANDLE;
+  nx::small_vector<VkImageView, 4> retired_srvs;
   nx::small_vector<VkImageView, 12> uavs;
   nx::small_vector<u32, 12> uav_indices;
   VmaAllocation allocation = VK_NULL_HANDLE;
@@ -266,6 +267,9 @@ public:
                                      TextureHandle replacement);
   [[nodiscard]] bool set_texture_view_base_mip(TextureHandle handle,
                                                u32 base_mip);
+  /// True when the device can sample a texture whose finer mips are not yet
+  /// uploaded (via set_texture_view_base_mip) — i.e. mip-residency streaming.
+  [[nodiscard]] bool supports_mip_streaming() const noexcept { return true; }
   [[nodiscard]] const VulkanTexture *
   texture(TextureHandle handle) const noexcept;
   [[nodiscard]] TextureUsageFlags
@@ -451,12 +455,6 @@ private:
     PipelineHandle pipeline;
   };
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
-
-  struct PendingViewDelete {
-    u64 timeline_value = 0;
-    VkImageView view = VK_NULL_HANDLE;
-  };
-  nx::small_vector<PendingViewDelete, 16> m_pending_view_deletes;
 };
 
 }
