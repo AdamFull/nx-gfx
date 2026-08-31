@@ -4,6 +4,7 @@
 #include "core/foundation/containers/slot_map.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/sync.h"
 #include "core/rendering/rhi/bindless.h"
 #include "core/rendering/rhi/descs.h"
 #include "core/rendering/rhi/handles.h"
@@ -205,6 +206,59 @@ struct FrameContext {
   CommandSlot slot;
   VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
   u64 timeline_value = 0;
+};
+
+/// A slot_map the render and main threads share. The render thread reads
+/// resources (barriers, upload recording, present) while the main thread
+/// creates and evicts them, so the raw slot_map's dense vector faults when an
+/// insert reallocs or an erase swap-pops under a concurrent try_get. Elements
+/// live behind a stable heap pointer, so a try_get result outlives any later
+/// insert/erase of *other* entries; the mutex only guards the lookup itself.
+/// An entry in active use this frame is never the one erased - the deferred
+/// delete queue holds it for frames after its last reference drops.
+template <typename T, typename Handle> class SyncSlotTable {
+public:
+  [[nodiscard]] Handle insert(T &&value) {
+    nx::scoped_lock lock(m_mutex);
+    return m_slots.insert(nx::make_unique<T>(std::move(value)));
+  }
+
+  [[nodiscard]] T *try_get(Handle h) noexcept {
+    nx::scoped_lock lock(m_mutex);
+    nx::unique_ptr<T> *slot = m_slots.try_get(h);
+    return slot ? slot->get() : nullptr;
+  }
+
+  [[nodiscard]] const T *try_get(Handle h) const noexcept {
+    nx::scoped_lock lock(m_mutex);
+    const nx::unique_ptr<T> *slot = m_slots.try_get(h);
+    return slot ? slot->get() : nullptr;
+  }
+
+  [[nodiscard]] bool contains(Handle h) const noexcept {
+    nx::scoped_lock lock(m_mutex);
+    return m_slots.contains(h);
+  }
+
+  bool erase(Handle h) {
+    nx::scoped_lock lock(m_mutex);
+    return m_slots.erase(h);
+  }
+
+  void clear() noexcept {
+    nx::scoped_lock lock(m_mutex);
+    m_slots.clear();
+  }
+
+  template <typename Fn> void for_each(Fn &&fn) {
+    nx::scoped_lock lock(m_mutex);
+    for (nx::unique_ptr<T> &slot : m_slots)
+      fn(*slot);
+  }
+
+private:
+  mutable nx::mutex m_mutex;
+  nx::slot_map<nx::unique_ptr<T>, Handle> m_slots;
 };
 
 class VulkanDevice {
@@ -434,7 +488,7 @@ private:
   u32 m_image_index = 0;
   bool m_frame_active = false;
 
-  nx::slot_map<VulkanTexture, TextureHandle> m_textures;
+  SyncSlotTable<VulkanTexture, TextureHandle> m_textures;
   nx::slot_map<VulkanBuffer, BufferHandle> m_buffers;
   nx::slot_map<VulkanSampler, SamplerHandle> m_samplers;
   nx::slot_map<VulkanQueryPool, QueryPoolHandle> m_query_pools;

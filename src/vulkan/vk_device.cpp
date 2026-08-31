@@ -878,8 +878,7 @@ void VulkanDevice::shutdown() noexcept {
 
   collect_garbage(~0ull);
 
-  for (VulkanTexture &texture : m_textures)
-    destroy_texture_now(texture);
+  m_textures.for_each([this](VulkanTexture &texture) { destroy_texture_now(texture); });
   m_textures.clear();
   for (VulkanBuffer &buf : m_buffers)
     if (buf.buffer != VK_NULL_HANDLE)
