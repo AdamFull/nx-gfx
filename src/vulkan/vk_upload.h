@@ -120,6 +120,11 @@ private:
     bool host_read = false;
   };
 
+  /// Uses the ring for ordinary transient copies and reusable dedicated
+  /// staging for large copies or when the ring is temporarily unavailable.
+  u8 *acquire_upload_staging(u64 size, u64 alignment, VkBuffer &buffer,
+                             u64 &offset, Chunk *&dedicated);
+
   /// Bytes a graphics replay reads are held by `gfx_value` on the device
   /// timeline too, since the copy timeline says nothing about when the frame
   /// has run.

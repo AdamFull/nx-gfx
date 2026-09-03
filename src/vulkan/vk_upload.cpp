@@ -15,6 +15,7 @@ namespace {
 const nx::log::Category log_up = nx::log::category("upload");
 
 constexpr u64 RING_CAPACITY = 32ull * 1024 * 1024;
+constexpr u64 DEDICATED_UPLOAD_THRESHOLD = RING_CAPACITY / 2;
 
 [[nodiscard]] u64 align_up(const u64 value, const u64 alignment) noexcept {
   return (value + alignment - 1) & ~(alignment - 1);
@@ -335,17 +336,12 @@ u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
     if (m_markers.empty())
       return nullptr;
 
-    // The oldest bytes can be held by a frame that is still being recorded -
-    // waiting on a value nothing has submitted yet would hang the render
-    // thread against itself, so give up and let the caller drop the upload.
+    // The oldest bytes can be held by a frame that is still being recorded.
+    // Waiting on a value nothing has submitted yet would hang the render
+    // thread against itself, so let the caller fall back to dedicated staging.
     const Marker oldest = m_markers.front();
-    if (m_device != nullptr && oldest.gfx_value > m_device->m_timeline_value) {
-      nx::logw(log_up,
-               "staging ring exhausted by copies the current frame has yet to "
-               "submit; dropping a {}-byte upload",
-               size);
+    if (m_device != nullptr && oldest.gfx_value > m_device->m_timeline_value)
       return nullptr;
-    }
     wait_value(oldest.value);
     wait_graphics(oldest.gfx_value);
     reclaim_locked();
@@ -392,6 +388,31 @@ VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
   return &m_chunks.back();
 }
 
+u8 *VulkanUploader::acquire_upload_staging(const u64 size,
+                                           const u64 alignment,
+                                           VkBuffer &buffer, u64 &offset,
+                                           Chunk *&dedicated) {
+  buffer = VK_NULL_HANDLE;
+  offset = 0;
+  dedicated = nullptr;
+
+  // Large transfers should not monopolise the shared ring. This also avoids
+  // the impossible case where a ring-sized upload is requested after its
+  // monotonic head has advanced away from the physical buffer boundary.
+  if (size < DEDICATED_UPLOAD_THRESHOLD) {
+    if (u8 *const staging = ring_alloc(size, alignment, &offset)) {
+      buffer = m_ring;
+      return staging;
+    }
+  }
+
+  dedicated = acquire_chunk(size, false);
+  if (dedicated == nullptr)
+    return nullptr;
+  buffer = dedicated->buffer;
+  return dedicated->mapped;
+}
+
 UploadTicket
 VulkanUploader::upload_texture(const TextureHandle handle,
                                const std::span<const u8> src,
@@ -418,19 +439,10 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     staging_size = align_up(staging_size, align) + sr.size;
 
   VkBuffer staging_buf = VK_NULL_HANDLE;
-  u8 *staging = nullptr;
   u64 base_offset = 0;
-  Chunk *oversized = nullptr;
-  if (staging_size <= m_ring_capacity) {
-    staging = ring_alloc(staging_size, align, &base_offset);
-    staging_buf = m_ring;
-  } else {
-    oversized = acquire_chunk(staging_size, false);
-    if (oversized != nullptr) {
-      staging = oversized->mapped;
-      staging_buf = oversized->buffer;
-    }
-  }
+  Chunk *dedicated = nullptr;
+  u8 *const staging = acquire_upload_staging(
+      staging_size, align, staging_buf, base_offset, dedicated);
   if (staging == nullptr) {
     nx::loge(log_up, "upload_texture: no staging for {} bytes", staging_size);
     return UploadTicket::failure();
@@ -485,8 +497,8 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     const u64 hold = m_device->m_timeline_value + 1;
     if (hold > m_graphics_hold)
       m_graphics_hold = hold;
-    if (oversized != nullptr)
-      oversized->gfx_value = hold;
+    if (dedicated != nullptr)
+      dedicated->gfx_value = hold;
 
     tex->state = final_state;
     return {};
@@ -529,8 +541,8 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     vkCmdPipelineBarrier2KHR(cmd, &post_dep);
   }
 
-  if (oversized != nullptr)
-    oversized->value = m_batch_value;
+  if (dedicated != nullptr)
+    dedicated->value = m_batch_value;
   if (m_batch_value > m_pending_wait)
     m_pending_wait = m_batch_value;
 
@@ -573,19 +585,10 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   }
 
   VkBuffer staging_buf = VK_NULL_HANDLE;
-  u8 *staging = nullptr;
   u64 base_offset = 0;
-  Chunk *oversized = nullptr;
-  if (src.size() <= m_ring_capacity) {
-    staging = ring_alloc(src.size(), 16, &base_offset);
-    staging_buf = m_ring;
-  } else {
-    oversized = acquire_chunk(src.size(), false);
-    if (oversized != nullptr) {
-      staging = oversized->mapped;
-      staging_buf = oversized->buffer;
-    }
-  }
+  Chunk *dedicated = nullptr;
+  u8 *const staging = acquire_upload_staging(
+      src.size(), 16, staging_buf, base_offset, dedicated);
   if (staging == nullptr) {
     nx::loge(log_up, "upload_buffer: no staging for {} bytes", src.size());
     return UploadTicket::failure();
@@ -645,8 +648,8 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
     vkCmdPipelineBarrier2KHR(cmd, &dep);
   }
 
-  if (oversized != nullptr)
-    oversized->value = m_batch_value;
+  if (dedicated != nullptr)
+    dedicated->value = m_batch_value;
   if (m_batch_value > m_pending_wait)
     m_pending_wait = m_batch_value;
   return {m_batch_value};
