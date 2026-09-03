@@ -65,6 +65,22 @@ struct ImageData {
                                          TextureUsage::CopyDst) const noexcept;
 };
 
+/// Physical texture bounds used to validate a raw upload independently of a
+/// graphics backend. The RHI accepts padded rows, but every described byte
+/// range and destination block must be valid before a backend records work.
+struct ImageUploadDesc {
+  Format format = Format::Unknown;
+  u32 width = 0;
+  u32 height = 0;
+  u32 depth = 1;
+  u32 mip_levels = 1;
+  u32 array_layers = 1;
+};
+
+[[nodiscard]] bool
+validate_image_upload(const ImageUploadDesc &target, std::span<const u8> src,
+                      std::span<const ImageSubresource> layout) noexcept;
+
 [[nodiscard]] nx::result<ImageData, ImageError>
 load_image_from_memory(std::span<const u8> bytes);
 

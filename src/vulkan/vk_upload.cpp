@@ -417,8 +417,15 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   NX_PROFILE_ZONE("vk::upload_texture");
   const nx::scoped_lock lock(m_command_mutex);
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
-  if (tex == nullptr || tex->image == VK_NULL_HANDLE || layout.empty()) {
+  if (tex == nullptr || tex->image == VK_NULL_HANDLE ||
+      !(tex->usage & TextureUsage::CopyDst)) {
     nx::loge(log_up, "upload_texture: nothing to upload into");
+    return UploadTicket::failure();
+  }
+  if (!validate_image_upload({tex->format, tex->width, tex->height, tex->depth,
+                              tex->mip_levels, tex->layers},
+                             src, layout)) {
+    nx::loge(log_up, "upload_texture: malformed upload layout");
     return UploadTicket::failure();
   }
 
@@ -431,23 +438,9 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   const bool on_graphics = qfot && tex->owner == ImageOwner::Graphics;
 
   u64 staging_size = 0;
-  const u64 source_size = src.size();
   for (const ImageSubresource &sr : layout) {
-    if (sr.size == 0 || sr.offset > source_size ||
-        sr.size > source_size - sr.offset || sr.mip >= tex->mip_levels ||
-        sr.layer >= tex->layers || sr.width == 0 || sr.height == 0 ||
-        sr.depth == 0) {
-      nx::loge(log_up, "upload_texture: malformed source subresource");
-      return UploadTicket::failure();
-    }
-    const u32 mip_width = nx::max(1u, tex->width >> sr.mip);
-    const u32 mip_height = nx::max(1u, tex->height >> sr.mip);
-    const u32 mip_depth = nx::max(1u, tex->depth >> sr.mip);
-    if (sr.x > mip_width || sr.width > mip_width - sr.x || sr.y > mip_height ||
-        sr.height > mip_height - sr.y || sr.z > mip_depth ||
-        sr.depth > mip_depth - sr.z ||
-        staging_size > std::numeric_limits<u64>::max() - (align - 1u)) {
-      nx::loge(log_up, "upload_texture: subresource is outside the texture");
+    if (staging_size > std::numeric_limits<u64>::max() - (align - 1u)) {
+      nx::loge(log_up, "upload_texture: staging size overflow");
       return UploadTicket::failure();
     }
     const u64 aligned = nx::align_up(staging_size, align);
@@ -483,6 +476,15 @@ VulkanUploader::upload_texture(const TextureHandle handle,
 
     VkBufferImageCopy copy{};
     copy.bufferOffset = base_offset + offset;
+    const u64 tight_pitch = format_row_pitch(tex->format, sr.width);
+    if (sr.row_pitch != tight_pitch) {
+      u32 block_width = 1;
+      u32 block_height = 1;
+      format_block_extent(tex->format, block_width, block_height);
+      (void)block_height;
+      copy.bufferRowLength = nx::cast<u32>(
+          sr.row_pitch / format_texel_size(tex->format) * block_width);
+    }
     copy.imageSubresource = {aspect, sr.mip, sr.layer, 1};
     copy.imageOffset = {nx::cast<i32>(sr.x), nx::cast<i32>(sr.y),
                         nx::cast<i32>(sr.z)};
@@ -583,6 +585,11 @@ VulkanUploader::upload_texture(const TextureHandle handle,
 UploadTicket VulkanUploader::upload_texture(const TextureHandle handle,
                                             const ImageData &image,
                                             const ResourceState final_state) {
+  const VulkanTexture *const texture = m_device->m_textures.try_get(handle);
+  if (texture == nullptr || image.format != texture->format) {
+    nx::loge(log_up, "upload_texture: image format does not match texture");
+    return UploadTicket::failure();
+  }
   return upload_texture(
       handle, std::span<const u8>(image.pixels.data(), image.pixels.size()),
       std::span<const ImageSubresource>(image.subresources.data(),
@@ -599,8 +606,15 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (src.empty())
     return {};
-  if (buf == nullptr || buf->buffer == VK_NULL_HANDLE) {
+  if (buf == nullptr || buf->buffer == VK_NULL_HANDLE ||
+      !(buf->usage & BufferUsage::CopyDst)) {
     nx::loge(log_up, "upload_buffer: nothing to upload into");
+    return UploadTicket::failure();
+  }
+  if (dst_offset > buf->size || src.size() > buf->size - dst_offset) {
+    nx::loge(log_up,
+             "upload_buffer: {} bytes at offset {} overruns a {} byte buffer",
+             src.size(), dst_offset, buf->size);
     return UploadTicket::failure();
   }
 

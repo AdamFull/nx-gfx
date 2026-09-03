@@ -4,6 +4,8 @@
 #include "core/foundation/core/scope_guard.h"
 #include "core/foundation/vfs/vfs.h"
 
+#include <limits>
+
 namespace nxe::rhi {
 namespace {
 
@@ -132,9 +134,21 @@ bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
                            const std::span<const ImageSubresource> layout) {
   MetalUploadState &up = state.upload;
 
+  if (!validate_image_upload(
+          {texture.format, texture.width, texture.height,
+           nx::cast<u32>([texture.texture depth]), texture.mip_levels,
+           texture.layers},
+          src, layout)) {
+    nx::loge(log_rhi, "upload_texture: malformed upload layout");
+    return false;
+  }
+
   u64 total = 0;
-  for (const ImageSubresource &sub : layout)
+  for (const ImageSubresource &sub : layout) {
+    if (sub.size > std::numeric_limits<u64>::max() - total)
+      return false;
     total += sub.size;
+  }
   if (total == 0)
     return false;
 
@@ -149,14 +163,6 @@ bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
   format_block_extent(texture.format, block_w, block_h);
 
   for (const ImageSubresource &sub : layout) {
-    if (sub.offset + sub.size > src.size()) {
-      nx::loge(log_rhi, "uploader: subresource mip {} layer {} runs past the "
-                        "source blob",
-               sub.mip, sub.layer);
-      up.free_staging.push_back(staging);
-      return false;
-    }
-
     std::memcpy(dst + cursor, src.data() + sub.offset,
                 nx::cast<usize>(sub.size));
 
@@ -382,7 +388,8 @@ UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
     return UploadTicket::failure();
 
   MetalTexture *texture = m_state->textures.try_get(handle);
-  if (texture == nullptr || texture->texture == nil) {
+  if (texture == nullptr || texture->texture == nil ||
+      !(texture->usage & TextureUsage::CopyDst)) {
     nx::loge(log_rhi, "upload_texture: handle is not live");
     return UploadTicket::failure();
   }
@@ -401,6 +408,12 @@ UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
 UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
                                            const ImageData &image,
                                            const ResourceState final_state) {
+  const MetalTexture *const texture =
+      m_state != nullptr ? m_state->textures.try_get(handle) : nullptr;
+  if (texture == nullptr || image.format != texture->format) {
+    nx::loge(log_rhi, "upload_texture: image format does not match texture");
+    return UploadTicket::failure();
+  }
   return upload_texture(
       handle, std::span<const u8>(image.pixels.data(), image.pixels.size()),
       std::span<const ImageSubresource>(image.subresources.data(),
@@ -422,7 +435,7 @@ UploadTicket MetalUploader::upload_buffer(const BufferHandle handle,
     nx::loge(log_rhi, "upload_buffer: handle is not live");
     return UploadTicket::failure();
   }
-  if (dst_offset + src.size() > buffer->size) {
+  if (dst_offset > buffer->size || src.size() > buffer->size - dst_offset) {
     nx::loge(log_rhi, "upload_buffer: {} bytes at offset {} overruns a {} byte "
                       "buffer",
              src.size(), dst_offset, buffer->size);
