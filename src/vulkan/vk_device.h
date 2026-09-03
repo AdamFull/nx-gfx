@@ -36,16 +36,16 @@ struct DeviceDesc {
   u32 frames_in_flight = 2;
 };
 
-/// Which queue family owns an image, as far as the uploader's dedicated- transfer path is
-/// concerned.
+/// Which queue family owns an image, as far as the uploader's dedicated-
+/// transfer path is concerned.
 enum class ImageOwner : u8 {
   Unknown,
   Copy,
   Graphics,
 };
 
-/// a sampled view spans the whole mip chain, but an attachment or storage view must address exactly
-/// one mip. - srv:
+/// a sampled view spans the whole mip chain, but an attachment or storage view
+/// must address exactly one mip. - srv:
 struct VulkanTexture {
   VkImage image = VK_NULL_HANDLE;
   VkImageView srv = VK_NULL_HANDLE;
@@ -58,6 +58,7 @@ struct VulkanTexture {
   TextureDimension dimension = TextureDimension::Tex2D;
   u32 width = 0;
   u32 height = 0;
+  u32 depth = 1;
   u32 mip_levels = 1;
   u32 layers = 1;
   TextureUsageFlags usage = TextureUsage::None;
@@ -181,9 +182,8 @@ public:
   /// source must already be in CopySrc and this must be called outside a
   /// render/compute pass. row_pitch may include padding between rows.
   [[nodiscard]] bool copy_texture_to_buffer(TextureHandle texture,
-                                            BufferHandle buffer,
-                                            u64 row_pitch, u32 mip = 0,
-                                            u32 layer = 0);
+                                            BufferHandle buffer, u64 row_pitch,
+                                            u32 mip = 0, u32 layer = 0);
 
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
                         f32 b = 1.f);
@@ -284,8 +284,9 @@ public:
 
   [[nodiscard]] VulkanUploader &uploader() noexcept { return m_uploader; }
 
-  /// a caller with no swapchain - a test, an asset tool - otherwise has no way to reach the
-  /// graphics queue at all, and its uploads stay stranded on the transfer family.
+  /// a caller with no swapchain - a test, an asset tool - otherwise has no way
+  /// to reach the graphics queue at all, and its uploads stay stranded on the
+  /// transfer family.
   void flush_uploads() noexcept;
 
   [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
@@ -345,9 +346,10 @@ public:
     return m_query_pools.try_get(handle);
   }
 
-  // Memory aliasing Two transients whose lifetimes do not overlap can share bytes. The render graph
-  // knows those lifetimes, so it does the packing: it asks what each texture needs, creates one
-  // heap, and places them at computed offsets.
+  // Memory aliasing Two transients whose lifetimes do not overlap can share
+  // bytes. The render graph knows those lifetimes, so it does the packing: it
+  // asks what each texture needs, creates one heap, and places them at computed
+  // offsets.
 
   [[nodiscard]] MemoryRequirements
   texture_requirements(const TextureDesc &desc) const;
@@ -511,4 +513,4 @@ private:
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
 };
 
-}
+} // namespace nxe::rhi

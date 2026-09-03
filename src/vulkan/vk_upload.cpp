@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <limits>
 
 namespace nxe::rhi {
 namespace {
@@ -16,10 +17,6 @@ const nx::log::Category log_up = nx::log::category("upload");
 
 constexpr u64 RING_CAPACITY = 32ull * 1024 * 1024;
 constexpr u64 DEDICATED_UPLOAD_THRESHOLD = RING_CAPACITY / 2;
-
-[[nodiscard]] u64 align_up(const u64 value, const u64 alignment) noexcept {
-  return (value + alignment - 1) & ~(alignment - 1);
-}
 
 /// Buffer-copy offset must be a multiple of both 4 and the format's block size;
 /// every rhi::Format's block size is a power of two, so max(4, size) satisfies
@@ -305,7 +302,7 @@ u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
     return nullptr;
 
   const auto try_alloc = [&](u64 &offset) -> bool {
-    u64 base = align_up(m_ring_head, alignment);
+    u64 base = nx::align_up(m_ring_head, alignment);
     u64 off = base % m_ring_capacity;
     if (off + size > m_ring_capacity) {
       base = (base - off) + m_ring_capacity;
@@ -388,8 +385,7 @@ VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
   return &m_chunks.back();
 }
 
-u8 *VulkanUploader::acquire_upload_staging(const u64 size,
-                                           const u64 alignment,
+u8 *VulkanUploader::acquire_upload_staging(const u64 size, const u64 alignment,
                                            VkBuffer &buffer, u64 &offset,
                                            Chunk *&dedicated) {
   buffer = VK_NULL_HANDLE;
@@ -435,14 +431,38 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   const bool on_graphics = qfot && tex->owner == ImageOwner::Graphics;
 
   u64 staging_size = 0;
-  for (const ImageSubresource &sr : layout)
-    staging_size = align_up(staging_size, align) + sr.size;
+  const u64 source_size = src.size();
+  for (const ImageSubresource &sr : layout) {
+    if (sr.size == 0 || sr.offset > source_size ||
+        sr.size > source_size - sr.offset || sr.mip >= tex->mip_levels ||
+        sr.layer >= tex->layers || sr.width == 0 || sr.height == 0 ||
+        sr.depth == 0) {
+      nx::loge(log_up, "upload_texture: malformed source subresource");
+      return UploadTicket::failure();
+    }
+    const u32 mip_width = nx::max(1u, tex->width >> sr.mip);
+    const u32 mip_height = nx::max(1u, tex->height >> sr.mip);
+    const u32 mip_depth = nx::max(1u, tex->depth >> sr.mip);
+    if (sr.x > mip_width || sr.width > mip_width - sr.x || sr.y > mip_height ||
+        sr.height > mip_height - sr.y || sr.z > mip_depth ||
+        sr.depth > mip_depth - sr.z ||
+        staging_size > std::numeric_limits<u64>::max() - (align - 1u)) {
+      nx::loge(log_up, "upload_texture: subresource is outside the texture");
+      return UploadTicket::failure();
+    }
+    const u64 aligned = nx::align_up(staging_size, align);
+    if (sr.size > std::numeric_limits<u64>::max() - aligned) {
+      nx::loge(log_up, "upload_texture: staging size overflow");
+      return UploadTicket::failure();
+    }
+    staging_size = aligned + sr.size;
+  }
 
   VkBuffer staging_buf = VK_NULL_HANDLE;
   u64 base_offset = 0;
   Chunk *dedicated = nullptr;
-  u8 *const staging = acquire_upload_staging(
-      staging_size, align, staging_buf, base_offset, dedicated);
+  u8 *const staging = acquire_upload_staging(staging_size, align, staging_buf,
+                                             base_offset, dedicated);
   if (staging == nullptr) {
     nx::loge(log_up, "upload_texture: no staging for {} bytes", staging_size);
     return UploadTicket::failure();
@@ -457,7 +477,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   nx::small_vector<VkBufferImageCopy, 16> copies;
   u64 offset = 0;
   for (const ImageSubresource &sr : layout) {
-    offset = align_up(offset, align);
+    offset = nx::align_up(offset, align);
     std::memcpy(staging + offset, src.data() + sr.offset,
                 nx::cast<usize>(sr.size));
 
@@ -587,8 +607,8 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   VkBuffer staging_buf = VK_NULL_HANDLE;
   u64 base_offset = 0;
   Chunk *dedicated = nullptr;
-  u8 *const staging = acquire_upload_staging(
-      src.size(), 16, staging_buf, base_offset, dedicated);
+  u8 *const staging = acquire_upload_staging(src.size(), 16, staging_buf,
+                                             base_offset, dedicated);
   if (staging == nullptr) {
     nx::loge(log_up, "upload_buffer: no staging for {} bytes", src.size());
     return UploadTicket::failure();

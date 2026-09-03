@@ -30,7 +30,7 @@ VmaAllocationCreateFlags to_vma_flags(const MemoryUsage usage,
   return flags;
 }
 
-}
+} // namespace
 
 bool VulkanDevice::create_texture_views(VulkanTexture &texture,
                                         const nx::string_view name) {
@@ -108,7 +108,7 @@ to_image_create_info(const TextureDesc &desc) noexcept {
   return info;
 }
 
-}
+} // namespace
 
 TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   if (desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
@@ -137,6 +137,7 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   texture.dimension = desc.dimension;
   texture.width = desc.width;
   texture.height = desc.height;
+  texture.depth = info.extent.depth;
   texture.mip_levels = desc.mip_levels;
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
@@ -265,6 +266,7 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
   texture.dimension = desc.dimension;
   texture.width = desc.width;
   texture.height = desc.height;
+  texture.depth = info.extent.depth;
   texture.mip_levels = desc.mip_levels;
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
@@ -573,8 +575,9 @@ bool VulkanCommandContext::copy_texture_to_buffer(
       !(texture->usage & TextureUsage::CopySrc) ||
       !(buffer->usage & BufferUsage::CopyDst) ||
       texture->state != ResourceState::CopySrc ||
-      format_is_depth(texture->format) || format_is_compressed(texture->format) ||
-      mip >= texture->mip_levels || layer >= texture->layers)
+      format_is_depth(texture->format) ||
+      format_is_compressed(texture->format) || mip >= texture->mip_levels ||
+      layer >= texture->layers)
     return false;
 
   const u32 width = nx::max<u32>(1, texture->width >> mip);
@@ -857,4 +860,4 @@ void VulkanCommandContext::pop_debug_group() {
   vkCmdEndDebugUtilsLabelEXT(m_cmd);
 }
 
-}
+} // namespace nxe::rhi
