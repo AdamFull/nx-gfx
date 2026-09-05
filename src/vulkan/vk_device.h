@@ -44,8 +44,15 @@ enum class ImageOwner : u8 {
   Graphics,
 };
 
-/// a sampled view spans the whole mip chain, but an attachment or storage view
-/// must address exactly one mip. - srv:
+struct PendingTextureView {
+  TextureHandle texture;
+  VkImageView view = VK_NULL_HANDLE;
+  u64 publish_after = 0;
+  u32 base_mip = 0;
+};
+
+/// A sampled view spans the resident suffix of the mip chain; attachment and
+/// storage views address exactly one mip.
 struct VulkanTexture {
   VkImage image = VK_NULL_HANDLE;
   VkImageView srv = VK_NULL_HANDLE;
@@ -60,6 +67,7 @@ struct VulkanTexture {
   u32 height = 0;
   u32 depth = 1;
   u32 mip_levels = 1;
+  u32 sampled_base_mip = 0;
   u32 layers = 1;
   TextureUsageFlags usage = TextureUsage::None;
   ResourceState state = ResourceState::Undefined;
@@ -323,7 +331,7 @@ public:
   [[nodiscard]] bool set_texture_view_base_mip(TextureHandle handle,
                                                u32 base_mip);
   /// True when the device can sample a texture whose finer mips are not yet
-  /// uploaded (via set_texture_view_base_mip) — i.e. mip-residency streaming.
+  /// uploaded (via TextureDesc::sampled_base_mip and subsequent view updates).
   [[nodiscard]] bool supports_mip_streaming() const noexcept { return true; }
   [[nodiscard]] const VulkanTexture *
   texture(TextureHandle handle) const noexcept;
@@ -511,6 +519,7 @@ private:
     PipelineHandle pipeline;
   };
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
+  nx::small_vector<PendingTextureView, 16> m_pending_texture_views;
 };
 
 } // namespace nxe::rhi

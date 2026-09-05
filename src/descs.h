@@ -73,6 +73,9 @@ struct TextureDesc {
   TextureUsageFlags usage = TextureUsage::Sampled;
   MemoryUsage memory = MemoryUsage::DeviceLocal;
   ResourceState initial_state = ResourceState::Undefined;
+  /// First mip exposed by the sampled view. Streaming clients use this to
+  /// create a texture with only its already-uploaded coarse tail visible.
+  u32 sampled_base_mip = 0;
 };
 
 /// What a resource needs from a heap. Query it before packing, then place the
@@ -278,4 +281,4 @@ struct DeviceCaps {
   f32 timestamp_period_ns = 0.f;
 };
 
-}
+} // namespace nxe::rhi

@@ -1059,6 +1059,28 @@ void VulkanDevice::destroy_texture_now(VulkanTexture &texture) noexcept {
 
 void VulkanDevice::collect_garbage(
     const u64 completed_timeline_value) noexcept {
+  for (usize i = 0; i < m_pending_texture_views.size();) {
+    const PendingTextureView pending = m_pending_texture_views[i];
+    if (pending.publish_after > completed_timeline_value) {
+      ++i;
+      continue;
+    }
+
+    VulkanTexture *const texture = m_textures.try_get(pending.texture);
+    if (texture == nullptr) {
+      vkDestroyImageView(m_device, pending.view, nullptr);
+    } else {
+      if (texture->srv != VK_NULL_HANDLE)
+        texture->retired_srvs.push_back(texture->srv);
+      texture->srv = pending.view;
+      texture->sampled_base_mip = pending.base_mip;
+      write_texture_descriptor(nx::cast<u32>(pending.texture.index()),
+                               texture->srv);
+    }
+    m_pending_texture_views.erase(m_pending_texture_views.begin() +
+                                  nx::cast<isize>(i));
+  }
+
   for (usize i = m_pending_deletes.size(); i > 0; --i) {
     PendingDelete &pending = m_pending_deletes[i - 1];
     if (pending.timeline_value > completed_timeline_value)

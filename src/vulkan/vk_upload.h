@@ -124,6 +124,8 @@ private:
   /// staging for large copies or when the ring is temporarily unavailable.
   u8 *acquire_upload_staging(u64 size, u64 alignment, VkBuffer &buffer,
                              u64 &offset, Chunk *&dedicated);
+  [[nodiscard]] bool flush_upload_staging(const Chunk *dedicated, u64 offset,
+                                          u64 size) const noexcept;
 
   /// Bytes a graphics replay reads are held by `gfx_value` on the device
   /// timeline too, since the copy timeline says nothing about when the frame

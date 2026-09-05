@@ -409,6 +409,16 @@ u8 *VulkanUploader::acquire_upload_staging(const u64 size, const u64 alignment,
   return dedicated->mapped;
 }
 
+bool VulkanUploader::flush_upload_staging(const Chunk *const dedicated,
+                                          const u64 offset,
+                                          const u64 size) const noexcept {
+  const VmaAllocation allocation =
+      dedicated != nullptr ? dedicated->alloc : m_ring_alloc;
+  const u64 allocation_offset = dedicated != nullptr ? 0u : offset;
+  return NX_VK_CHECK(vmaFlushAllocation(m_allocator, allocation,
+                                        allocation_offset, size)) == VK_SUCCESS;
+}
+
 UploadTicket
 VulkanUploader::upload_texture(const TextureHandle handle,
                                const std::span<const u8> src,
@@ -491,6 +501,16 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     copy.imageExtent = {sr.width, sr.height, sr.depth == 0 ? 1u : sr.depth};
     copies.push_back(copy);
     offset += sr.size;
+  }
+
+  // HOST_ACCESS_* asks VMA for a suitable mapped memory type but does not
+  // guarantee HOST_COHERENT memory. Make every CPU write visible before the
+  // copy command can consume it. This matters especially for successive mip
+  // uploads, where a non-coherent cache line could otherwise present a mix of
+  // old staging bytes as a brief block artifact while streaming.
+  if (!flush_upload_staging(dedicated, base_offset, staging_size)) {
+    nx::loge(log_up, "upload_texture: could not flush staging memory");
+    return UploadTicket::failure();
   }
 
   if (on_graphics) {
@@ -628,6 +648,11 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
     return UploadTicket::failure();
   }
   std::memcpy(staging, src.data(), src.size());
+
+  if (!flush_upload_staging(dedicated, base_offset, src.size())) {
+    nx::loge(log_up, "upload_buffer: could not flush staging memory");
+    return UploadTicket::failure();
+  }
 
   const VkCommandBuffer cmd = ensure_batch();
   if (cmd == VK_NULL_HANDLE) {

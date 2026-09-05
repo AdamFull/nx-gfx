@@ -59,8 +59,12 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
   };
 
   if (texture.usage & TextureUsage::Sampled) {
-    if (!make_view(to_vk_view_type(texture.dimension), 0, texture.mip_levels,
-                   texture.srv))
+    if (texture.mip_levels == 0)
+      return false;
+    const u32 base_mip =
+        nx::min(texture.sampled_base_mip, texture.mip_levels - 1u);
+    if (!make_view(to_vk_view_type(texture.dimension), base_mip,
+                   texture.mip_levels - base_mip, texture.srv))
       return false;
     set_object_name(vk_handle_value(texture.srv), VK_OBJECT_TYPE_IMAGE_VIEW,
                     name);
@@ -139,6 +143,9 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   texture.height = desc.height;
   texture.depth = info.extent.depth;
   texture.mip_levels = desc.mip_levels;
+  texture.sampled_base_mip =
+      desc.mip_levels > 0 ? nx::min(desc.sampled_base_mip, desc.mip_levels - 1u)
+                          : 0u;
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
   texture.state = ResourceState::Undefined;
@@ -268,6 +275,9 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
   texture.height = desc.height;
   texture.depth = info.extent.depth;
   texture.mip_levels = desc.mip_levels;
+  texture.sampled_base_mip =
+      desc.mip_levels > 0 ? nx::min(desc.sampled_base_mip, desc.mip_levels - 1u)
+                          : 0u;
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
   texture.state = ResourceState::Undefined;
@@ -340,6 +350,18 @@ bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,
     return false;
   if (base_mip >= tex->mip_levels)
     base_mip = tex->mip_levels - 1u;
+  bool has_pending = false;
+  for (auto pending = m_pending_texture_views.rbegin();
+       pending != m_pending_texture_views.rend(); ++pending) {
+    if (pending->texture != handle)
+      continue;
+    has_pending = true;
+    if (pending->base_mip == base_mip)
+      return true;
+    break;
+  }
+  if (!has_pending && tex->sampled_base_mip == base_mip)
+    return true;
 
   VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   info.image = tex->image;
@@ -354,10 +376,15 @@ bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,
       VK_SUCCESS)
     return false;
 
-  if (tex->srv != VK_NULL_HANDLE)
-    tex->retired_srvs.push_back(tex->srv);
-  tex->srv = view;
-  write_texture_descriptor(nx::cast<u32>(handle.index()), view);
+  // The bindless set is update-after-bind: an already submitted frame may see
+  // an in-place descriptor update. Publishing a view that exposes the mip just
+  // queued for upload would therefore let that older frame sample undefined
+  // texels. Retain the new view until the graphics frame containing the upload
+  // has completed; collect_garbage publishes it at that safe boundary.
+  m_pending_texture_views.push_back(
+      {handle, view,
+       m_timeline_value == ~u64{0} ? ~u64{0} : m_timeline_value + 1u,
+       base_mip});
   return true;
 }
 
