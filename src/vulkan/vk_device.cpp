@@ -515,7 +515,7 @@ bool VulkanDevice::select_physical_device() {
            VK_API_VERSION_MINOR(m_caps.api_version),
            VK_API_VERSION_PATCH(m_caps.api_version),
            m_caps.device_local_memory / (1024 * 1024));
-  nx::logi(log_rhi, "features: {}",
+  nx::logd(log_rhi, "features: {}",
            m_routes.core_13   ? "core 1.3"
            : m_routes.core_12 ? "core 1.2, dynamic rendering and "
                                 "synchronization2 by extension"
@@ -745,13 +745,13 @@ bool VulkanDevice::create_logical_device() {
     m_video_decode.available = true;
     m_video_decode.family = video_family;
     vkGetDeviceQueue(m_device, video_family, 0, &m_video_decode.queue);
-    nx::logi(log_rhi, "video: hardware VP9 decode on queue family {}",
+    nx::logd(log_rhi, "video: hardware VP9 decode on queue family {}",
              video_family);
   }
 
   m_caps.draw_indirect_count = m_routes.draw_indirect_count;
 
-  nx::logi(log_rhi, "queues: graphics={} compute={}{} copy={}{}", graphics,
+  nx::logd(log_rhi, "queues: graphics={} compute={}{} copy={}{}", graphics,
            compute, m_caps.async_compute ? " (async)" : " (aliased)", copy,
            m_caps.dedicated_transfer ? " (dedicated)" : " (aliased)");
   return true;

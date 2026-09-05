@@ -119,7 +119,7 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
       if (initial.size() >= 16 + VK_UUID_SIZE) {
         const u8 *uuid = initial.data() + 16;
         if (std::memcmp(uuid, props.pipelineCacheUUID, VK_UUID_SIZE) != 0) {
-          nx::logi(log_rhi, "pipeline cache is for another device, ignoring");
+          nx::logd(log_rhi, "pipeline cache is for another device, ignoring");
           initial = {};
         }
       }
@@ -131,7 +131,7 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
   NX_VK_TRY(vkCreatePipelineCache(m_device, &info, nullptr, &m_pipeline_cache));
 
   if (initial.size())
-    nx::logi(log_rhi, "pipeline cache: loaded {} bytes", initial.size());
+    nx::logd(log_rhi, "pipeline cache: loaded {} bytes", initial.size());
   return true;
 }
 
@@ -153,7 +153,7 @@ void VulkanDevice::save_pipeline_cache() noexcept {
   const auto written =
       nx::fs::file_write(m_pipeline_cache_path, {data.data(), size});
   if (written)
-    nx::logi(log_rhi, "pipeline cache: saved {} bytes", size);
+    nx::logd(log_rhi, "pipeline cache: saved {} bytes", size);
   else
     nx::logw(log_rhi, "pipeline cache: could not write {}",
              m_pipeline_cache_path);

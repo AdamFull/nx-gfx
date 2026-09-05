@@ -92,7 +92,7 @@ bool VulkanDevice::create_bindless_heap() {
   NX_VK_TRY(vkCreatePipelineLayout(m_device, &pipeline_layout, nullptr,
                                    &m_pipeline_layout));
 
-  nx::logi(log_rhi, "bindless heap: {} samplers, {} textures, {} rw-textures",
+  nx::logd(log_rhi, "bindless heap: {} samplers, {} textures, {} rw-textures",
            m_bindless.max_samplers, m_bindless.max_textures,
            m_bindless.max_rw_textures);
   return true;

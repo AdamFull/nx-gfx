@@ -37,7 +37,7 @@ id<MTLHeap> grow_heaps(MetalDeviceState &state, const u64 required) noexcept {
 
   state.bindless.heaps.push_back(heap);
   state.bindless.heap_bytes += info.size;
-  nx::logi(log_rhi, "bindless: heap {} added ({} MiB, {} MiB total)",
+  nx::logd(log_rhi, "bindless: heap {} added ({} MiB, {} MiB total)",
            state.bindless.heaps.size(), info.size >> 20,
            state.bindless.heap_bytes >> 20);
   return heap;
@@ -92,7 +92,7 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
     std::memset([heap.argument_buffer contents], 0, nx::cast<usize>(total));
   }
 
-  nx::logi(log_rhi,
+  nx::logd(log_rhi,
            "bindless heap: {} textures / {} rw textures / {} samplers "
            "({} KiB)",
            heap.max_textures, heap.max_rw_textures, heap.max_samplers,

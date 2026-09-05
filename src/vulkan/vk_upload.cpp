@@ -119,7 +119,7 @@ bool VulkanUploader::init(VulkanDevice *device) {
     return false;
   }
 
-  nx::logi(log_up,
+  nx::logd(log_up,
            "uploader: transfer queue family {} ({}), {} MiB ring, "
            "loader thread up",
            m_copy_family,

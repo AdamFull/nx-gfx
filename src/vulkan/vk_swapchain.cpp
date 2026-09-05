@@ -318,7 +318,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     m_release_semaphores.push_back(release);
   }
 
-  nx::logi(log_rhi, "swapchain: {}x{}, {} images, {}", extent.width,
+  nx::logd(log_rhi, "swapchain: {}x{}, {} images, {}", extent.width,
            extent.height, actual_count, to_string(m_swapchain_format));
   return true;
 }

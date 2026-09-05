@@ -43,7 +43,7 @@ void sweep_empty_heaps(MetalDeviceState &state) noexcept {
     if (heap != nil && [heap usedSize] == 0) {
       const u64 size = [heap size];
       bindless.heap_bytes -= nx::min<u64>(size, bindless.heap_bytes);
-      nx::logi(log_rhi, "bindless: heap released ({} MiB, {} MiB total)",
+      nx::logd(log_rhi, "bindless: heap released ({} MiB, {} MiB total)",
                size >> 20, bindless.heap_bytes >> 20);
       continue;
     }
@@ -197,7 +197,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     nx::logi(log_rhi, "metal device: {} ({}, unified memory: {})",
              m_device_name, metal3 ? "Metal 3" : "Metal 2",
              [device hasUnifiedMemory] ? "yes" : "no");
-    nx::logi(log_rhi, "argument buffers: tier {}", tier2 ? 2 : 1);
+    nx::logd(log_rhi, "argument buffers: tier {}", tier2 ? 2 : 1);
 
     if (!create_bindless_heap(*state, m_caps)) {
       delete state;

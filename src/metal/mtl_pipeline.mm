@@ -163,7 +163,7 @@ void create_pipeline_archive(MetalDeviceState &state,
         [state.device newBinaryArchiveWithDescriptor:info error:&error];
 
     if (state.pipeline_archive == nil && have_existing) {
-      nx::logi(log_rhi, "pipeline archive is stale or unreadable, starting a "
+      nx::logd(log_rhi, "pipeline archive is stale or unreadable, starting a "
                         "fresh one");
       info.url = nil;
       error = nil;
@@ -180,7 +180,7 @@ void create_pipeline_archive(MetalDeviceState &state,
     state.pipeline_archive.label = @"nx2d pipelines";
 
     if (have_existing && info.url != nil)
-      nx::logi(log_rhi, "pipeline archive: loaded {}", path);
+      nx::logd(log_rhi, "pipeline archive: loaded {}", path);
   }
 }
 
@@ -204,7 +204,7 @@ void save_pipeline_archive(MetalDeviceState &state) noexcept {
       return;
     }
   }
-  nx::logi(log_rhi, "pipeline archive: saved {}", state.pipeline_archive_path);
+  nx::logd(log_rhi, "pipeline archive: saved {}", state.pipeline_archive_path);
 }
 
 ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {

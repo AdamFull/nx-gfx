@@ -146,7 +146,7 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
   backbuffer.owns_texture = false;
   s->backbuffer = s->textures.insert(std::move(backbuffer));
 
-  nx::logi(log_rhi, "swapchain: {}x{} {} ({} frames in flight, {})", desc.width,
+  nx::logd(log_rhi, "swapchain: {}x{} {} ({} frames in flight, {})", desc.width,
            desc.height, to_string(s->swapchain_format), frames_in_flight,
            desc.present_mode == PresentMode::Immediate ? "no vsync" : "vsync");
   return true;

@@ -561,7 +561,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     return false;
   }
 
-  nx::logi(log_video, "video: decode session {}x{}, {} dpb slots",
+  nx::logd(log_video, "video: decode session {}x{}, {} dpb slots",
            m_extent.width, m_extent.height, m_max_dpb_slots);
   return true;
 }
