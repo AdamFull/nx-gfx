@@ -1,6 +1,8 @@
 
 #include "core/rendering/rhi/image/image.h"
 
+#include "core/rendering/rhi/image/basis_texture.h"
+
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
 
@@ -850,6 +852,20 @@ Result load_image_from_memory(const std::span<const u8> bytes) {
     return nx::err(ImageError::Empty);
 
   Reader reader{bytes.data(), bytes.size(), 0};
+
+  static constexpr u8 KTX2_MAGIC[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
+                                        0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+  if (bytes.size() >= sizeof(KTX2_MAGIC) &&
+      std::memcmp(bytes.data(), KTX2_MAGIC, sizeof(KTX2_MAGIC)) == 0) {
+    BasisTextureInfo info;
+    if (!inspect_basis_texture(bytes, info))
+      return nx::err(ImageError::UnsupportedFormat);
+    ImageData decoded;
+    const Format format = info.srgb ? Format::RGBA8_SRGB : Format::RGBA8_UNORM;
+    if (!transcode_basis_texture(bytes, format, decoded))
+      return nx::err(ImageError::Corrupt);
+    return decoded;
+  }
 
   if (bytes.size() >= sizeof(DDS_MAGIC) &&
       std::memcmp(bytes.data(), DDS_MAGIC, sizeof(DDS_MAGIC)) == 0) {

@@ -12,13 +12,16 @@ namespace nxe::rhi {
 enum class TextureCookContainer : u8 { Nxb, Dds, Ktx, Count };
 
 enum class TextureCookQuality : u8 { Fast, Balanced, High, Exhaustive, Count };
+enum class TextureStorage : u8 { Native, BasisEtc1s, BasisUastc, Count };
 
 struct TexturePreset {
   nx::string name;
+  TextureStorage storage = TextureStorage::Native;
   /// Unknown means preserve the format decoded from the source/intermediate.
   Format format = Format::Unknown;
   bool mipmaps = true;
   TextureCookQuality quality = TextureCookQuality::Balanced;
+  i32 zstd_level = 10;
 };
 
 /// One selected, platform-specific profile. A project may point Windows and
@@ -38,22 +41,27 @@ struct TextureProfile {
 /// completely valid default import.
 struct TextureImport {
   nx::string preset;
+  std::optional<TextureStorage> storage;
   std::optional<Format> format;
   std::optional<bool> mipmaps;
   std::optional<TextureCookQuality> quality;
+  std::optional<i32> zstd_level;
 };
 
 struct TextureCookSettings {
   TextureCookContainer container = TextureCookContainer::Nxb;
+  TextureStorage storage = TextureStorage::Native;
   Format format = Format::Unknown;
   bool mipmaps = true;
   TextureCookQuality quality = TextureCookQuality::Balanced;
+  i32 zstd_level = 10;
   nx::string preset;
 };
 
 [[nodiscard]] nx::string_view
 to_string(TextureCookContainer container) noexcept;
 [[nodiscard]] nx::string_view to_string(TextureCookQuality quality) noexcept;
+[[nodiscard]] nx::string_view to_string(TextureStorage storage) noexcept;
 
 /// Strict, versioned readers for authoring configuration. On failure, `error`
 /// contains a human-readable field-level diagnostic.

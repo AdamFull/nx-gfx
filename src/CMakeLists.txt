@@ -4,6 +4,8 @@ add_library(nx_rhi_image STATIC
         types.cpp
         image/image.h
         image/image.cpp
+        image/basis_texture.h
+        image/basis_texture.cpp
         image/stb_image_impl.cpp
         image/texture_import.h
         image/texture_import.cpp
@@ -15,7 +17,8 @@ add_library(nx::rhi_image ALIAS nx_rhi_image)
 target_include_directories(nx_rhi_image PUBLIC "${NX_ENGINE_ROOT}/engine")
 target_link_libraries(nx_rhi_image
         PUBLIC nx::foundation
-        PRIVATE nx::compile_options nx::stb nx::webp_decoder)
+        PRIVATE nx::compile_options nx::stb nx::webp_decoder
+                nx::basisu_transcoder)
 
 set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 
