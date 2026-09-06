@@ -2,6 +2,7 @@
 #include "core/rendering/rhi/image/image.h"
 
 #include "core/rendering/rhi/image/basis_texture.h"
+#include "core/rendering/rhi/image/ktx2.h"
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
@@ -853,13 +854,16 @@ Result load_image_from_memory(const std::span<const u8> bytes) {
 
   Reader reader{bytes.data(), bytes.size(), 0};
 
-  static constexpr u8 KTX2_MAGIC[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
-                                        0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
-  if (bytes.size() >= sizeof(KTX2_MAGIC) &&
-      std::memcmp(bytes.data(), KTX2_MAGIC, sizeof(KTX2_MAGIC)) == 0) {
+  if (is_ktx2(bytes)) {
+    auto ktx2 = inspect_ktx2(bytes);
+    if (!ktx2)
+      return nx::err(ktx2.error());
+    if (ktx2->payload == Ktx2PayloadKind::Native)
+      return decode_native_ktx2(bytes);
+
     BasisTextureInfo info;
     if (!inspect_basis_texture(bytes, info))
-      return nx::err(ImageError::UnsupportedFormat);
+      return nx::err(ImageError::Corrupt);
     ImageData decoded;
     const Format format = info.srgb ? Format::RGBA8_SRGB : Format::RGBA8_UNORM;
     if (!transcode_basis_texture(bytes, format, decoded))

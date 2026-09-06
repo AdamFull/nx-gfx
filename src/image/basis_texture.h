@@ -26,7 +26,7 @@ struct BasisTextureInfo {
 };
 
 /// Validates a Basis Universal KTX2 payload and returns its GPU-independent
-/// layout. KTX2 files with ordinary Vulkan payloads are intentionally rejected.
+/// layout. Native KTX2 container handling lives in ktx2.h.
 [[nodiscard]] bool inspect_basis_texture(std::span<const u8> bytes,
                                          BasisTextureInfo &out) noexcept;
 

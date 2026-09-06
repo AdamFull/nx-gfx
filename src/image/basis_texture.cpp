@@ -1,5 +1,7 @@
 #include "core/rendering/rhi/image/basis_texture.h"
 
+#include "core/rendering/rhi/image/ktx2.h"
+
 #include <transcoder/basisu_transcoder.h>
 
 #include <cstring>
@@ -83,10 +85,23 @@ void initialize_transcoder() noexcept {
 
 bool inspect_basis_texture(const std::span<const u8> bytes,
                            BasisTextureInfo &out) noexcept {
+  const auto container = inspect_ktx2(bytes);
+  if (!container || container->payload == Ktx2PayloadKind::Native)
+    return false;
+
   initialize_transcoder();
   basist::ktx2_transcoder transcoder;
   BasisTextureInfo info;
-  if (!read_info(transcoder, bytes, info))
+  const BasisTextureEncoding expected =
+      container->payload == Ktx2PayloadKind::BasisUastc
+          ? BasisTextureEncoding::Uastc
+          : BasisTextureEncoding::Etc1s;
+  if (!read_info(transcoder, bytes, info) || info.encoding != expected ||
+      info.dimension != container->dimension ||
+      info.width != container->width || info.height != container->height ||
+      info.mip_levels != container->mip_levels ||
+      info.array_layers != container->array_layers ||
+      info.srgb != container->srgb)
     return false;
   out = info;
   return true;

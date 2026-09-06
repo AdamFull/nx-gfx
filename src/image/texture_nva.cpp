@@ -13,7 +13,8 @@ constexpr u32 CHUNK_INFO = nx::nva::fourcc('I', 'N', 'F', 'O');
 constexpr u32 CHUNK_DATA = nx::nva::fourcc('D', 'A', 'T', 'A');
 constexpr u32 CHUNK_KTX2 = nx::nva::fourcc('K', 'T', 'X', '2');
 constexpr u16 VERSION_LEGACY = 1;
-constexpr u16 VERSION = 2;
+constexpr u16 VERSION_BASIS = 2;
+constexpr u16 VERSION = 3;
 constexpr u32 BASIS_FLAG_ALPHA = 1u << 0;
 constexpr u32 BASIS_FLAG_SRGB = 1u << 1;
 constexpr u32 BASIS_FLAG_UASTC = 1u << 2;
@@ -58,10 +59,10 @@ constexpr u32 BASIS_FLAG_UASTC = 1u << 2;
   return true;
 }
 
-[[nodiscard]] bool decode_native_payload(const std::span<const u8> info,
-                                         const std::span<const u8> data,
-                                         const bool has_kind, ImageData &out) {
-  if (info.empty() || data.empty())
+[[nodiscard]] bool decode_native_info(const std::span<const u8> info,
+                                      const u64 data_size, const bool has_kind,
+                                      ImageData &out) {
+  if (info.empty() || data_size == 0)
     return false;
 
   nx::nva::Reader r(info);
@@ -148,7 +149,7 @@ constexpr u32 BASIS_FLAG_UASTC = 1u << 2;
         !subresource_layout(decoded.format, expected_width, expected_height,
                             expected_depth, expected_pitch, expected_size) ||
         s.row_pitch != expected_pitch || s.size != expected_size ||
-        s.offset > data.size() || s.size > data.size() - s.offset)
+        s.offset > data_size || s.size > data_size - s.offset)
       return false;
 
     const usize key = nx::cast<usize>(s.layer) * decoded.mip_levels + s.mip;
@@ -158,28 +159,114 @@ constexpr u32 BASIS_FLAG_UASTC = 1u << 2;
     decoded.subresources.push_back(s);
   }
 
-  decoded.pixels = nx::blob<u8>(data.size());
-  std::memcpy(decoded.pixels.data(), data.data(), data.size());
-  if (!r.ok() || r.remaining() != 0 || !decoded.valid())
+  if (!r.ok() || r.remaining() != 0)
     return false;
   out = std::move(decoded);
   return true;
 }
 
+[[nodiscard]] bool decode_native_payload(const std::span<const u8> info,
+                                         const std::span<const u8> data,
+                                         const bool has_kind, ImageData &out) {
+  ImageData decoded;
+  if (!decode_native_info(info, data.size(), has_kind, decoded))
+    return false;
+  decoded.pixels = nx::blob<u8>(data.size());
+  std::memcpy(decoded.pixels.data(), data.data(), data.size());
+  if (!decoded.valid())
+    return false;
+  out = std::move(decoded);
+  return true;
+}
+
+[[nodiscard]] bool read_exact(nx::fs::stream &stream, void *destination,
+                              usize size) {
+  auto *bytes = static_cast<u8 *>(destination);
+  usize read = 0;
+  while (read < size) {
+    const usize count = stream.read(bytes + read, size - read);
+    if (count == 0)
+      return false;
+    read += count;
+  }
+  return true;
+}
+
+[[nodiscard]] u32 read_u32(const u8 *bytes) noexcept {
+  return nx::cast<u32>(bytes[0]) | (nx::cast<u32>(bytes[1]) << 8) |
+         (nx::cast<u32>(bytes[2]) << 16) | (nx::cast<u32>(bytes[3]) << 24);
+}
+
 } // namespace
 
 nx::vector<u8> encode_texture(const ImageData &image) {
+  if (!image.valid() || image.pixels.size() > std::numeric_limits<u32>::max())
+    return {};
+
+  const u32 layers =
+      image.dimension == TextureDimension::Tex3D ? 1u : image.array_layers;
+  if (image.subresources.size() != nx::cast<usize>(layers) * image.mip_levels)
+    return {};
+
+  ImageData stored;
+  stored.format = image.format;
+  stored.dimension = image.dimension;
+  stored.width = image.width;
+  stored.height = image.height;
+  stored.depth = image.depth;
+  stored.mip_levels = image.mip_levels;
+  stored.array_layers = image.array_layers;
+  stored.pixels = nx::blob<u8>(image.pixels.size());
+  stored.subresources.resize(image.subresources.size());
+
+  nx::vector<const ImageSubresource *> sources(image.subresources.size(),
+                                               nullptr);
+  for (const ImageSubresource &subresource : image.subresources) {
+    if (subresource.mip >= image.mip_levels || subresource.layer >= layers)
+      return {};
+    const usize key =
+        nx::cast<usize>(subresource.layer) * image.mip_levels + subresource.mip;
+    if (sources[key] != nullptr)
+      return {};
+    sources[key] = &subresource;
+  }
+
+  // INFO remains canonical layer-major/mip-major while DATA is coarse-first.
+  // The explicit offsets bridge the two orders for full decoding and let the
+  // streaming reader consume the ZIP entry strictly forwards.
+  u64 stored_offset = 0;
+  for (u32 mip = image.mip_levels; mip-- > 0;) {
+    for (u32 layer = 0; layer < layers; ++layer) {
+      const ImageSubresource *const source =
+          sources[nx::cast<usize>(layer) * image.mip_levels + mip];
+      if (source == nullptr || source->offset > image.pixels.size() ||
+          source->size > image.pixels.size() - source->offset ||
+          source->size > stored.pixels.size() - stored_offset)
+        return {};
+      std::memcpy(stored.pixels.data() + nx::cast<usize>(stored_offset),
+                  image.pixels.data() + nx::cast<usize>(source->offset),
+                  nx::cast<usize>(source->size));
+      ImageSubresource encoded = *source;
+      encoded.offset = stored_offset;
+      stored.subresources[nx::cast<usize>(layer) * image.mip_levels + mip] =
+          encoded;
+      stored_offset += source->size;
+    }
+  }
+  if (stored_offset != stored.pixels.size())
+    return {};
+
   nx::nva::Writer info;
   info.u32v(nx::cast<u32>(TexturePayloadKind::Native));
-  info.u32v(nx::cast<u32>(image.format));
-  info.u32v(nx::cast<u32>(image.dimension));
-  info.u32v(image.width);
-  info.u32v(image.height);
-  info.u32v(image.depth);
-  info.u32v(image.mip_levels);
-  info.u32v(image.array_layers);
-  info.u32v(nx::cast<u32>(image.subresources.size()));
-  for (const ImageSubresource &s : image.subresources) {
+  info.u32v(nx::cast<u32>(stored.format));
+  info.u32v(nx::cast<u32>(stored.dimension));
+  info.u32v(stored.width);
+  info.u32v(stored.height);
+  info.u32v(stored.depth);
+  info.u32v(stored.mip_levels);
+  info.u32v(stored.array_layers);
+  info.u32v(nx::cast<u32>(stored.subresources.size()));
+  for (const ImageSubresource &s : stored.subresources) {
     info.u64v(s.offset);
     info.u64v(s.size);
     info.u32v(s.mip);
@@ -195,7 +282,7 @@ nx::vector<u8> encode_texture(const ImageData &image) {
 
   nx::nva::ChunkWriter w(FORMAT, VERSION);
   w.add(CHUNK_INFO, info.span());
-  w.add(CHUNK_DATA, {image.pixels.data(), image.pixels.size()});
+  w.add(CHUNK_DATA, {stored.pixels.data(), stored.pixels.size()});
   return w.finish();
 }
 
@@ -218,7 +305,7 @@ nx::vector<u8> encode_basis_texture(const std::span<const u8> basis_ktx2) {
                  ? BASIS_FLAG_UASTC
                  : 0u));
 
-  nx::nva::ChunkWriter writer(FORMAT, VERSION);
+  nx::nva::ChunkWriter writer(FORMAT, VERSION_BASIS);
   writer.add(CHUNK_INFO, info.span());
   writer.add(CHUNK_KTX2, basis_ktx2);
   return writer.finish();
@@ -226,8 +313,8 @@ nx::vector<u8> encode_basis_texture(const std::span<const u8> basis_ktx2) {
 
 bool decode_texture_asset(const std::span<const u8> bytes, TextureAsset &out) {
   const std::optional<nx::nva::View> view = nx::nva::View::open(bytes, FORMAT);
-  if (!view ||
-      (view->version() != VERSION_LEGACY && view->version() != VERSION))
+  if (!view || (view->version() != VERSION_LEGACY &&
+                view->version() != VERSION_BASIS && view->version() != VERSION))
     return false;
   const std::span<const u8> info = view->chunk(CHUNK_INFO);
   if (info.empty())
@@ -288,6 +375,128 @@ bool decode_texture_asset(const std::span<const u8> bytes, TextureAsset &out) {
   if (!decoded.valid())
     return false;
   out = std::move(decoded);
+  return true;
+}
+
+bool open_texture_mip_stream(nx::fs::stream_ptr stream, TextureMipStream &out) {
+  if (!stream || stream->size() < 16 ||
+      !stream->seek(0, nx::fs::seek_origin::begin))
+    return false;
+
+  u8 header[16]{};
+  if (!read_exact(*stream, header, sizeof(header)) ||
+      read_u32(header) != nx::nva::MAGIC || read_u32(header + 4) != FORMAT ||
+      (read_u32(header + 8) & 0xffffu) != VERSION)
+    return false;
+  const u32 chunk_count = read_u32(header + 12);
+  if (chunk_count == 0 || chunk_count > 64)
+    return false;
+  const u64 table_size = nx::cast<u64>(chunk_count) * 12u;
+  if (table_size > nx::cast<u64>(stream->size()) - sizeof(header))
+    return false;
+
+  nx::blob<u8> table(nx::cast<usize>(table_size));
+  if (!read_exact(*stream, table.data(), table.size()))
+    return false;
+  u32 info_offset = 0, info_size = 0, data_offset = 0, data_size = 0;
+  for (u32 index = 0; index < chunk_count; ++index) {
+    const u8 *const entry = table.data() + nx::cast<usize>(index) * 12u;
+    const u32 id = read_u32(entry);
+    const u32 offset = read_u32(entry + 4);
+    const u32 size = read_u32(entry + 8);
+    if (offset < sizeof(header) + table_size ||
+        offset > nx::cast<u64>(stream->size()) ||
+        size > nx::cast<u64>(stream->size()) - offset)
+      return false;
+    if (id == CHUNK_INFO) {
+      if (info_size != 0)
+        return false;
+      info_offset = offset;
+      info_size = size;
+    } else if (id == CHUNK_DATA) {
+      if (data_size != 0)
+        return false;
+      data_offset = offset;
+      data_size = size;
+    }
+  }
+  if (info_size == 0 || data_size == 0 ||
+      !stream->seek(info_offset, nx::fs::seek_origin::begin))
+    return false;
+  nx::blob<u8> info(info_size);
+  if (!read_exact(*stream, info.data(), info.size()))
+    return false;
+
+  ImageData layout;
+  if (!decode_native_info({info.data(), info.size()}, data_size, true,
+                          layout) ||
+      layout.dimension != TextureDimension::Tex2D || layout.array_layers != 1 ||
+      layout.subresources.size() != layout.mip_levels)
+    return false;
+
+  u64 expected_offset = 0;
+  for (u32 mip = layout.mip_levels; mip-- > 0;) {
+    const ImageSubresource &subresource = layout.subresources[mip];
+    if (subresource.mip != mip || subresource.layer != 0 ||
+        subresource.offset != expected_offset ||
+        subresource.size > data_size - expected_offset)
+      return false;
+    expected_offset += subresource.size;
+  }
+  if (expected_offset != data_size ||
+      !stream->seek(data_offset, nx::fs::seek_origin::begin))
+    return false;
+
+  TextureMipStream opened;
+  opened.m_stream = std::move(stream);
+  opened.m_layout = std::move(layout);
+  opened.m_data_offset = data_offset;
+  opened.m_next_mip = opened.m_layout.mip_levels - 1u;
+  out = std::move(opened);
+  return true;
+}
+
+bool TextureMipStream::read_through(const u32 finest_mip, ImageData &out) {
+  if (!valid() || finest_mip > m_next_mip)
+    return false;
+  const u32 coarsest_mip = m_next_mip;
+  const u64 file_offset = m_layout.subresources[coarsest_mip].offset;
+  u64 size = 0;
+  for (u32 mip = finest_mip; mip <= coarsest_mip; ++mip) {
+    if (m_layout.subresources[mip].size >
+        std::numeric_limits<u64>::max() - size)
+      return false;
+    size += m_layout.subresources[mip].size;
+  }
+  if (size == 0 || size > std::numeric_limits<usize>::max() ||
+      m_data_offset >
+          nx::cast<u64>(std::numeric_limits<i64>::max()) - file_offset ||
+      !m_stream->seek(nx::cast<i64>(m_data_offset + file_offset),
+                      nx::fs::seek_origin::begin))
+    return false;
+
+  ImageData image;
+  image.format = m_layout.format;
+  image.dimension = m_layout.dimension;
+  image.width = m_layout.width;
+  image.height = m_layout.height;
+  image.depth = m_layout.depth;
+  image.mip_levels = m_layout.mip_levels;
+  image.array_layers = m_layout.array_layers;
+  image.pixels = nx::blob<u8>(nx::cast<usize>(size));
+  if (!read_exact(*m_stream, image.pixels.data(), image.pixels.size()))
+    return false;
+  image.subresources.reserve(coarsest_mip - finest_mip + 1u);
+  for (u32 mip = finest_mip; mip <= coarsest_mip; ++mip) {
+    ImageSubresource subresource = m_layout.subresources[mip];
+    subresource.offset -= file_offset;
+    image.subresources.push_back(subresource);
+  }
+
+  m_next_mip = finest_mip == 0 ? ~u32{0} : finest_mip - 1u;
+  if (m_next_mip == ~u32{0})
+    m_stream.reset();
+  out = std::move(image);
   return true;
 }
 

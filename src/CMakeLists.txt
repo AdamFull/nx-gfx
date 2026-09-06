@@ -4,6 +4,8 @@ add_library(nx_rhi_image STATIC
         types.cpp
         image/image.h
         image/image.cpp
+        image/ktx2.h
+        image/ktx2.cpp
         image/basis_texture.h
         image/basis_texture.cpp
         image/stb_image_impl.cpp
@@ -18,7 +20,7 @@ target_include_directories(nx_rhi_image PUBLIC "${NX_ENGINE_ROOT}/engine")
 target_link_libraries(nx_rhi_image
         PUBLIC nx::foundation
         PRIVATE nx::compile_options nx::stb nx::webp_decoder
-                nx::basisu_transcoder)
+                nx::basisu_transcoder nx::zstd)
 
 set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
 
