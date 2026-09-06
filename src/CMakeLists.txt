@@ -4,6 +4,11 @@ add_library(nx_rhi_image STATIC
         types.cpp
         image/image.h
         image/image.cpp
+        image/image_decode.h
+        image/dds.h
+        image/dds.cpp
+        image/ktx.h
+        image/ktx.cpp
         image/ktx2.h
         image/ktx2.cpp
         image/basis_texture.h
