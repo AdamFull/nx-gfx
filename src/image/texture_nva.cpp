@@ -165,14 +165,29 @@ constexpr u32 BASIS_FLAG_UASTC = 1u << 2;
   return true;
 }
 
-[[nodiscard]] bool decode_native_payload(const std::span<const u8> info,
-                                         const std::span<const u8> data,
-                                         const bool has_kind, ImageData &out) {
+void copy_payload(const std::span<const u8> source, nx::blob<u8> &out,
+                  const nx::cancellation_token &cancellation) {
+  constexpr usize COPY_CHUNK = 256u * 1024u;
+  nx::blob<u8> copied(source.size());
+  for (usize offset = 0; offset < source.size();) {
+    cancellation.throw_if_requested();
+    const usize count = nx::min(COPY_CHUNK, source.size() - offset);
+    std::memcpy(copied.data() + offset, source.data() + offset, count);
+    offset += count;
+  }
+  cancellation.throw_if_requested();
+  out = std::move(copied);
+}
+
+[[nodiscard]] bool
+decode_native_payload(const std::span<const u8> info,
+                      const std::span<const u8> data, const bool has_kind,
+                      ImageData &out,
+                      const nx::cancellation_token &cancellation) {
   ImageData decoded;
   if (!decode_native_info(info, data.size(), has_kind, decoded))
     return false;
-  decoded.pixels = nx::blob<u8>(data.size());
-  std::memcpy(decoded.pixels.data(), data.data(), data.size());
+  copy_payload(data, decoded.pixels, cancellation);
   if (!decoded.valid())
     return false;
   out = std::move(decoded);
@@ -180,15 +195,20 @@ constexpr u32 BASIS_FLAG_UASTC = 1u << 2;
 }
 
 [[nodiscard]] bool read_exact(nx::fs::stream &stream, void *destination,
-                              usize size) {
+                              usize size,
+                              const nx::cancellation_token &cancellation = {}) {
+  constexpr usize CANCEL_CHUNK = 256u * 1024u;
   auto *bytes = static_cast<u8 *>(destination);
   usize read = 0;
   while (read < size) {
-    const usize count = stream.read(bytes + read, size - read);
+    cancellation.throw_if_requested();
+    const usize request = nx::min(size - read, CANCEL_CHUNK);
+    const usize count = stream.read(bytes + read, request);
     if (count == 0)
       return false;
     read += count;
   }
+  cancellation.throw_if_requested();
   return true;
 }
 
@@ -311,7 +331,9 @@ nx::vector<u8> encode_basis_texture(const std::span<const u8> basis_ktx2) {
   return writer.finish();
 }
 
-bool decode_texture_asset(const std::span<const u8> bytes, TextureAsset &out) {
+bool decode_texture_asset(const std::span<const u8> bytes, TextureAsset &out,
+                          const nx::cancellation_token &cancellation) {
+  cancellation.throw_if_requested();
   const std::optional<nx::nva::View> view = nx::nva::View::open(bytes, FORMAT);
   if (!view || (view->version() != VERSION_LEGACY &&
                 view->version() != VERSION_BASIS && view->version() != VERSION))
@@ -323,7 +345,7 @@ bool decode_texture_asset(const std::span<const u8> bytes, TextureAsset &out) {
   TextureAsset decoded;
   if (view->version() == VERSION_LEGACY) {
     if (!decode_native_payload(info, view->chunk(CHUNK_DATA), false,
-                               decoded.native))
+                               decoded.native, cancellation))
       return false;
     decoded.kind = TexturePayloadKind::Native;
   } else {
@@ -334,7 +356,7 @@ bool decode_texture_asset(const std::span<const u8> bytes, TextureAsset &out) {
     decoded.kind = nx::cast<TexturePayloadKind>(kind);
     if (decoded.kind == TexturePayloadKind::Native) {
       if (!decode_native_payload(info, view->chunk(CHUNK_DATA), true,
-                                 decoded.native))
+                                 decoded.native, cancellation))
         return false;
     } else {
       const u32 dimension = reader.u32v();
@@ -368,7 +390,7 @@ bool decode_texture_asset(const std::span<const u8> bytes, TextureAsset &out) {
           stored.srgb != inspected.srgb)
         return false;
       decoded.basis_info = stored;
-      decoded.basis_ktx2 = nx::blob<u8>(payload);
+      copy_payload(payload, decoded.basis_ktx2, cancellation);
     }
   }
 
@@ -378,13 +400,15 @@ bool decode_texture_asset(const std::span<const u8> bytes, TextureAsset &out) {
   return true;
 }
 
-bool open_texture_mip_stream(nx::fs::stream_ptr stream, TextureMipStream &out) {
+bool open_texture_mip_stream(nx::fs::stream_ptr stream, TextureMipStream &out,
+                             const nx::cancellation_token &cancellation) {
+  cancellation.throw_if_requested();
   if (!stream || stream->size() < 16 ||
       !stream->seek(0, nx::fs::seek_origin::begin))
     return false;
 
   u8 header[16]{};
-  if (!read_exact(*stream, header, sizeof(header)) ||
+  if (!read_exact(*stream, header, sizeof(header), cancellation) ||
       read_u32(header) != nx::nva::MAGIC || read_u32(header + 4) != FORMAT ||
       (read_u32(header + 8) & 0xffffu) != VERSION)
     return false;
@@ -396,7 +420,7 @@ bool open_texture_mip_stream(nx::fs::stream_ptr stream, TextureMipStream &out) {
     return false;
 
   nx::blob<u8> table(nx::cast<usize>(table_size));
-  if (!read_exact(*stream, table.data(), table.size()))
+  if (!read_exact(*stream, table.data(), table.size(), cancellation))
     return false;
   u32 info_offset = 0, info_size = 0, data_offset = 0, data_size = 0;
   for (u32 index = 0; index < chunk_count; ++index) {
@@ -424,7 +448,7 @@ bool open_texture_mip_stream(nx::fs::stream_ptr stream, TextureMipStream &out) {
       !stream->seek(info_offset, nx::fs::seek_origin::begin))
     return false;
   nx::blob<u8> info(info_size);
-  if (!read_exact(*stream, info.data(), info.size()))
+  if (!read_exact(*stream, info.data(), info.size(), cancellation))
     return false;
 
   ImageData layout;
@@ -456,7 +480,10 @@ bool open_texture_mip_stream(nx::fs::stream_ptr stream, TextureMipStream &out) {
   return true;
 }
 
-bool TextureMipStream::read_through(const u32 finest_mip, ImageData &out) {
+bool TextureMipStream::read_through(
+    const u32 finest_mip, ImageData &out,
+    const nx::cancellation_token &cancellation) {
+  cancellation.throw_if_requested();
   if (!valid() || finest_mip > m_next_mip)
     return false;
   const u32 coarsest_mip = m_next_mip;
@@ -484,7 +511,8 @@ bool TextureMipStream::read_through(const u32 finest_mip, ImageData &out) {
   image.mip_levels = m_layout.mip_levels;
   image.array_layers = m_layout.array_layers;
   image.pixels = nx::blob<u8>(nx::cast<usize>(size));
-  if (!read_exact(*m_stream, image.pixels.data(), image.pixels.size()))
+  if (!read_exact(*m_stream, image.pixels.data(), image.pixels.size(),
+                  cancellation))
     return false;
   image.subresources.reserve(coarsest_mip - finest_mip + 1u);
   for (u32 mip = finest_mip; mip <= coarsest_mip; ++mip) {

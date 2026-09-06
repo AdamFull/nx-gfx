@@ -113,7 +113,9 @@ bool basis_transcode_target_supported(const Format format) noexcept {
 }
 
 bool transcode_basis_texture(const std::span<const u8> bytes,
-                             const Format target, ImageData &out) noexcept {
+                             const Format target, ImageData &out,
+                             const nx::cancellation_token &cancellation) {
+  cancellation.throw_if_requested();
   BasisFormat basis_format{};
   if (!target_format(target, basis_format))
     return false;
@@ -144,6 +146,7 @@ bool transcode_basis_texture(const std::span<const u8> bytes,
   for (u32 layer = 0; layer < layers; ++layer) {
     for (u32 face = 0; face < faces; ++face) {
       for (u32 mip = 0; mip < info.mip_levels; ++mip) {
+        cancellation.throw_if_requested();
         basist::ktx2_image_level_info level{};
         if (!transcoder.get_image_level_info(level, mip, layer, face))
           return false;
@@ -174,8 +177,10 @@ bool transcode_basis_texture(const std::span<const u8> bytes,
   // payload for array and cube textures while preserving ImageData's canonical
   // layer-major subresource order.
   for (u32 mip = 0; mip < info.mip_levels; ++mip) {
+    cancellation.throw_if_requested();
     for (u32 layer = 0; layer < layers; ++layer) {
       for (u32 face = 0; face < faces; ++face) {
+        cancellation.throw_if_requested();
         const usize index =
             (nx::cast<usize>(layer) * faces + face) * info.mip_levels + mip;
         const ImageSubresource &subresource = decoded.subresources[index];

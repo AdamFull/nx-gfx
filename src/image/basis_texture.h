@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/foundation/threading/cancellation.h"
 #include "core/rendering/rhi/image/image.h"
 
 #include <span>
@@ -33,9 +34,10 @@ struct BasisTextureInfo {
 /// CPU-transcodes every subresource of a Basis Universal KTX2 payload into a
 /// GPU-ready ImageData chain. The destination format is selected by the caller
 /// after querying the active RHI device.
-[[nodiscard]] bool transcode_basis_texture(std::span<const u8> bytes,
-                                           Format target,
-                                           ImageData &out) noexcept;
+[[nodiscard]] bool
+transcode_basis_texture(std::span<const u8> bytes, Format target,
+                        ImageData &out,
+                        const nx::cancellation_token &cancellation = {});
 
 /// Whether the runtime Basis transcoder can produce @p format.
 [[nodiscard]] bool basis_transcode_target_supported(Format format) noexcept;

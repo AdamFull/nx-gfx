@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/cancellation.h"
 #include "core/rendering/rhi/image/basis_texture.h"
 
 #include <span>
@@ -45,10 +46,13 @@ public:
 
   /// Reads every still-unread level down through @p finest_mip. Returned
   /// subresource offsets address the compact output buffer, not the TEX file.
-  [[nodiscard]] bool read_through(u32 finest_mip, ImageData &out);
+  [[nodiscard]] bool
+  read_through(u32 finest_mip, ImageData &out,
+               const nx::cancellation_token &cancellation = {});
 
 private:
-  friend bool open_texture_mip_stream(nx::fs::stream_ptr, TextureMipStream &);
+  friend bool open_texture_mip_stream(nx::fs::stream_ptr, TextureMipStream &,
+                                      const nx::cancellation_token &);
 
   nx::fs::stream_ptr m_stream;
   ImageData m_layout;
@@ -67,8 +71,9 @@ encode_basis_texture(std::span<const u8> basis_ktx2);
 
 /// Reads legacy TEX v1 native payloads, v2 Basis payloads, and v3 native
 /// coarse-first payloads.
-[[nodiscard]] bool decode_texture_asset(std::span<const u8> bytes,
-                                        TextureAsset &out);
+[[nodiscard]] bool
+decode_texture_asset(std::span<const u8> bytes, TextureAsset &out,
+                     const nx::cancellation_token &cancellation = {});
 
 /// Compatibility helper for consumers that accept native payloads only.
 [[nodiscard]] bool decode_texture(std::span<const u8> bytes, ImageData &out);
@@ -76,8 +81,9 @@ encode_basis_texture(std::span<const u8> basis_ktx2);
 /// Opens a progressively readable native TEX v3 2D mip chain. Other TEX
 /// versions and payload kinds return false so callers can use the ordinary
 /// whole-asset decoder as a compatibility fallback.
-[[nodiscard]] bool open_texture_mip_stream(nx::fs::stream_ptr stream,
-                                           TextureMipStream &out);
+[[nodiscard]] bool
+open_texture_mip_stream(nx::fs::stream_ptr stream, TextureMipStream &out,
+                        const nx::cancellation_token &cancellation = {});
 
 [[nodiscard]] nx::string cooked_texture_path(nx::string_view source);
 
