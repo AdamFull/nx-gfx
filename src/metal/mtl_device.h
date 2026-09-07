@@ -257,9 +257,11 @@ public:
   [[nodiscard]] ShaderHandle create_shader(const ShaderDesc &desc);
   void destroy_shader(ShaderHandle handle) noexcept;
 
-  [[nodiscard]] PipelineHandle
+  [[nodiscard]] NX_DEPRECATED_MSG(
+      "use create_graphics_pipeline_async and publish_pipeline") PipelineHandle
   create_graphics_pipeline(const GraphicsPipelineDesc &desc);
-  [[nodiscard]] PipelineHandle
+  [[nodiscard]] NX_DEPRECATED_MSG(
+      "use create_compute_pipeline_async and publish_pipeline") PipelineHandle
   create_compute_pipeline(const ComputePipelineDesc &desc);
   /// Copies descriptor inputs on the owner, then performs native compilation
   /// on a worker. Only publication of the opaque result touches handle tables.
