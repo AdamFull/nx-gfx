@@ -1,10 +1,13 @@
 #pragma once
 
 #include "core/foundation/strings/utf8_string.h"
+#include "core/foundation/threading/thread_pool.h"
+#include "core/foundation/threading/workload.h"
 #include "core/rendering/rhi/bindless.h"
 #include "core/rendering/rhi/descs.h"
 #include "core/rendering/rhi/handles.h"
 #include "core/rendering/rhi/image/image.h"
+#include "core/rendering/rhi/pipeline_compiler.h"
 #include "core/rendering/rhi/shader_reflect.h"
 #include "core/rendering/rhi/types.h"
 #include "core/rendering/rhi/upload.h"
@@ -258,6 +261,19 @@ public:
   create_graphics_pipeline(const GraphicsPipelineDesc &desc);
   [[nodiscard]] PipelineHandle
   create_compute_pipeline(const ComputePipelineDesc &desc);
+  /// Copies descriptor inputs on the owner, then performs native compilation
+  /// on a worker. Only publication of the opaque result touches handle tables.
+  [[nodiscard]] nx::future<CompiledPipeline> create_graphics_pipeline_async(
+      nx::thread_pool &workers, const GraphicsPipelineDesc &desc,
+      nx::task_priority priority = nx::task_priority::Normal);
+  [[nodiscard]] nx::future<CompiledPipeline> create_compute_pipeline_async(
+      nx::thread_pool &workers, const ComputePipelineDesc &desc,
+      nx::task_priority priority = nx::task_priority::Normal);
+  [[nodiscard]] PipelineHandle publish_pipeline(CompiledPipeline &&compiled);
+  [[nodiscard]] nx::workload_statistics
+  pipeline_compile_statistics() const noexcept {
+    return m_pipeline_compile_workload.statistics();
+  }
   void destroy_pipeline(PipelineHandle handle) noexcept;
 
   [[nodiscard]] const ShaderReflection &
@@ -281,6 +297,7 @@ private:
   nx::string m_device_name;
   MetalDeviceState *m_state = nullptr;
   MetalUploader m_uploader;
+  nx::workload_tracker m_pipeline_compile_workload;
 };
 
 }

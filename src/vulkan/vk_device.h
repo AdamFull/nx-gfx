@@ -5,9 +5,12 @@
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/threading/sync.h"
+#include "core/foundation/threading/thread_pool.h"
+#include "core/foundation/threading/workload.h"
 #include "core/rendering/rhi/bindless.h"
 #include "core/rendering/rhi/descs.h"
 #include "core/rendering/rhi/handles.h"
+#include "core/rendering/rhi/pipeline_compiler.h"
 #include "core/rendering/rhi/shader_reflect.h"
 #include "core/rendering/rhi/types.h"
 #include "core/rendering/rhi/vulkan/vk_common.h"
@@ -112,6 +115,10 @@ struct VulkanPipeline {
   VkPipeline pipeline = VK_NULL_HANDLE;
   VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
 };
+
+struct VulkanGraphicsPipelineCompileJob;
+struct VulkanComputePipelineCompileJob;
+class VulkanCompiledPipeline;
 
 struct BindlessHeap {
   VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -374,6 +381,19 @@ public:
   create_graphics_pipeline(const GraphicsPipelineDesc &desc);
   [[nodiscard]] PipelineHandle
   create_compute_pipeline(const ComputePipelineDesc &desc);
+  /// Copies descriptor inputs on the owner, then performs native compilation
+  /// on a worker. Only publication of the opaque result touches handle tables.
+  [[nodiscard]] nx::future<CompiledPipeline> create_graphics_pipeline_async(
+      nx::thread_pool &workers, const GraphicsPipelineDesc &desc,
+      nx::task_priority priority = nx::task_priority::Normal);
+  [[nodiscard]] nx::future<CompiledPipeline> create_compute_pipeline_async(
+      nx::thread_pool &workers, const ComputePipelineDesc &desc,
+      nx::task_priority priority = nx::task_priority::Normal);
+  [[nodiscard]] PipelineHandle publish_pipeline(CompiledPipeline &&compiled);
+  [[nodiscard]] nx::workload_statistics
+  pipeline_compile_statistics() const noexcept {
+    return m_pipeline_compile_workload.statistics();
+  }
   void destroy_pipeline(PipelineHandle handle) noexcept;
 
   [[nodiscard]] u32 texture_index(TextureHandle handle) const noexcept;
@@ -430,6 +450,17 @@ public:
 private:
   friend class VulkanUploader;
 
+  [[nodiscard]] bool
+  prepare_graphics_pipeline(const GraphicsPipelineDesc &desc,
+                            VulkanGraphicsPipelineCompileJob &out) const;
+  [[nodiscard]] bool
+  prepare_compute_pipeline(const ComputePipelineDesc &desc,
+                           VulkanComputePipelineCompileJob &out) const;
+  [[nodiscard]] VulkanCompiledPipeline
+  compile_graphics_pipeline(const VulkanGraphicsPipelineCompileJob &job) const;
+  [[nodiscard]] VulkanCompiledPipeline
+  compile_compute_pipeline(const VulkanComputePipelineCompileJob &job) const;
+
   bool create_instance(const DeviceDesc &desc);
   bool select_physical_device();
   bool create_logical_device();
@@ -480,6 +511,8 @@ private:
   BindlessHeap m_bindless;
   VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
   VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
+  mutable nx::mutex m_pipeline_cache_lock;
+  nx::workload_tracker m_pipeline_compile_workload;
   nx::string m_pipeline_cache_path;
 
   VkSemaphore m_timeline = VK_NULL_HANDLE;

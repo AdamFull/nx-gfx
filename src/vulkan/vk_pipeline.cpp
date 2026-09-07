@@ -8,6 +8,86 @@
 #include <span>
 
 namespace nxe::rhi {
+
+/// Owner-thread snapshot of everything vkCreateGraphicsPipelines needs. Shader
+/// modules are immutable Vulkan objects; their ShaderHandle owners remain live
+/// until the worker finishes. No engine handle table is touched by the worker.
+struct VulkanGraphicsPipelineCompileJob {
+  nx::string name;
+  nx::string vertex_entry;
+  nx::string fragment_entry;
+  VkShaderModule vertex = VK_NULL_HANDLE;
+  VkShaderModule fragment = VK_NULL_HANDLE;
+  Format color_formats[MAX_COLOR_ATTACHMENTS] = {};
+  u32 color_count = 0;
+  Format depth_format = Format::Unknown;
+  BlendState blend[MAX_COLOR_ATTACHMENTS] = {};
+  PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+  CullMode cull = CullMode::None;
+  FrontFace front_face = FrontFace::CounterClockwise;
+  bool depth_test = false;
+  bool depth_write = false;
+  CompareOp depth_compare = CompareOp::LessOrEqual;
+  u32 sample_count = 1;
+};
+
+struct VulkanComputePipelineCompileJob {
+  nx::string name;
+  nx::string entry;
+  VkShaderModule shader = VK_NULL_HANDLE;
+};
+
+/// RAII owner for an unpublished native pipeline. Cancellation and failed
+/// publication therefore cannot leak the driver object.
+class VulkanCompiledPipeline {
+public:
+  VulkanCompiledPipeline() = default;
+  ~VulkanCompiledPipeline() { reset(); }
+
+  VulkanCompiledPipeline(const VulkanCompiledPipeline &) = delete;
+  VulkanCompiledPipeline &operator=(const VulkanCompiledPipeline &) = delete;
+
+  VulkanCompiledPipeline(VulkanCompiledPipeline &&other) noexcept
+      : m_device(other.m_device), m_pipeline(other.m_pipeline),
+        m_bind_point(other.m_bind_point), m_name(std::move(other.m_name)) {
+    other.m_device = VK_NULL_HANDLE;
+    other.m_pipeline = VK_NULL_HANDLE;
+  }
+
+  VulkanCompiledPipeline &operator=(VulkanCompiledPipeline &&other) noexcept {
+    if (this != &other) {
+      reset();
+      m_device = other.m_device;
+      m_pipeline = other.m_pipeline;
+      m_bind_point = other.m_bind_point;
+      m_name = std::move(other.m_name);
+      other.m_device = VK_NULL_HANDLE;
+      other.m_pipeline = VK_NULL_HANDLE;
+    }
+    return *this;
+  }
+
+  [[nodiscard]] bool valid() const noexcept {
+    return m_pipeline != VK_NULL_HANDLE;
+  }
+
+private:
+  friend class VulkanDevice;
+
+  void reset() noexcept {
+    if (m_device != VK_NULL_HANDLE && m_pipeline != VK_NULL_HANDLE)
+      vkDestroyPipeline(m_device, m_pipeline, nullptr);
+    m_device = VK_NULL_HANDLE;
+    m_pipeline = VK_NULL_HANDLE;
+    m_name.clear();
+  }
+
+  VkDevice m_device = VK_NULL_HANDLE;
+  VkPipeline m_pipeline = VK_NULL_HANDLE;
+  VkPipelineBindPoint m_bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  nx::string m_name;
+};
+
 namespace {
 
 const nx::log::Category log_rhi = nx::log::category("rhi");
@@ -103,7 +183,7 @@ VkShaderModule create_module(VkDevice device, const void *code,
   return module;
 }
 
-}
+} // namespace
 
 bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
   m_pipeline_cache_path = path;
@@ -138,6 +218,8 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
 void VulkanDevice::save_pipeline_cache() noexcept {
   if (m_pipeline_cache == VK_NULL_HANDLE || m_pipeline_cache_path.empty())
     return;
+
+  const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
 
   usize size = 0;
   if (vkGetPipelineCacheData(m_device, m_pipeline_cache, &size, nullptr) !=
@@ -205,6 +287,43 @@ void VulkanDevice::destroy_shader(const ShaderHandle handle) noexcept {
 
 PipelineHandle
 VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
+  VulkanGraphicsPipelineCompileJob job;
+  if (!prepare_graphics_pipeline(desc, job))
+    return {};
+  VulkanCompiledPipeline native = compile_graphics_pipeline(job);
+  if (!native.valid())
+    return {};
+  return publish_pipeline(
+      detail::CompiledPipelineAccess::adopt(std::move(native)));
+}
+
+nx::future<CompiledPipeline>
+VulkanDevice::create_graphics_pipeline_async(nx::thread_pool &workers,
+                                             const GraphicsPipelineDesc &desc,
+                                             const nx::task_priority priority) {
+  VulkanGraphicsPipelineCompileJob job;
+  if (!prepare_graphics_pipeline(desc, job))
+    return {};
+  const nx::workload_ticket ticket = m_pipeline_compile_workload.submit();
+  nx::future<CompiledPipeline> future =
+      workers.async(priority, [this, ticket, job = std::move(job)]() mutable {
+        return nx::measure_workload(
+            m_pipeline_compile_workload, ticket, nx::cancellation_token{},
+            [this, &job] {
+              VulkanCompiledPipeline native = compile_graphics_pipeline(job);
+              if (!native.valid())
+                return CompiledPipeline{};
+              return detail::CompiledPipelineAccess::adopt(std::move(native));
+            });
+      });
+  if (!future.valid())
+    m_pipeline_compile_workload.reject(ticket);
+  return future;
+}
+
+bool VulkanDevice::prepare_graphics_pipeline(
+    const GraphicsPipelineDesc &desc,
+    VulkanGraphicsPipelineCompileJob &out) const {
   const VulkanShader *vs = m_shaders.try_get(desc.vertex.shader);
   if (vs == nullptr) {
     nx::loge(log_rhi, "create_graphics_pipeline('{}'): missing vertex shader",
@@ -214,20 +333,45 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
 
   const VulkanShader *fs = m_shaders.try_get(desc.fragment.shader);
 
-  const nx::string vs_entry(desc.vertex.entry_point);
-  const nx::string fs_entry(desc.fragment.entry_point);
+  VulkanGraphicsPipelineCompileJob job;
+  job.name = nx::string(desc.name);
+  job.vertex_entry = nx::string(desc.vertex.entry_point);
+  job.fragment_entry = nx::string(desc.fragment.entry_point);
+  job.vertex = vs->module;
+  job.fragment = fs != nullptr ? fs->module : VK_NULL_HANDLE;
+  job.color_count = nx::min(desc.color_count, MAX_COLOR_ATTACHMENTS);
+  for (u32 i = 0; i < job.color_count; ++i) {
+    job.color_formats[i] = desc.color_formats[i];
+    job.blend[i] = desc.blend[i];
+  }
+  job.depth_format = desc.depth_format;
+  job.topology = desc.topology;
+  job.cull = desc.cull;
+  job.front_face = desc.front_face;
+  job.depth_test = desc.depth_test;
+  job.depth_write = desc.depth_write;
+  job.depth_compare = desc.depth_compare;
+  job.sample_count = nx::max(desc.sample_count, 1u);
+  out = std::move(job);
+  return true;
+}
+
+VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
+    const VulkanGraphicsPipelineCompileJob &job) const {
+  if (job.vertex == VK_NULL_HANDLE)
+    return {};
 
   VkPipelineShaderStageCreateInfo stages[2] = {};
   stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-  stages[0].module = vs->module;
-  stages[0].pName = vs_entry.c_str();
+  stages[0].module = job.vertex;
+  stages[0].pName = job.vertex_entry.c_str();
   u32 stage_count = 1;
-  if (fs != nullptr) {
+  if (job.fragment != VK_NULL_HANDLE) {
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fs->module;
-    stages[1].pName = fs_entry.c_str();
+    stages[1].module = job.fragment;
+    stages[1].pName = job.fragment_entry.c_str();
     stage_count = 2;
   }
 
@@ -236,7 +380,7 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
 
   VkPipelineInputAssemblyStateCreateInfo input_assembly{
       VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-  input_assembly.topology = to_vk_topology(desc.topology);
+  input_assembly.topology = to_vk_topology(job.topology);
 
   VkPipelineViewportStateCreateInfo viewport{
       VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -246,31 +390,31 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   VkPipelineRasterizationStateCreateInfo raster{
       VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
   raster.polygonMode = VK_POLYGON_MODE_FILL;
-  raster.cullMode = to_vk_cull(desc.cull);
-  raster.frontFace = desc.front_face == FrontFace::Clockwise
+  raster.cullMode = to_vk_cull(job.cull);
+  raster.frontFace = job.front_face == FrontFace::Clockwise
                          ? VK_FRONT_FACE_CLOCKWISE
                          : VK_FRONT_FACE_COUNTER_CLOCKWISE;
   raster.lineWidth = 1.f;
 
   VkPipelineMultisampleStateCreateInfo multisample{
       VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-  multisample.rasterizationSamples = nx::cast<VkSampleCountFlagBits>(
-      desc.sample_count == 0 ? 1 : desc.sample_count);
+  multisample.rasterizationSamples =
+      nx::cast<VkSampleCountFlagBits>(job.sample_count);
 
   VkPipelineDepthStencilStateCreateInfo depth_stencil{
       VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-  depth_stencil.depthTestEnable = desc.depth_test ? VK_TRUE : VK_FALSE;
-  depth_stencil.depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE;
-  depth_stencil.depthCompareOp = to_vk_compare_op(desc.depth_compare);
+  depth_stencil.depthTestEnable = job.depth_test ? VK_TRUE : VK_FALSE;
+  depth_stencil.depthWriteEnable = job.depth_write ? VK_TRUE : VK_FALSE;
+  depth_stencil.depthCompareOp = to_vk_compare_op(job.depth_compare);
   depth_stencil.maxDepthBounds = 1.f;
 
   VkPipelineColorBlendAttachmentState blend_states[MAX_COLOR_ATTACHMENTS] = {};
-  for (u32 i = 0; i < desc.color_count && i < MAX_COLOR_ATTACHMENTS; ++i)
-    blend_states[i] = to_vk_blend(desc.blend[i]);
+  for (u32 i = 0; i < job.color_count; ++i)
+    blend_states[i] = to_vk_blend(job.blend[i]);
 
   VkPipelineColorBlendStateCreateInfo color_blend{
       VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-  color_blend.attachmentCount = desc.color_count;
+  color_blend.attachmentCount = job.color_count;
   color_blend.pAttachments = blend_states;
 
   const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
@@ -281,17 +425,17 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   dynamic.pDynamicStates = dynamic_states;
 
   VkFormat color_formats[MAX_COLOR_ATTACHMENTS] = {};
-  for (u32 i = 0; i < desc.color_count && i < MAX_COLOR_ATTACHMENTS; ++i)
-    color_formats[i] = to_vk_format(desc.color_formats[i]);
+  for (u32 i = 0; i < job.color_count; ++i)
+    color_formats[i] = to_vk_format(job.color_formats[i]);
 
   VkPipelineRenderingCreateInfo rendering{
       VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-  rendering.colorAttachmentCount = desc.color_count;
+  rendering.colorAttachmentCount = job.color_count;
   rendering.pColorAttachmentFormats = color_formats;
-  if (desc.depth_format != Format::Unknown) {
-    rendering.depthAttachmentFormat = to_vk_format(desc.depth_format);
-    if (format_is_stencil(desc.depth_format))
-      rendering.stencilAttachmentFormat = to_vk_format(desc.depth_format);
+  if (job.depth_format != Format::Unknown) {
+    rendering.depthAttachmentFormat = to_vk_format(job.depth_format);
+    if (format_is_stencil(job.depth_format))
+      rendering.stencilAttachmentFormat = to_vk_format(job.depth_format);
   }
 
   VkGraphicsPipelineCreateInfo info{
@@ -305,35 +449,69 @@ VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   info.pRasterizationState = &raster;
   info.pMultisampleState = &multisample;
   info.pDepthStencilState = &depth_stencil;
-  info.pColorBlendState = desc.color_count > 0 ? &color_blend : nullptr;
+  info.pColorBlendState = job.color_count > 0 ? &color_blend : nullptr;
   info.pDynamicState = &dynamic;
   info.layout = m_pipeline_layout;
 
-  VulkanPipeline pipeline;
-  pipeline.bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  VulkanCompiledPipeline compiled;
+  compiled.m_device = m_device;
+  compiled.m_bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  compiled.m_name = job.name;
+  const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
   if (NX_VK_CHECK(vkCreateGraphicsPipelines(
-          m_device, m_pipeline_cache, 1, &info, nullptr, &pipeline.pipeline)) !=
-      VK_SUCCESS) {
-    nx::loge(log_rhi, "create_graphics_pipeline('{}') failed", desc.name);
+          m_device, m_pipeline_cache, 1, &info, nullptr,
+          &compiled.m_pipeline)) != VK_SUCCESS) {
+    nx::loge(log_rhi, "create_graphics_pipeline('{}') failed", job.name);
     return {};
   }
-
-  const PipelineHandle handle = m_pipelines.insert(pipeline);
-  set_object_name(vk_handle_value(pipeline.pipeline), VK_OBJECT_TYPE_PIPELINE,
-                  desc.name);
-  return handle;
+  return compiled;
 }
 
 PipelineHandle
 VulkanDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
+  VulkanComputePipelineCompileJob job;
+  if (!prepare_compute_pipeline(desc, job))
+    return {};
+  VulkanCompiledPipeline native = compile_compute_pipeline(job);
+  if (!native.valid())
+    return {};
+  return publish_pipeline(
+      detail::CompiledPipelineAccess::adopt(std::move(native)));
+}
+
+nx::future<CompiledPipeline>
+VulkanDevice::create_compute_pipeline_async(nx::thread_pool &workers,
+                                            const ComputePipelineDesc &desc,
+                                            const nx::task_priority priority) {
+  VulkanComputePipelineCompileJob job;
+  if (!prepare_compute_pipeline(desc, job))
+    return {};
+  const nx::workload_ticket ticket = m_pipeline_compile_workload.submit();
+  nx::future<CompiledPipeline> future =
+      workers.async(priority, [this, ticket, job = std::move(job)]() mutable {
+        return nx::measure_workload(
+            m_pipeline_compile_workload, ticket, nx::cancellation_token{},
+            [this, &job] {
+              VulkanCompiledPipeline native = compile_compute_pipeline(job);
+              if (!native.valid())
+                return CompiledPipeline{};
+              return detail::CompiledPipelineAccess::adopt(std::move(native));
+            });
+      });
+  if (!future.valid())
+    m_pipeline_compile_workload.reject(ticket);
+  return future;
+}
+
+bool VulkanDevice::prepare_compute_pipeline(
+    const ComputePipelineDesc &desc,
+    VulkanComputePipelineCompileJob &out) const {
   const VulkanShader *cs = m_shaders.try_get(desc.compute.shader);
   if (cs == nullptr) {
     nx::loge(log_rhi, "create_compute_pipeline('{}'): missing shader",
              desc.name);
-    return {};
+    return false;
   }
-
-  const nx::string entry(desc.compute.entry_point);
 
   for (const VulkanShader::ComputeEntry &declared : cs->compute_entries) {
     if (declared.name.view() != desc.compute.entry_point)
@@ -342,9 +520,10 @@ VulkanDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
     // constant, so there is nothing to compare against.
     if (declared.local_size[0] == 0)
       break;
-    if (desc.group_size[0] != declared.local_size[0] ||
-        desc.group_size[1] != declared.local_size[1] ||
-        desc.group_size[2] != declared.local_size[2]) {
+    if (desc.group_size[0] != 0 &&
+        (desc.group_size[0] != declared.local_size[0] ||
+         desc.group_size[1] != declared.local_size[1] ||
+         desc.group_size[2] != declared.local_size[2])) {
       nx::logw(log_rhi,
                "create_compute_pipeline('{}'): group_size {}x{}x{} does not "
                "match the shader's [numthreads({}, {}, {})]. Vulkan ignores "
@@ -356,26 +535,59 @@ VulkanDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
     break;
   }
 
+  VulkanComputePipelineCompileJob job;
+  job.name = nx::string(desc.name);
+  job.entry = nx::string(desc.compute.entry_point);
+  job.shader = cs->module;
+  out = std::move(job);
+  return true;
+}
+
+VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
+    const VulkanComputePipelineCompileJob &job) const {
+  if (job.shader == VK_NULL_HANDLE)
+    return {};
+
   VkComputePipelineCreateInfo info{
       VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
   info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  info.stage.module = cs->module;
-  info.stage.pName = entry.c_str();
+  info.stage.module = job.shader;
+  info.stage.pName = job.entry.c_str();
   info.layout = m_pipeline_layout;
 
-  VulkanPipeline pipeline;
-  pipeline.bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
+  VulkanCompiledPipeline compiled;
+  compiled.m_device = m_device;
+  compiled.m_bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
+  compiled.m_name = job.name;
+  const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
   if (NX_VK_CHECK(vkCreateComputePipelines(m_device, m_pipeline_cache, 1, &info,
-                                           nullptr, &pipeline.pipeline)) !=
+                                           nullptr, &compiled.m_pipeline)) !=
       VK_SUCCESS) {
-    nx::loge(log_rhi, "create_compute_pipeline('{}') failed", desc.name);
+    nx::loge(log_rhi, "create_compute_pipeline('{}') failed", job.name);
     return {};
   }
+  return compiled;
+}
 
+PipelineHandle VulkanDevice::publish_pipeline(CompiledPipeline &&opaque) {
+  VulkanCompiledPipeline compiled =
+      detail::CompiledPipelineAccess::take<VulkanCompiledPipeline>(opaque);
+  if (!compiled.valid())
+    return {};
+  VulkanPipeline pipeline;
+  pipeline.pipeline = compiled.m_pipeline;
+  pipeline.bind_point = compiled.m_bind_point;
+  const nx::string name = std::move(compiled.m_name);
+  compiled.m_device = VK_NULL_HANDLE;
+  compiled.m_pipeline = VK_NULL_HANDLE;
   const PipelineHandle handle = m_pipelines.insert(pipeline);
+  if (!handle.valid()) {
+    vkDestroyPipeline(m_device, pipeline.pipeline, nullptr);
+    return {};
+  }
   set_object_name(vk_handle_value(pipeline.pipeline), VK_OBJECT_TYPE_PIPELINE,
-                  desc.name);
+                  name.view());
   return handle;
 }
 
@@ -484,4 +696,4 @@ void VulkanCommandContext::begin_compute_pass(const nx::string_view name) {
 
 void VulkanCommandContext::end_compute_pass() { pop_debug_group(); }
 
-}
+} // namespace nxe::rhi

@@ -262,6 +262,8 @@ struct MetalDeviceState {
 
   id<MTLBinaryArchive> pipeline_archive = nil;
   nx::string pipeline_archive_path;
+  /// Pipeline compilation and archive mutation may run on worker threads.
+  nx::mutex pipeline_archive_lock;
 
   nx::slot_map<MetalTexture, TextureHandle> textures;
   nx::slot_map<MetalBuffer, BufferHandle> buffers;

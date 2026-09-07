@@ -142,6 +142,235 @@ id<MTLFunction> lookup_function(const MetalDeviceState &state,
   return function;
 }
 
+struct MetalGraphicsPipelineJob {
+  nx::string name;
+  id<MTLDevice> device = nil;
+  id<MTLFunction> vertex = nil;
+  id<MTLFunction> fragment = nil;
+  id<MTLBinaryArchive> archive = nil;
+  nx::mutex *compile_lock = nullptr;
+  MTLPixelFormat color_formats[MAX_COLOR_ATTACHMENTS] = {};
+  BlendState blend[MAX_COLOR_ATTACHMENTS] = {};
+  u32 color_count = 0;
+  MTLPixelFormat depth_format = MTLPixelFormatInvalid;
+  bool depth_has_stencil = false;
+  PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+  CullMode cull = CullMode::None;
+  FrontFace front_face = FrontFace::CounterClockwise;
+  bool depth_test = false;
+  bool depth_write = false;
+  CompareOp depth_compare = CompareOp::LessOrEqual;
+  u32 sample_count = 1;
+};
+
+struct MetalComputePipelineJob {
+  nx::string name;
+  id<MTLDevice> device = nil;
+  id<MTLFunction> function = nil;
+  id<MTLBinaryArchive> archive = nil;
+  nx::mutex *compile_lock = nullptr;
+  u32 group_size[3] = {1, 1, 1};
+};
+
+[[nodiscard]] bool prepare_graphics_pipeline(
+    MetalDeviceState &state, const GraphicsPipelineDesc &desc,
+    MetalGraphicsPipelineJob &out) {
+  MetalGraphicsPipelineJob job;
+  job.name = nx::string(desc.name);
+  job.device = state.device;
+  job.vertex = lookup_function(state, desc.vertex, desc.name, "vertex");
+  if (job.vertex == nil)
+    return false;
+  if (desc.fragment.shader.valid()) {
+    job.fragment =
+        lookup_function(state, desc.fragment, desc.name, "fragment");
+    if (job.fragment == nil)
+      return false;
+  }
+  job.archive = state.pipeline_archive;
+  job.compile_lock = &state.pipeline_archive_lock;
+  job.color_count = nx::min(desc.color_count, MAX_COLOR_ATTACHMENTS);
+  for (u32 i = 0; i < job.color_count; ++i) {
+    job.color_formats[i] = to_mtl_format(desc.color_formats[i]);
+    if (job.color_formats[i] == MTLPixelFormatInvalid) {
+      nx::loge(log_rhi,
+               "create_graphics_pipeline('{}'): colour format {} is not "
+               "supported by Metal",
+               desc.name, to_string(desc.color_formats[i]));
+      return false;
+    }
+    job.blend[i] = desc.blend[i];
+  }
+  if (desc.depth_format != Format::Unknown) {
+    job.depth_format = to_mtl_format(desc.depth_format);
+    if (job.depth_format == MTLPixelFormatInvalid) {
+      nx::loge(log_rhi,
+               "create_graphics_pipeline('{}'): depth format {} is not "
+               "supported by Metal",
+               desc.name, to_string(desc.depth_format));
+      return false;
+    }
+    job.depth_has_stencil = format_is_stencil(desc.depth_format);
+  }
+  job.topology = desc.topology;
+  job.cull = desc.cull;
+  job.front_face = desc.front_face;
+  job.depth_test = desc.depth_test;
+  job.depth_write = desc.depth_write;
+  job.depth_compare = desc.depth_compare;
+  job.sample_count = nx::max(desc.sample_count, 1u);
+  out = std::move(job);
+  return true;
+}
+
+[[nodiscard]] bool prepare_compute_pipeline(
+    MetalDeviceState &state, const ComputePipelineDesc &desc,
+    MetalComputePipelineJob &out) {
+  MetalComputePipelineJob job;
+  job.name = nx::string(desc.name);
+  job.device = state.device;
+  job.function = lookup_function(state, desc.compute, desc.name, "compute");
+  if (job.function == nil)
+    return false;
+  job.archive = state.pipeline_archive;
+  job.compile_lock = &state.pipeline_archive_lock;
+  for (u32 i = 0; i < 3; ++i)
+    job.group_size[i] = desc.group_size[i];
+  if (job.group_size[0] == 0 || job.group_size[1] == 0 ||
+      job.group_size[2] == 0) {
+    const MetalShader *const shader =
+        state.shaders.try_get(desc.compute.shader);
+    if (shader == nullptr ||
+        !shader->reflection.local_size(nx::id_string(desc.compute.entry_point),
+                                       job.group_size)) {
+      nx::loge(log_rhi,
+               "create_compute_pipeline('{}'): no group_size given and the "
+               "reflection sidecar does not state one for '{}'",
+               desc.name, desc.compute.entry_point);
+      return false;
+    }
+  }
+  out = std::move(job);
+  return true;
+}
+
+[[nodiscard]] MetalPipeline
+compile_graphics_pipeline(const MetalGraphicsPipelineJob &job) {
+  MetalPipeline pipeline;
+  if (job.device == nil || job.vertex == nil || job.compile_lock == nullptr)
+    return pipeline;
+
+  const nx::scoped_lock<nx::mutex> held(*job.compile_lock);
+  @autoreleasepool {
+    MTLRenderPipelineDescriptor *info =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    info.label = to_ns_string(job.name.view());
+    info.vertexFunction = job.vertex;
+    info.fragmentFunction = job.fragment;
+    info.rasterSampleCount = job.sample_count;
+    info.inputPrimitiveTopology = to_mtl_topology_class(job.topology);
+    for (u32 i = 0; i < job.color_count; ++i) {
+      info.colorAttachments[i].pixelFormat = job.color_formats[i];
+      apply_blend(info.colorAttachments[i], job.blend[i]);
+    }
+    if (job.depth_format != MTLPixelFormatInvalid) {
+      info.depthAttachmentPixelFormat = job.depth_format;
+      if (job.depth_has_stencil)
+        info.stencilAttachmentPixelFormat = job.depth_format;
+    }
+    if (job.archive != nil)
+      info.binaryArchives = @[ job.archive ];
+
+    NSError *error = nil;
+    pipeline.render =
+        [job.device newRenderPipelineStateWithDescriptor:info error:&error];
+    if (pipeline.render == nil) {
+      nx::loge(log_rhi, "create_graphics_pipeline('{}'): {}", job.name,
+               error != nil ? [[error localizedDescription] UTF8String]
+                            : "newRenderPipelineState failed");
+      return {};
+    }
+    if (job.archive != nil) {
+      NSError *add_error = nil;
+      if (![job.archive addRenderPipelineFunctionsWithDescriptor:info
+                                                           error:&add_error])
+        nx::logd(log_rhi, "pipeline archive: '{}' not cached: {}", job.name,
+                 add_error != nil
+                     ? [[add_error localizedDescription] UTF8String]
+                     : "unknown error");
+    }
+    if (job.depth_test || job.depth_write) {
+      MTLDepthStencilDescriptor *depth =
+          [[MTLDepthStencilDescriptor alloc] init];
+      depth.label = to_ns_string(job.name.view());
+      depth.depthCompareFunction = job.depth_test
+                                       ? to_mtl_compare(job.depth_compare)
+                                       : MTLCompareFunctionAlways;
+      depth.depthWriteEnabled = job.depth_write ? YES : NO;
+      pipeline.depth_stencil =
+          [job.device newDepthStencilStateWithDescriptor:depth];
+    }
+  }
+  pipeline.topology = to_mtl_topology(job.topology);
+  pipeline.cull = to_mtl_cull(job.cull);
+  pipeline.winding = to_mtl_winding(job.front_face);
+  pipeline.is_compute = false;
+  return pipeline;
+}
+
+[[nodiscard]] MetalPipeline
+compile_compute_pipeline(const MetalComputePipelineJob &job) {
+  MetalPipeline pipeline;
+  if (job.device == nil || job.function == nil || job.compile_lock == nullptr)
+    return pipeline;
+
+  const nx::scoped_lock<nx::mutex> held(*job.compile_lock);
+  @autoreleasepool {
+    MTLComputePipelineDescriptor *info =
+        [[MTLComputePipelineDescriptor alloc] init];
+    info.label = to_ns_string(job.name.view());
+    info.computeFunction = job.function;
+    if (job.archive != nil)
+      info.binaryArchives = @[ job.archive ];
+
+    NSError *error = nil;
+    pipeline.compute =
+        [job.device newComputePipelineStateWithDescriptor:info
+                                                  options:MTLPipelineOptionNone
+                                               reflection:nullptr
+                                                    error:&error];
+    if (pipeline.compute == nil) {
+      nx::loge(log_rhi, "create_compute_pipeline('{}'): {}", job.name,
+               error != nil ? [[error localizedDescription] UTF8String]
+                            : "newComputePipelineState failed");
+      return {};
+    }
+    if (job.archive != nil) {
+      NSError *add_error = nil;
+      if (![job.archive addComputePipelineFunctionsWithDescriptor:info
+                                                            error:&add_error])
+        nx::logd(log_rhi, "pipeline archive: '{}' not cached: {}", job.name,
+                 add_error != nil
+                     ? [[add_error localizedDescription] UTF8String]
+                     : "unknown error");
+    }
+    pipeline.threads_per_group =
+        MTLSizeMake(job.group_size[0], job.group_size[1], job.group_size[2]);
+    const NSUInteger declared = nx::cast<NSUInteger>(job.group_size[0]) *
+                                job.group_size[1] * job.group_size[2];
+    if (declared > pipeline.compute.maxTotalThreadsPerThreadgroup) {
+      nx::loge(log_rhi,
+               "create_compute_pipeline('{}'): {} threads per group exceeds "
+               "this device's limit of {}",
+               job.name, declared,
+               pipeline.compute.maxTotalThreadsPerThreadgroup);
+      return {};
+    }
+  }
+  pipeline.is_compute = true;
+  return pipeline;
+}
+
 }
 
 void create_pipeline_archive(MetalDeviceState &state,
@@ -187,6 +416,8 @@ void create_pipeline_archive(MetalDeviceState &state,
 void save_pipeline_archive(MetalDeviceState &state) noexcept {
   if (state.pipeline_archive == nil || state.pipeline_archive_path.empty())
     return;
+
+  const nx::scoped_lock<nx::mutex> held(state.pipeline_archive_lock);
 
   const nx::string_view parent =
       nx::fs::path::parent_path(state.pipeline_archive_path.view());
@@ -263,173 +494,87 @@ PipelineHandle
 MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
   if (m_state == nullptr)
     return {};
-
-  MetalPipeline pipeline;
-  @autoreleasepool {
-    id<MTLFunction> vertex =
-        lookup_function(*m_state, desc.vertex, desc.name, "vertex");
-    if (vertex == nil)
-      return {};
-
-    id<MTLFunction> fragment = nil;
-    if (desc.fragment.shader.valid()) {
-      fragment = lookup_function(*m_state, desc.fragment, desc.name, "fragment");
-      if (fragment == nil)
-        return {};
-    }
-
-    MTLRenderPipelineDescriptor *info =
-        [[MTLRenderPipelineDescriptor alloc] init];
-    info.label = to_ns_string(desc.name);
-    info.vertexFunction = vertex;
-    info.fragmentFunction = fragment;
-    info.rasterSampleCount = nx::max<u32>(1, desc.sample_count);
-    info.inputPrimitiveTopology = to_mtl_topology_class(desc.topology);
-
-    for (u32 i = 0; i < desc.color_count && i < MAX_COLOR_ATTACHMENTS; ++i) {
-      const MTLPixelFormat format = to_mtl_format(desc.color_formats[i]);
-      if (format == MTLPixelFormatInvalid) {
-        nx::loge(log_rhi, "create_graphics_pipeline('{}'): colour format {} is "
-                          "not supported by Metal",
-                 desc.name, to_string(desc.color_formats[i]));
-        return {};
-      }
-      info.colorAttachments[i].pixelFormat = format;
-      apply_blend(info.colorAttachments[i], desc.blend[i]);
-    }
-
-    if (desc.depth_format != Format::Unknown) {
-      const MTLPixelFormat format = to_mtl_format(desc.depth_format);
-      info.depthAttachmentPixelFormat = format;
-      if (format_is_stencil(desc.depth_format))
-        info.stencilAttachmentPixelFormat = format;
-    }
-
-    // Offering the archive lets Metal reuse a previously compiled binary
-    // instead of running the shader compiler. A miss is not an error - without
-    // MTLPipelineOptionFailOnBinaryArchiveMiss it just compiles as usual.
-    if (m_state->pipeline_archive != nil)
-      info.binaryArchives = @[ m_state->pipeline_archive ];
-
-    NSError *error = nil;
-    pipeline.render =
-        [m_state->device newRenderPipelineStateWithDescriptor:info
-                                                        error:&error];
-    if (pipeline.render == nil) {
-      nx::loge(log_rhi, "create_graphics_pipeline('{}'): {}", desc.name,
-               error != nil ? [[error localizedDescription] UTF8String]
-                            : "newRenderPipelineState failed");
-      return {};
-    }
-
-    if (m_state->pipeline_archive != nil) {
-      NSError *add_error = nil;
-      if (![m_state->pipeline_archive
-              addRenderPipelineFunctionsWithDescriptor:info
-                                                 error:&add_error]) {
-        nx::logd(log_rhi, "pipeline archive: '{}' not cached: {}", desc.name,
-                 add_error != nil
-                     ? [[add_error localizedDescription] UTF8String]
-                     : "unknown error");
-      }
-    }
-
-    if (desc.depth_test || desc.depth_write) {
-      MTLDepthStencilDescriptor *depth =
-          [[MTLDepthStencilDescriptor alloc] init];
-      depth.label = to_ns_string(desc.name);
-      depth.depthCompareFunction = desc.depth_test
-                                       ? to_mtl_compare(desc.depth_compare)
-                                       : MTLCompareFunctionAlways;
-      depth.depthWriteEnabled = desc.depth_write ? YES : NO;
-      pipeline.depth_stencil =
-          [m_state->device newDepthStencilStateWithDescriptor:depth];
-    }
-  }
-
-  pipeline.topology = to_mtl_topology(desc.topology);
-  pipeline.cull = to_mtl_cull(desc.cull);
-  pipeline.winding = to_mtl_winding(desc.front_face);
-  pipeline.is_compute = false;
-
+  MetalGraphicsPipelineJob job;
+  if (!prepare_graphics_pipeline(*m_state, desc, job))
+    return {};
+  MetalPipeline pipeline = compile_graphics_pipeline(job);
+  if (pipeline.render == nil)
+    return {};
   return m_state->pipelines.insert(std::move(pipeline));
+}
+
+nx::future<CompiledPipeline> MetalDevice::create_graphics_pipeline_async(
+    nx::thread_pool &workers, const GraphicsPipelineDesc &desc,
+    const nx::task_priority priority) {
+  if (m_state == nullptr)
+    return {};
+  MetalGraphicsPipelineJob job;
+  if (!prepare_graphics_pipeline(*m_state, desc, job))
+    return {};
+  const nx::workload_ticket ticket = m_pipeline_compile_workload.submit();
+  nx::future<CompiledPipeline> future = workers.async(
+      priority, [this, ticket, job = std::move(job)]() mutable {
+        return nx::measure_workload(
+            m_pipeline_compile_workload, ticket, nx::cancellation_token{},
+            [&job] {
+              MetalPipeline native = compile_graphics_pipeline(job);
+              if (native.render == nil)
+                return CompiledPipeline{};
+              return detail::CompiledPipelineAccess::adopt(std::move(native));
+            });
+      });
+  if (!future.valid())
+    m_pipeline_compile_workload.reject(ticket);
+  return future;
 }
 
 PipelineHandle
 MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
   if (m_state == nullptr)
     return {};
-
-  u32 group_size[3] = {desc.group_size[0], desc.group_size[1],
-                       desc.group_size[2]};
-  if (group_size[0] == 0 || group_size[1] == 0 || group_size[2] == 0) {
-    const MetalShader *cs = m_state->shaders.try_get(desc.compute.shader);
-    if (cs == nullptr ||
-        !cs->reflection.local_size(nx::id_string(desc.compute.entry_point),
-                                   group_size)) {
-      nx::loge(log_rhi,
-               "create_compute_pipeline('{}'): no group_size given and the "
-               "reflection sidecar does not state one for '{}'",
-               desc.name, desc.compute.entry_point);
-      return {};
-    }
-  }
-
-  MetalPipeline pipeline;
-  @autoreleasepool {
-    id<MTLFunction> function =
-        lookup_function(*m_state, desc.compute, desc.name, "compute");
-    if (function == nil)
-      return {};
-
-    MTLComputePipelineDescriptor *info =
-        [[MTLComputePipelineDescriptor alloc] init];
-    info.label = to_ns_string(desc.name);
-    info.computeFunction = function;
-    if (m_state->pipeline_archive != nil)
-      info.binaryArchives = @[ m_state->pipeline_archive ];
-
-    NSError *error = nil;
-    pipeline.compute =
-        [m_state->device newComputePipelineStateWithDescriptor:info
-                                                       options:MTLPipelineOptionNone
-                                                    reflection:nullptr
-                                                         error:&error];
-    if (pipeline.compute == nil) {
-      nx::loge(log_rhi, "create_compute_pipeline('{}'): {}", desc.name,
-               error != nil ? [[error localizedDescription] UTF8String]
-                            : "newComputePipelineState failed");
-      return {};
-    }
-
-    if (m_state->pipeline_archive != nil) {
-      NSError *add_error = nil;
-      if (![m_state->pipeline_archive
-              addComputePipelineFunctionsWithDescriptor:info
-                                                  error:&add_error]) {
-        nx::logd(log_rhi, "pipeline archive: '{}' not cached: {}", desc.name,
-                 add_error != nil
-                     ? [[add_error localizedDescription] UTF8String]
-                     : "unknown error");
-      }
-    }
-
-    pipeline.threads_per_group = MTLSizeMake(
-        group_size[0], group_size[1], group_size[2]);
-
-    const NSUInteger declared = nx::cast<NSUInteger>(group_size[0]) *
-                                group_size[1] * group_size[2];
-    if (declared > pipeline.compute.maxTotalThreadsPerThreadgroup) {
-      nx::loge(log_rhi, "create_compute_pipeline('{}'): {} threads per group "
-                        "exceeds this device's limit of {}",
-               desc.name, declared,
-               pipeline.compute.maxTotalThreadsPerThreadgroup);
-      return {};
-    }
-  }
-
-  pipeline.is_compute = true;
+  MetalComputePipelineJob job;
+  if (!prepare_compute_pipeline(*m_state, desc, job))
+    return {};
+  MetalPipeline pipeline = compile_compute_pipeline(job);
+  if (pipeline.compute == nil)
+    return {};
   return m_state->pipelines.insert(std::move(pipeline));
+}
+
+nx::future<CompiledPipeline> MetalDevice::create_compute_pipeline_async(
+    nx::thread_pool &workers, const ComputePipelineDesc &desc,
+    const nx::task_priority priority) {
+  if (m_state == nullptr)
+    return {};
+  MetalComputePipelineJob job;
+  if (!prepare_compute_pipeline(*m_state, desc, job))
+    return {};
+  const nx::workload_ticket ticket = m_pipeline_compile_workload.submit();
+  nx::future<CompiledPipeline> future = workers.async(
+      priority, [this, ticket, job = std::move(job)]() mutable {
+        return nx::measure_workload(
+            m_pipeline_compile_workload, ticket, nx::cancellation_token{},
+            [&job] {
+              MetalPipeline native = compile_compute_pipeline(job);
+              if (native.compute == nil)
+                return CompiledPipeline{};
+              return detail::CompiledPipelineAccess::adopt(std::move(native));
+            });
+      });
+  if (!future.valid())
+    m_pipeline_compile_workload.reject(ticket);
+  return future;
+}
+
+PipelineHandle MetalDevice::publish_pipeline(CompiledPipeline &&compiled) {
+  if (m_state == nullptr)
+    return {};
+  MetalPipeline native =
+      detail::CompiledPipelineAccess::take<MetalPipeline>(compiled);
+  if ((!native.is_compute && native.render == nil) ||
+      (native.is_compute && native.compute == nil))
+    return {};
+  return m_state->pipelines.insert(std::move(native));
 }
 
 void MetalDevice::destroy_pipeline(const PipelineHandle handle) noexcept {

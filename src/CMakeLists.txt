@@ -40,12 +40,15 @@ set(NX_RHI_HEADERS
         descs.h
         device.h
         handles.h
+        pipeline_compiler.h
         rhi.h
         shader_reflect.h
+        shader_loading.h
         upload.h
         upload_ring.h)
 
 set(NX_RHI_SOURCES
+        shader_loading.cpp
         shader_reflect.cpp
         shader_reflect_json.cpp
         upload_ring.cpp)
