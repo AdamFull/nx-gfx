@@ -1,7 +1,10 @@
 
-module bindless;
+#pragma once
 
-#include "core/rendering/rhi/shaders/bindless_layout.h"
+// Slang reserves `core` for its built-in module, so the engine core is a
+// guarded source include rather than a module named after this file.
+
+#include "core/rendering/rhi/shaders/core_layout.h"
 
 public static const uint kInvalidIndex = 0xFFFFFFFF;
 
@@ -37,13 +40,13 @@ public SamplerState get_sampler(uint index) {
 
 #else
 
-[[vk::binding(0, 0)]]
+[[vk::binding(NX_BINDLESS_BINDING_SAMPLERS, NX_BINDLESS_SET)]]
 SamplerState g_samplers[];
 
-[[vk::binding(1, 0)]]
+[[vk::binding(NX_BINDLESS_BINDING_TEXTURES, NX_BINDLESS_SET)]]
 __DynamicResource<__DynamicResourceKind.General> g_textures[];
 
-[[vk::binding(2, 0)]]
+[[vk::binding(NX_BINDLESS_BINDING_RW_TEXTURES, NX_BINDLESS_SET)]]
 __DynamicResource<__DynamicResourceKind.General> g_rw_textures[];
 
 public uint descriptor_index(uint index) {

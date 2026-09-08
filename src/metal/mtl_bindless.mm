@@ -63,7 +63,7 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
 
   BindlessHeap &heap = state.bindless;
 
-  // These must match the array bounds in shaders/bindless.slang: the shader's
+  // These must match the array bounds in shaders/core.slang: the shader's
   // struct layout is what fixes the offsets, and nothing at run time can
   // discover them.
   heap.max_textures = MAX_BINDLESS_TEXTURES;
