@@ -124,19 +124,6 @@ public struct GpuPtr<T>
 
     public F get_field<F>(uint index, uint field_offset) { return load_raw<F>(field_address(index, field_offset)); }
     public void set_field<F>(uint index, uint field_offset, in F fieldValue) { store_raw<F>(field_address(index, field_offset), fieldValue); }
-
-    public uint atomic_add(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedAdd(p[0], operand, prev); return prev; }
-    public uint atomic_min(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedMin(p[0], operand, prev); return prev; }
-    public uint atomic_max(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedMax(p[0], operand, prev); return prev; }
-    public uint atomic_and(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedAnd(p[0], operand, prev); return prev; }
-    public uint atomic_or (uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedOr (p[0], operand, prev); return prev; }
-    public uint atomic_xor(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedXor(p[0], operand, prev); return prev; }
-    public uint atomic_exchange(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedExchange(p[0], operand, prev); return prev; }
-    public uint atomic_compare_exchange(uint index, uint field_offset, uint compare, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedCompareExchange(p[0], compare, operand, prev); return prev; }
-
-    public int atomic_add(uint index, uint field_offset, int operand) { int* p = (int*)field_address(index, field_offset); int prev; InterlockedAdd(p[0], operand, prev); return prev; }
-    public int atomic_exchange(uint index, uint field_offset, int operand) { int* p = (int*)field_address(index, field_offset); int prev; InterlockedExchange(p[0], operand, prev); return prev; }
-    public int atomic_compare_exchange(uint index, uint field_offset, int compare, int operand) { int* p = (int*)field_address(index, field_offset); int prev; InterlockedCompareExchange(p[0], compare, operand, prev); return prev; }
 }
 
 public GpuPtr<T> operator+<T>(GpuPtr<T> a, uint n)
