@@ -51,3 +51,35 @@ public float4 sample_texture_lod(uint texture_index, uint sampler_index,
     return get_texture(texture_index).SampleLevel(get_sampler(sampler_index), uv,
                                                   lod);
 }
+
+public T ptr_load_stride<T>(uint64_t address, uint index, uint64_t stride)
+{
+    T* p = (T*)(address + uint64_t(index) * stride);
+    return *p;
+}
+
+public void ptr_store_stride<T>(uint64_t address, uint index, uint64_t stride, in T value)
+{
+    T* p = (T*)(address + uint64_t(index) * stride);
+    *p = value;
+}
+
+public T ptr_load_at<T>(uint64_t address, uint index)
+{
+    return ptr_load_stride<T>(address, index, uint64_t(sizeof(T)));
+}
+
+public void ptr_store_at<T>(uint64_t address, uint index, in T value)
+{
+    ptr_store_stride<T>(address, index, uint64_t(sizeof(T)), value);
+}
+
+public T ptr_load<T>(T* base, uint index)
+{
+    return ptr_load_at<T>(uint64_t(base), index);
+}
+
+public void ptr_store<T>(T* base, uint index, in T value)
+{
+    ptr_store_at<T>(uint64_t(base), index, value);
+}
