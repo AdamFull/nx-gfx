@@ -578,6 +578,17 @@ void *VulkanDevice::buffer_mapped(const BufferHandle handle) const noexcept {
   return buffer != nullptr ? buffer->mapped : nullptr;
 }
 
+void VulkanDevice::flush_buffer(const BufferHandle handle, const u64 offset,
+                                const u64 size) noexcept {
+  const VulkanBuffer *buffer = m_buffers.try_get(handle);
+  if (buffer == nullptr || buffer->allocation == VK_NULL_HANDLE)
+    return;
+  const u64 available = offset < buffer->size ? buffer->size - offset : 0;
+  const u64 bytes = size == ~0ull ? available : nx::min(size, available);
+  if (bytes != 0)
+    (void)vmaFlushAllocation(m_allocator, buffer->allocation, offset, bytes);
+}
+
 void VulkanDevice::invalidate_buffer(const BufferHandle handle,
                                      const u64 offset,
                                      const u64 size) noexcept {

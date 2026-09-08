@@ -292,6 +292,9 @@ public:
   [[nodiscard]] u64 buffer_address(BufferHandle handle) const noexcept;
 
   [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
+  // Upload buffers use MTLStorageModeShared, whose CPU writes are immediately
+  // visible to the GPU on supported Apple platforms.
+  void flush_buffer(BufferHandle, u64 = 0, u64 = ~0ull) noexcept {}
   void invalidate_buffer(BufferHandle, u64 = 0, u64 = ~0ull) noexcept {}
 
 private:

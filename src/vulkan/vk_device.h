@@ -406,6 +406,10 @@ public:
   buffer_address(BufferHandle handle) const noexcept;
 
   [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
+  /// Makes CPU writes to a mapped buffer visible to the GPU. This is a no-op
+  /// for host-coherent allocations.
+  void flush_buffer(BufferHandle handle, u64 offset = 0,
+                    u64 size = ~0ull) noexcept;
   void invalidate_buffer(BufferHandle handle, u64 offset = 0,
                          u64 size = ~0ull) noexcept;
 

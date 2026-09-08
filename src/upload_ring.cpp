@@ -116,6 +116,7 @@ u64 UploadRing::write(const u32 array, const void *const data,
     if (mapped == nullptr)
       return 0;
     std::memcpy(mapped, data, nx::cast<usize>(bytes));
+    m_device->flush_buffer(buffer->handle(), 0, bytes);
   }
   return m_device->buffer_address(buffer->handle());
 }
