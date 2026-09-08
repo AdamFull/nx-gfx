@@ -106,7 +106,9 @@ struct BindlessHeap {
   /// Byte offsets of each table within the buffer, in the declaration order of
   /// BindlessTables in shaders/bindless.slang.
   u64 textures_offset = 0;
+  u64 uint_textures_offset = 0;
   u64 rw_textures_offset = 0;
+  u64 rw_uint_textures_offset = 0;
   u64 samplers_offset = 0;
   u32 max_textures = 0;
   u32 max_rw_textures = 0;

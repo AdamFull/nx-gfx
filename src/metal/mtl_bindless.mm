@@ -72,10 +72,16 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
 
   // Order must match the declaration order of BindlessTables.
   heap.textures_offset = 0;
-  heap.rw_textures_offset =
+  heap.uint_textures_offset =
       heap.textures_offset + nx::cast<u64>(heap.max_textures) * SLOT_SIZE;
+  heap.rw_textures_offset =
+      heap.uint_textures_offset + nx::cast<u64>(heap.max_textures) * SLOT_SIZE;
+  heap.rw_uint_textures_offset =
+      heap.rw_textures_offset +
+      nx::cast<u64>(heap.max_rw_textures) * SLOT_SIZE;
   heap.samplers_offset =
-      heap.rw_textures_offset + nx::cast<u64>(heap.max_rw_textures) * SLOT_SIZE;
+      heap.rw_uint_textures_offset +
+      nx::cast<u64>(heap.max_rw_textures) * SLOT_SIZE;
   const u64 total =
       heap.samplers_offset + nx::cast<u64>(heap.max_samplers) * SLOT_SIZE;
 
@@ -105,9 +111,12 @@ void write_texture_descriptor(MetalDeviceState &state, const u32 slot,
   const BindlessHeap &heap = state.bindless;
   if (texture == nil) {
     clear_slot(state, heap.textures_offset, slot, heap.max_textures);
+    clear_slot(state, heap.uint_textures_offset, slot, heap.max_textures);
     return;
   }
   write_slot(state, heap.textures_offset, slot, heap.max_textures,
+             texture.gpuResourceID);
+  write_slot(state, heap.uint_textures_offset, slot, heap.max_textures,
              texture.gpuResourceID);
 }
 
@@ -116,9 +125,13 @@ void write_rw_texture_descriptor(MetalDeviceState &state, const u32 slot,
   const BindlessHeap &heap = state.bindless;
   if (texture == nil) {
     clear_slot(state, heap.rw_textures_offset, slot, heap.max_rw_textures);
+    clear_slot(state, heap.rw_uint_textures_offset, slot,
+               heap.max_rw_textures);
     return;
   }
   write_slot(state, heap.rw_textures_offset, slot, heap.max_rw_textures,
+             texture.gpuResourceID);
+  write_slot(state, heap.rw_uint_textures_offset, slot, heap.max_rw_textures,
              texture.gpuResourceID);
 }
 
