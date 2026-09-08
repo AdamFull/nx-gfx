@@ -59,34 +59,78 @@ public uint64_t stride_of<T>()
     return (size + align - 1) & ~(align - 1);
 }
 
-public T ptr_load_stride<T>(uint64_t address, uint index, uint64_t stride)
+F load_raw<F>(uint64_t address)
 {
-    T* p = (T*)(address + uint64_t(index) * stride);
-    return *p;
+    // Mali/Intel Vulkan crash pipeline compilation on an access chain that
+    // yields a physical pointer-to-struct; copying as uint words never forms
+    // one. Do not "simplify" back to *(F*).
+    static_assert(sizeof(F) % sizeof(uint) == 0, "type must be 32-bit-addressable");
+    static const uint word_count = sizeof(F) / sizeof(uint);
+    uint words[word_count];
+    uint* source = (uint*)address;
+    [ForceUnroll] for (uint w = 0; w < word_count; ++w) words[w] = source[w];
+    return reinterpret<F>(words);
 }
 
-public void ptr_store_stride<T>(uint64_t address, uint index, uint64_t stride, in T value)
+void store_raw<F>(uint64_t address, in F value)
 {
-    T* p = (T*)(address + uint64_t(index) * stride);
-    *p = value;
+    static_assert(sizeof(F) % sizeof(uint) == 0, "type must be 32-bit-addressable");
+    static const uint word_count = sizeof(F) / sizeof(uint);
+    uint words[word_count] = reinterpret<uint[word_count]>(value);
+    uint* destination = (uint*)address;
+    [ForceUnroll] for (uint w = 0; w < word_count; ++w) destination[w] = words[w];
+    return;
 }
 
-public T ptr_load_at<T>(uint64_t address, uint index)
+public struct GpuPtr<T>
 {
-    return ptr_load_stride<T>(address, index, stride_of<T>());
+    public uint64_t value;
+
+    public bool is_valid() { return value != 0; }
+
+    uint64_t element_address(uint index) { return value + uint64_t(index) * stride_of<T>(); }
+    uint64_t field_address(uint index, uint field_offset) { return element_address(index) + uint64_t(field_offset); }
+
+    public T load(uint index) { return load_raw<T>(element_address(index)); }
+    public void store(uint index, in T newValue) { store_raw<T>(element_address(index), newValue); }
+
+    public __subscript(uint index) -> T
+    {
+        get { return load(index); }
+        // A store mutates external memory, not the address; nonmutating lets
+        // addr[i] = x work on a read-only (push-constant) address.
+        [nonmutating] set { store(index, newValue); }
+    }
+
+    public F get_field<F>(uint index, uint field_offset) { return load_raw<F>(field_address(index, field_offset)); }
+    public void set_field<F>(uint index, uint field_offset, in F fieldValue) { store_raw<F>(field_address(index, field_offset), fieldValue); }
+
+    public uint atomic_add(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedAdd(p[0], operand, prev); return prev; }
+    public uint atomic_min(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedMin(p[0], operand, prev); return prev; }
+    public uint atomic_max(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedMax(p[0], operand, prev); return prev; }
+    public uint atomic_and(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedAnd(p[0], operand, prev); return prev; }
+    public uint atomic_or (uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedOr (p[0], operand, prev); return prev; }
+    public uint atomic_xor(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedXor(p[0], operand, prev); return prev; }
+    public uint atomic_exchange(uint index, uint field_offset, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedExchange(p[0], operand, prev); return prev; }
+    public uint atomic_compare_exchange(uint index, uint field_offset, uint compare, uint operand) { uint* p = (uint*)field_address(index, field_offset); uint prev; InterlockedCompareExchange(p[0], compare, operand, prev); return prev; }
+
+    public int atomic_add(uint index, uint field_offset, int operand) { int* p = (int*)field_address(index, field_offset); int prev; InterlockedAdd(p[0], operand, prev); return prev; }
+    public int atomic_exchange(uint index, uint field_offset, int operand) { int* p = (int*)field_address(index, field_offset); int prev; InterlockedExchange(p[0], operand, prev); return prev; }
+    public int atomic_compare_exchange(uint index, uint field_offset, int compare, int operand) { int* p = (int*)field_address(index, field_offset); int prev; InterlockedCompareExchange(p[0], compare, operand, prev); return prev; }
 }
 
-public void ptr_store_at<T>(uint64_t address, uint index, in T value)
+public GpuPtr<T> operator+<T>(GpuPtr<T> a, uint n)
 {
-    ptr_store_stride<T>(address, index, stride_of<T>(), value);
+    GpuPtr<T> r = a;
+    r.value = a.value + uint64_t(n) * stride_of<T>();
+    return r;
 }
-
-public T ptr_load<T>(T* base, uint index)
+public GpuPtr<T> operator+<T>(uint n, GpuPtr<T> a) { return a + n; }
+public GpuPtr<T> operator-<T>(GpuPtr<T> a, uint n)
 {
-    return ptr_load_at<T>(uint64_t(base), index);
+    GpuPtr<T> r = a;
+    r.value = a.value - uint64_t(n) * stride_of<T>();
+    return r;
 }
-
-public void ptr_store<T>(T* base, uint index, in T value)
-{
-    ptr_store_at<T>(uint64_t(base), index, value);
-}
+public bool operator==<T>(GpuPtr<T> a, GpuPtr<T> b) { return a.value == b.value; }
+public bool operator!=<T>(GpuPtr<T> a, GpuPtr<T> b) { return a.value != b.value; }
