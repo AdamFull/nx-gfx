@@ -6,8 +6,6 @@
 #include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
 
-#include <cstring>
-
 namespace nxe::rhi {
 namespace {
 
@@ -65,7 +63,7 @@ listed(const nx::small_vector<VkExtensionProperties, 128> &all,
   return false;
 }
 
-}
+} // namespace
 
 DeviceRoutes
 VulkanDevice::probe_routes(VkPhysicalDevice candidate,
@@ -197,8 +195,8 @@ VulkanDevice::probe_routes(VkPhysicalDevice candidate,
                   : ext_synchronization2 && sync2.synchronization2 != 0;
 
   const auto require = [&out](const bool have, const nx::string_view what) {
-    if (!have && out.missing.empty())
-      out.missing = what;
+    if (!have)
+      out.missing.push_back(what);
   };
   require(has_swapchain, "VK_KHR_swapchain");
   require(has_indexing, "descriptor indexing");
@@ -254,6 +252,12 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   u32 available_version = 0;
   NX_VK_TRY(vkEnumerateInstanceVersion(&available_version));
   if (available_version < REQUIRED_API_VERSION) {
+    m_init_error =
+        nx::format("Vulkan {}.{} is available, but Vulkan {}.{} is required.",
+                   VK_API_VERSION_MAJOR(available_version),
+                   VK_API_VERSION_MINOR(available_version),
+                   VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
+                   VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
     nx::logc(log_rhi, "Vulkan {}.{} found, but {}.{} is required",
              VK_API_VERSION_MAJOR(available_version),
              VK_API_VERSION_MINOR(available_version),
@@ -377,6 +381,7 @@ bool VulkanDevice::select_physical_device() {
   u32 count = 0;
   NX_VK_TRY(vkEnumeratePhysicalDevices(m_instance, &count, nullptr));
   if (count == 0) {
+    m_init_error = "No Vulkan graphics device was found.";
     nx::logc(log_rhi, "no Vulkan physical devices found");
     return false;
   }
@@ -395,22 +400,29 @@ bool VulkanDevice::select_physical_device() {
 
     const u32 version = props.properties.apiVersion;
     if (version < REQUIRED_API_VERSION) {
-      rejected.push_back(
-          nx::format("{}: Vulkan {}.{}, below the {}.{} floor",
-                     props.properties.deviceName, VK_API_VERSION_MAJOR(version),
-                     VK_API_VERSION_MINOR(version),
-                     VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
-                     VK_API_VERSION_MINOR(REQUIRED_API_VERSION)));
+      rejected.push_back(nx::format(
+          "{}: Vulkan {}.{}, below the {}.{} floor",
+          nx::string_view(props.properties.deviceName),
+          VK_API_VERSION_MAJOR(version), VK_API_VERSION_MINOR(version),
+          VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
+          VK_API_VERSION_MINOR(REQUIRED_API_VERSION)));
       nx::logd(log_rhi, "skipping {}", rejected.back());
       continue;
     }
 
     const DeviceRoutes routes = probe_routes(candidate, props.properties);
     if (!routes.missing.empty()) {
+      nx::string missing;
+      for (const nx::string_view feature : routes.missing) {
+        if (!missing.empty())
+          missing.append(", ");
+        missing.append(feature);
+      }
       rejected.push_back(
-          nx::format("{} (Vulkan {}.{}): no {}", props.properties.deviceName,
+          nx::format("{} (Vulkan {}.{}): missing {}",
+                     nx::string_view(props.properties.deviceName),
                      VK_API_VERSION_MAJOR(version),
-                     VK_API_VERSION_MINOR(version), routes.missing));
+                     VK_API_VERSION_MINOR(version), missing));
       nx::logd(log_rhi, "skipping {}", rejected.back());
       continue;
     }
@@ -436,6 +448,14 @@ bool VulkanDevice::select_physical_device() {
   }
 
   if (best == VK_NULL_HANDLE) {
+    m_init_error =
+        "No compatible Vulkan graphics device was found. Update the operating "
+        "system or graphics driver.\n\n";
+    for (const nx::string &why : rejected) {
+      m_init_error.append("- ");
+      m_init_error.append(why);
+      m_init_error.append("\n");
+    }
     nx::logc(log_rhi,
              "no usable Vulkan device. The floor is {}.{} with dynamic "
              "rendering, synchronization2, timeline semaphores, buffer device "
@@ -830,9 +850,14 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
 // Lifetime
 
 bool VulkanDevice::init(const DeviceDesc &desc) {
+  m_init_error.clear();
   m_break_on_error = desc.break_on_validation_error;
 
   if (const VkResult result = volkInitialize(); result != VK_SUCCESS) {
+    m_init_error = nx::format(
+        "No Vulkan loader was found ({}). Install a graphics driver with "
+        "Vulkan support.",
+        vk_result_string(result));
     nx::logc(log_rhi,
              "no Vulkan loader found ({}). Install a GPU driver with Vulkan "
              "support.",
@@ -840,18 +865,16 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
     return false;
   }
 
-  if (!create_instance(desc))
+  if (!create_instance(desc) || !select_physical_device() ||
+      !create_logical_device() || !create_allocator() ||
+      !create_bindless_heap() ||
+      !create_pipeline_cache(desc.pipeline_cache_path)) {
+    if (m_init_error.empty())
+      m_init_error =
+          "The Vulkan graphics device could not be initialized. See the log "
+          "for technical details.";
     return false;
-  if (!select_physical_device())
-    return false;
-  if (!create_logical_device())
-    return false;
-  if (!create_allocator())
-    return false;
-  if (!create_bindless_heap())
-    return false;
-  if (!create_pipeline_cache(desc.pipeline_cache_path))
-    return false;
+  }
 
   VkSemaphoreTypeCreateInfo type_info{
       VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
@@ -863,11 +886,15 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
   set_object_name(vk_handle_value(m_timeline), VK_OBJECT_TYPE_SEMAPHORE,
                   "frame timeline");
 
-  if (!m_uploader.init(this))
+  if (!m_uploader.init(this)) {
+    m_init_error = "The Vulkan upload service could not be initialized.";
     return false;
+  }
 
-  if (!create_frame_contexts(desc.frames_in_flight))
+  if (!create_frame_contexts(desc.frames_in_flight)) {
+    m_init_error = "Vulkan frame resources could not be initialized.";
     return false;
+  }
 
   return true;
 }
@@ -882,7 +909,8 @@ void VulkanDevice::shutdown() noexcept {
 
   collect_garbage(~0ull);
 
-  m_textures.for_each([this](VulkanTexture &texture) { destroy_texture_now(texture); });
+  m_textures.for_each(
+      [this](VulkanTexture &texture) { destroy_texture_now(texture); });
   m_textures.clear();
   for (VulkanBuffer &buf : m_buffers)
     if (buf.buffer != VK_NULL_HANDLE)
@@ -1111,4 +1139,4 @@ void VulkanDevice::collect_garbage(
   }
 }
 
-}
+} // namespace nxe::rhi

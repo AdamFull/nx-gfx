@@ -136,9 +136,8 @@ struct DeviceRoutes {
   bool core_13 = false;
   bool draw_indirect_count = false;
   bool storage_image_extended_formats = false;
-  /// Empty when the device can do everything the engine needs, and the first
-  /// thing it could not when it cannot.
-  nx::string_view missing;
+  /// Empty when the device can do everything the engine needs.
+  nx::small_vector<nx::string_view, 16> missing;
 };
 
 class VulkanCommandContext {
@@ -291,6 +290,10 @@ public:
   [[nodiscard]] bool init(const DeviceDesc &desc);
   void shutdown() noexcept;
 
+  [[nodiscard]] nx::string_view init_error() const noexcept {
+    return m_init_error;
+  }
+
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
 
   [[nodiscard]] u32 frames_in_flight() const noexcept {
@@ -379,10 +382,10 @@ public:
 
   [[nodiscard]] NX_DEPRECATED_MSG(
       "use create_graphics_pipeline_async and publish_pipeline") PipelineHandle
-  create_graphics_pipeline(const GraphicsPipelineDesc &desc);
+      create_graphics_pipeline(const GraphicsPipelineDesc &desc);
   [[nodiscard]] NX_DEPRECATED_MSG(
       "use create_compute_pipeline_async and publish_pipeline") PipelineHandle
-  create_compute_pipeline(const ComputePipelineDesc &desc);
+      create_compute_pipeline(const ComputePipelineDesc &desc);
   /// Copies descriptor inputs on the owner, then performs native compilation
   /// on a worker. Only publication of the opaque result touches handle tables.
   [[nodiscard]] nx::future<CompiledPipeline> create_graphics_pipeline_async(
@@ -500,6 +503,7 @@ private:
   VmaAllocator m_allocator = VK_NULL_HANDLE;
   DeviceCaps m_caps;
   nx::string m_device_name;
+  nx::string m_init_error;
   bool m_debug_utils = false;
   bool m_break_on_error = false;
   bool m_sync_validation = false;

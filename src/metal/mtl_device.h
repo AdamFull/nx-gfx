@@ -44,9 +44,9 @@ struct ReadbackResult {
 };
 
 struct UploaderStats {
-  u64 total_submits = 0;     ///< Lifetime batch submissions.
+  u64 total_submits = 0; ///< Lifetime batch submissions.
   u64 completed_submits = 0;
-  u64 ring_used = 0;         ///< Bytes staged into the batch still open.
+  u64 ring_used = 0; ///< Bytes staged into the batch still open.
   u64 ring_capacity = 0;
   usize extra_buffers = 0;
   usize inflight_submits = 0;
@@ -166,9 +166,8 @@ public:
   /// source must already be in CopySrc and this must be called outside a
   /// render/compute pass. row_pitch may include padding between rows.
   [[nodiscard]] bool copy_texture_to_buffer(TextureHandle texture,
-                                            BufferHandle buffer,
-                                            u64 row_pitch, u32 mip = 0,
-                                            u32 layer = 0);
+                                            BufferHandle buffer, u64 row_pitch,
+                                            u32 mip = 0, u32 layer = 0);
 
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
                         f32 b = 1.f);
@@ -194,6 +193,10 @@ public:
 
   [[nodiscard]] bool init(const DeviceDesc &desc);
   void shutdown() noexcept;
+
+  [[nodiscard]] nx::string_view init_error() const noexcept {
+    return m_init_error;
+  }
 
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
 
@@ -259,10 +262,10 @@ public:
 
   [[nodiscard]] NX_DEPRECATED_MSG(
       "use create_graphics_pipeline_async and publish_pipeline") PipelineHandle
-  create_graphics_pipeline(const GraphicsPipelineDesc &desc);
+      create_graphics_pipeline(const GraphicsPipelineDesc &desc);
   [[nodiscard]] NX_DEPRECATED_MSG(
       "use create_compute_pipeline_async and publish_pipeline") PipelineHandle
-  create_compute_pipeline(const ComputePipelineDesc &desc);
+      create_compute_pipeline(const ComputePipelineDesc &desc);
   /// Copies descriptor inputs on the owner, then performs native compilation
   /// on a worker. Only publication of the opaque result touches handle tables.
   [[nodiscard]] nx::future<CompiledPipeline> create_graphics_pipeline_async(
@@ -300,9 +303,10 @@ public:
 private:
   DeviceCaps m_caps;
   nx::string m_device_name;
+  nx::string m_init_error;
   MetalDeviceState *m_state = nullptr;
   MetalUploader m_uploader;
   nx::workload_tracker m_pipeline_compile_workload;
 };
 
-}
+} // namespace nxe::rhi

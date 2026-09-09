@@ -128,18 +128,22 @@ bool MetalDevice::init(const DeviceDesc &desc) {
   if (m_state != nullptr)
     return true;
 
+  m_init_error.clear();
+
   @autoreleasepool {
     if (desc.enable_validation)
       enable_metal_validation();
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (device == nil) {
+      m_init_error = "No Metal graphics device was found.";
       nx::loge(log_rhi, "init: no Metal device on this system");
       return false;
     }
 
     id<MTLCommandQueue> queue = [device newCommandQueue];
     if (queue == nil) {
+      m_init_error = "The Metal command queue could not be created.";
       nx::loge(log_rhi, "init: newCommandQueue failed");
       return false;
     }
@@ -199,16 +203,21 @@ bool MetalDevice::init(const DeviceDesc &desc) {
              [device hasUnifiedMemory] ? "yes" : "no");
     nx::logd(log_rhi, "argument buffers: tier {}", tier2 ? 2 : 1);
 
-    if (!create_bindless_heap(*state, m_caps)) {
+    if (!metal3) {
+      m_init_error = nx::format(
+          "{} does not support Metal 3. NX2D requires macOS 13 or iOS 16 "
+          "and a Metal 3-capable graphics device.",
+          m_device_name);
+      nx::loge(log_rhi, "the Metal backend needs Metal 3 (macOS 13 / iOS 16) "
+                        "for resource IDs in argument buffers");
       delete state;
       m_caps = {};
       m_device_name.clear();
       return false;
     }
 
-    if (!metal3) {
-      nx::loge(log_rhi, "the Metal backend needs Metal 3 (macOS 13 / iOS 16) "
-                        "for resource IDs in argument buffers");
+    if (!create_bindless_heap(*state, m_caps)) {
+      m_init_error = "The Metal bindless resource heap could not be created.";
       delete state;
       m_caps = {};
       m_device_name.clear();
@@ -218,6 +227,8 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     state->pass_fence = [device newFence];
     state->upload_event = [device newEvent];
     if (state->pass_fence == nil || state->upload_event == nil) {
+      m_init_error =
+          "The Metal synchronization resources could not be created.";
       nx::loge(log_rhi, "init: could not create the heap synchronisation "
                         "primitives");
       delete state;
@@ -234,6 +245,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     state->frame_semaphore =
         dispatch_semaphore_create(state->frames_in_flight);
     if (state->frame_semaphore == nil) {
+      m_init_error = "The Metal frame pacing resources could not be created.";
       nx::loge(log_rhi, "init: could not create the frame pacing semaphore");
       delete state;
       m_caps = {};
@@ -246,6 +258,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     m_uploader.m_state = state;
 
     if (!uploader_init(*state)) {
+      m_init_error = "The Metal upload service could not be initialized.";
       m_uploader.m_state = nullptr;
       m_state = nullptr;
       delete state;
