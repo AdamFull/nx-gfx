@@ -853,16 +853,42 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
   m_init_error.clear();
   m_break_on_error = desc.break_on_validation_error;
 
-  if (const VkResult result = volkInitialize(); result != VK_SUCCESS) {
-    m_init_error = nx::format(
-        "No Vulkan loader was found ({}). Install a graphics driver with "
-        "Vulkan support.",
-        vk_result_string(result));
-    nx::logc(log_rhi,
-             "no Vulkan loader found ({}). Install a GPU driver with Vulkan "
-             "support.",
-             vk_result_string(result));
-    return false;
+  if (desc.native_driver.custom()) {
+    const auto get_instance_proc_addr =
+        reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+            desc.native_driver.find("vkGetInstanceProcAddr"));
+    if (get_instance_proc_addr == nullptr) {
+      m_init_error = nx::format(
+          "Graphics driver '{}' does not export vkGetInstanceProcAddr.",
+          desc.native_driver.identity);
+      nx::logc(log_rhi, "graphics driver '{}' has no vkGetInstanceProcAddr",
+               desc.native_driver.identity);
+      return false;
+    }
+    volkInitializeCustom(get_instance_proc_addr);
+    if (vkCreateInstance == nullptr || vkEnumerateInstanceVersion == nullptr) {
+      m_init_error = nx::format(
+          "Graphics driver '{}' does not expose the required Vulkan loader "
+          "entry points.",
+          desc.native_driver.identity);
+      nx::logc(log_rhi, "graphics driver '{}' has an incomplete Vulkan loader",
+               desc.native_driver.identity);
+      return false;
+    }
+    nx::logi(log_rhi, "using graphics driver '{}'",
+             desc.native_driver.identity);
+  } else {
+    if (const VkResult result = volkInitialize(); result != VK_SUCCESS) {
+      m_init_error = nx::format(
+          "No Vulkan loader was found ({}). Install a graphics driver with "
+          "Vulkan support.",
+          vk_result_string(result));
+      nx::logc(log_rhi,
+               "no Vulkan loader found ({}). Install a GPU driver with Vulkan "
+               "support.",
+               vk_result_string(result));
+      return false;
+    }
   }
 
   if (!create_instance(desc) || !select_physical_device() ||

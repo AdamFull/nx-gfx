@@ -40,6 +40,7 @@ set(NX_RHI_HEADERS
         descs.h
         device.h
         handles.h
+        native_driver.h
         pipeline_compiler.h
         rhi.h
         shader_reflect.h

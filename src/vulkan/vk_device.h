@@ -10,6 +10,7 @@
 #include "core/rendering/rhi/bindless.h"
 #include "core/rendering/rhi/descs.h"
 #include "core/rendering/rhi/handles.h"
+#include "core/rendering/rhi/native_driver.h"
 #include "core/rendering/rhi/pipeline_compiler.h"
 #include "core/rendering/rhi/shader_reflect.h"
 #include "core/rendering/rhi/types.h"
@@ -36,6 +37,7 @@ struct DeviceDesc {
 #endif
   bool break_on_validation_error = false;
   nx::string_view pipeline_cache_path;
+  NativeDriverView native_driver;
   u32 frames_in_flight = 2;
 };
 
