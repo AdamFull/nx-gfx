@@ -49,28 +49,24 @@ __DynamicResource<__DynamicResourceKind.General> g_textures[];
 [[vk::binding(NX_BINDLESS_BINDING_RW_TEXTURES, NX_BINDLESS_SET)]]
 __DynamicResource<__DynamicResourceKind.General> g_rw_textures[];
 
-public uint descriptor_index(uint index) {
-    return NonUniformResourceIndex(index);
-}
-
 public Texture2D<float4> get_texture(uint index) {
-    return g_textures[descriptor_index(index)]
+    return g_textures[NonUniformResourceIndex(index)]
         .asOpaqueDescriptor<Texture2D<float4>>();
 }
 public Texture2D<uint4> get_uint_texture(uint index) {
-    return g_textures[descriptor_index(index)]
+    return g_textures[NonUniformResourceIndex(index)]
         .asOpaqueDescriptor<Texture2D<uint4>>();
 }
 public RWTexture2D<float4> get_rw_texture(uint index) {
-    return g_rw_textures[descriptor_index(index)]
+    return g_rw_textures[NonUniformResourceIndex(index)]
         .asOpaqueDescriptor<RWTexture2D<float4>>();
 }
 public RWTexture2D<uint4> get_rw_uint_texture(uint index) {
-    return g_rw_textures[descriptor_index(index)]
+    return g_rw_textures[NonUniformResourceIndex(index)]
         .asOpaqueDescriptor<RWTexture2D<uint4>>();
 }
 public SamplerState get_sampler(uint index) {
-    return g_samplers[descriptor_index(index)];
+    return g_samplers[NonUniformResourceIndex(index)];
 }
 
 #endif
