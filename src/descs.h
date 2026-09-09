@@ -281,4 +281,20 @@ struct DeviceCaps {
   f32 timestamp_period_ns = 0.f;
 };
 
+/// Classifies device startup without leaking a backend-specific error model to
+/// the application. Unsupported means that the available system graphics
+/// stack cannot satisfy the RHI's required capability floor; Failed means a
+/// compatible stack was found but initialization did not complete.
+enum class DeviceInitFailure : u8 {
+  None,
+  Unsupported,
+  Failed,
+};
+
+struct DeviceInitReport {
+  DeviceInitFailure failure = DeviceInitFailure::None;
+  u32 vendor_id = 0;
+  u32 device_id = 0;
+};
+
 } // namespace nxe::rhi

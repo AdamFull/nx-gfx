@@ -199,6 +199,9 @@ public:
   [[nodiscard]] nx::string_view init_error() const noexcept {
     return m_init_error;
   }
+  [[nodiscard]] const DeviceInitReport &init_report() const noexcept {
+    return m_init_report;
+  }
 
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
 
@@ -306,6 +309,7 @@ private:
   DeviceCaps m_caps;
   nx::string m_device_name;
   nx::string m_init_error;
+  DeviceInitReport m_init_report;
   MetalDeviceState *m_state = nullptr;
   MetalUploader m_uploader;
   nx::workload_tracker m_pipeline_compile_workload;

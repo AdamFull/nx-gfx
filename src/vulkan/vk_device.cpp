@@ -252,6 +252,7 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   u32 available_version = 0;
   NX_VK_TRY(vkEnumerateInstanceVersion(&available_version));
   if (available_version < REQUIRED_API_VERSION) {
+    m_init_report.failure = DeviceInitFailure::Unsupported;
     m_init_error =
         nx::format("Vulkan {}.{} is available, but Vulkan {}.{} is required.",
                    VK_API_VERSION_MAJOR(available_version),
@@ -381,6 +382,7 @@ bool VulkanDevice::select_physical_device() {
   u32 count = 0;
   NX_VK_TRY(vkEnumeratePhysicalDevices(m_instance, &count, nullptr));
   if (count == 0) {
+    m_init_report.failure = DeviceInitFailure::Unsupported;
     m_init_error = "No Vulkan graphics device was found.";
     nx::logc(log_rhi, "no Vulkan physical devices found");
     return false;
@@ -397,6 +399,10 @@ bool VulkanDevice::select_physical_device() {
     VkPhysicalDeviceProperties2 props{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     vkGetPhysicalDeviceProperties2(candidate, &props);
+    if (m_init_report.vendor_id == 0) {
+      m_init_report.vendor_id = props.properties.vendorID;
+      m_init_report.device_id = props.properties.deviceID;
+    }
 
     const u32 version = props.properties.apiVersion;
     if (version < REQUIRED_API_VERSION) {
@@ -448,6 +454,7 @@ bool VulkanDevice::select_physical_device() {
   }
 
   if (best == VK_NULL_HANDLE) {
+    m_init_report.failure = DeviceInitFailure::Unsupported;
     m_init_error =
         "No compatible Vulkan graphics device was found. Update the operating "
         "system or graphics driver.\n\n";
@@ -469,6 +476,11 @@ bool VulkanDevice::select_physical_device() {
   }
 
   m_physical_device = best;
+
+  VkPhysicalDeviceProperties selected_properties{};
+  vkGetPhysicalDeviceProperties(m_physical_device, &selected_properties);
+  m_init_report.vendor_id = selected_properties.vendorID;
+  m_init_report.device_id = selected_properties.deviceID;
 
   VkPhysicalDeviceDescriptorIndexingProperties indexing{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES};
@@ -851,6 +863,7 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
 
 bool VulkanDevice::init(const DeviceDesc &desc) {
   m_init_error.clear();
+  m_init_report = {.failure = DeviceInitFailure::Failed};
   m_break_on_error = desc.break_on_validation_error;
 
   if (desc.native_driver.custom()) {
@@ -879,6 +892,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
              desc.native_driver.identity);
   } else {
     if (const VkResult result = volkInitialize(); result != VK_SUCCESS) {
+      m_init_report.failure = DeviceInitFailure::Unsupported;
       m_init_error = nx::format(
           "No Vulkan loader was found ({}). Install a graphics driver with "
           "Vulkan support.",
@@ -922,6 +936,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
     return false;
   }
 
+  m_init_report.failure = DeviceInitFailure::None;
   return true;
 }
 

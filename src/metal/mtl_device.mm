@@ -129,6 +129,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     return true;
 
   m_init_error.clear();
+  m_init_report = {.failure = DeviceInitFailure::Failed};
 
   @autoreleasepool {
     if (desc.enable_validation)
@@ -136,6 +137,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (device == nil) {
+      m_init_report.failure = DeviceInitFailure::Unsupported;
       m_init_error = "No Metal graphics device was found.";
       nx::loge(log_rhi, "init: no Metal device on this system");
       return false;
@@ -166,6 +168,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     m_caps.discrete = ![device hasUnifiedMemory];
     m_caps.vendor_id = nx::cast<u32>([device registryID] & 0xFFFFFFFFu);
     m_caps.driver_version = m_caps.api_version;
+    m_init_report.vendor_id = m_caps.vendor_id;
 
     m_caps.descriptor_indexing = tier2;
     m_caps.buffer_device_address = metal3;
@@ -204,6 +207,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     nx::logd(log_rhi, "argument buffers: tier {}", tier2 ? 2 : 1);
 
     if (!metal3) {
+      m_init_report.failure = DeviceInitFailure::Unsupported;
       m_init_error = nx::format(
           "{} does not support Metal 3. NX2D requires macOS 13 or iOS 16 "
           "and a Metal 3-capable graphics device.",
@@ -271,6 +275,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
       nx::logi(log_rhi, "metal api validation requested");
   }
 
+  m_init_report.failure = DeviceInitFailure::None;
   return true;
 }
 
