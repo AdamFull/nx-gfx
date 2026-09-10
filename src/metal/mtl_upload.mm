@@ -1,5 +1,6 @@
 
 #include "core/rendering/rhi/metal/mtl_internal.h"
+#include "core/rendering/rhi/metal/mtl_gpu_crash.h"
 
 #include "core/foundation/core/scope_guard.h"
 #include "core/foundation/vfs/vfs.h"
@@ -73,10 +74,9 @@ bool ensure_batch(MetalDeviceState &state) {
     return false;
 
   @autoreleasepool {
-    up.batch = [state.queue commandBuffer];
+    up.batch = make_command_buffer(state, "nx2d uploads", up.submitted + 1);
     if (up.batch == nil)
       return false;
-    up.batch.label = @"nx2d uploads";
     begin_command_buffer(up.batch_slot);
 
     up.blit = [up.batch blitCommandEncoder];

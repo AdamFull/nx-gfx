@@ -14,7 +14,7 @@ u32 clamp_count(const u32 desired, const u32 device_limit) noexcept {
   return desired < device_limit ? desired : device_limit;
 }
 
-}
+} // namespace
 
 bool VulkanDevice::create_bindless_heap() {
   m_bindless.max_samplers =
@@ -51,8 +51,12 @@ bool VulkanDevice::create_bindless_heap() {
       VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
   layout_info.bindingCount = 3;
   layout_info.pBindings = bindings;
-  NX_VK_TRY(vkCreateDescriptorSetLayout(m_device, &layout_info, nullptr,
-                                        &m_bindless.layout));
+  NX_VK_DEVICE_TRY(*this,
+                   vkCreateDescriptorSetLayout(m_device, &layout_info, nullptr,
+                                               &m_bindless.layout));
+  set_object_name(vk_handle_value(m_bindless.layout),
+                  VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+                  "bindless descriptor layout");
 
   const VkDescriptorPoolSize pool_sizes[3] = {
       {VK_DESCRIPTOR_TYPE_SAMPLER, m_bindless.max_samplers},
@@ -66,15 +70,18 @@ bool VulkanDevice::create_bindless_heap() {
   pool_info.maxSets = 1;
   pool_info.poolSizeCount = 3;
   pool_info.pPoolSizes = pool_sizes;
-  NX_VK_TRY(
-      vkCreateDescriptorPool(m_device, &pool_info, nullptr, &m_bindless.pool));
+  NX_VK_DEVICE_TRY(*this, vkCreateDescriptorPool(m_device, &pool_info, nullptr,
+                                                 &m_bindless.pool));
+  set_object_name(vk_handle_value(m_bindless.pool),
+                  VK_OBJECT_TYPE_DESCRIPTOR_POOL, "bindless descriptor pool");
 
   VkDescriptorSetAllocateInfo alloc{
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   alloc.descriptorPool = m_bindless.pool;
   alloc.descriptorSetCount = 1;
   alloc.pSetLayouts = &m_bindless.layout;
-  NX_VK_TRY(vkAllocateDescriptorSets(m_device, &alloc, &m_bindless.set));
+  NX_VK_DEVICE_TRY(*this,
+                   vkAllocateDescriptorSets(m_device, &alloc, &m_bindless.set));
   set_object_name(vk_handle_value(m_bindless.set),
                   VK_OBJECT_TYPE_DESCRIPTOR_SET, "bindless set");
 
@@ -89,8 +96,10 @@ bool VulkanDevice::create_bindless_heap() {
   pipeline_layout.pSetLayouts = &m_bindless.layout;
   pipeline_layout.pushConstantRangeCount = 1;
   pipeline_layout.pPushConstantRanges = &push_range;
-  NX_VK_TRY(vkCreatePipelineLayout(m_device, &pipeline_layout, nullptr,
-                                   &m_pipeline_layout));
+  NX_VK_DEVICE_TRY(*this, vkCreatePipelineLayout(m_device, &pipeline_layout,
+                                                 nullptr, &m_pipeline_layout));
+  set_object_name(vk_handle_value(m_pipeline_layout),
+                  VK_OBJECT_TYPE_PIPELINE_LAYOUT, "bindless pipeline layout");
 
   nx::logd(log_rhi, "bindless heap: {} samplers, {} textures, {} rw-textures",
            m_bindless.max_samplers, m_bindless.max_textures,
@@ -176,4 +185,4 @@ void VulkanDevice::free_rw_slot(const u32 slot) noexcept {
     m_bindless.free_rw_slots.push_back(slot);
 }
 
-}
+} // namespace nxe::rhi

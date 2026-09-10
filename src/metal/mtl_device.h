@@ -5,6 +5,7 @@
 #include "core/foundation/threading/workload.h"
 #include "core/rendering/rhi/bindless.h"
 #include "core/rendering/rhi/descs.h"
+#include "core/rendering/rhi/gpu_crash.h"
 #include "core/rendering/rhi/handles.h"
 #include "core/rendering/rhi/image/image.h"
 #include "core/rendering/rhi/native_driver.h"
@@ -30,6 +31,7 @@ struct DeviceDesc {
   bool enable_validation = false;
 #endif
   bool break_on_validation_error = false;
+  GpuCrashMode gpu_crash_mode = GpuCrashMode::Basic;
   nx::string_view pipeline_cache_path;
   NativeDriverView native_driver;
   u32 frames_in_flight = 2;
@@ -204,6 +206,7 @@ public:
   }
 
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
+  [[nodiscard]] GpuDeviceStatus device_status() const noexcept;
 
   [[nodiscard]] u32 frames_in_flight() const noexcept;
 

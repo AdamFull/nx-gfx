@@ -173,13 +173,14 @@ to_vk_blend(const BlendState &state) noexcept {
   return out;
 }
 
-VkShaderModule create_module(VkDevice device, const void *code,
-                             const usize size) noexcept {
+VkShaderModule create_module(const VulkanDevice &owner, VkDevice device,
+                             const void *code, const usize size) noexcept {
   VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   info.codeSize = size;
   info.pCode = static_cast<const u32 *>(code);
   VkShaderModule module = VK_NULL_HANDLE;
-  NX_VK_CHECK(vkCreateShaderModule(device, &info, nullptr, &module));
+  NX_VK_DEVICE_CHECK(owner,
+                     vkCreateShaderModule(device, &info, nullptr, &module));
   return module;
 }
 
@@ -208,7 +209,10 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
 
   info.initialDataSize = initial.size();
   info.pInitialData = initial.size() ? initial.data() : nullptr;
-  NX_VK_TRY(vkCreatePipelineCache(m_device, &info, nullptr, &m_pipeline_cache));
+  NX_VK_DEVICE_TRY(*this, vkCreatePipelineCache(m_device, &info, nullptr,
+                                                &m_pipeline_cache));
+  set_object_name(vk_handle_value(m_pipeline_cache),
+                  VK_OBJECT_TYPE_PIPELINE_CACHE, "pipeline cache");
 
   if (initial.size())
     nx::logd(log_rhi, "pipeline cache: loaded {} bytes", initial.size());
@@ -216,20 +220,23 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
 }
 
 void VulkanDevice::save_pipeline_cache() noexcept {
-  if (m_pipeline_cache == VK_NULL_HANDLE || m_pipeline_cache_path.empty())
+  if (device_status() == GpuDeviceStatus::Lost ||
+      m_pipeline_cache == VK_NULL_HANDLE || m_pipeline_cache_path.empty())
     return;
 
   const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
 
   usize size = 0;
-  if (vkGetPipelineCacheData(m_device, m_pipeline_cache, &size, nullptr) !=
-          VK_SUCCESS ||
+  if (NX_VK_DEVICE_CHECK(
+          *this, vkGetPipelineCacheData(m_device, m_pipeline_cache, &size,
+                                        nullptr)) != VK_SUCCESS ||
       size == 0)
     return;
 
   nx::blob<u8> data(size);
-  if (vkGetPipelineCacheData(m_device, m_pipeline_cache, &size, data.data()) !=
-      VK_SUCCESS)
+  if (NX_VK_DEVICE_CHECK(
+          *this, vkGetPipelineCacheData(m_device, m_pipeline_cache, &size,
+                                        data.data())) != VK_SUCCESS)
     return;
 
   const auto written =
@@ -248,7 +255,7 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   }
 
   VulkanShader shader;
-  shader.module = create_module(m_device, desc.code, desc.code_size);
+  shader.module = create_module(*this, m_device, desc.code, desc.code_size);
   if (shader.module == VK_NULL_HANDLE)
     return {};
 
@@ -458,9 +465,10 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
   compiled.m_bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
   compiled.m_name = job.name;
   const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
-  if (NX_VK_CHECK(vkCreateGraphicsPipelines(
-          m_device, m_pipeline_cache, 1, &info, nullptr,
-          &compiled.m_pipeline)) != VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(
+          *this, vkCreateGraphicsPipelines(m_device, m_pipeline_cache, 1, &info,
+                                           nullptr, &compiled.m_pipeline)) !=
+      VK_SUCCESS) {
     nx::loge(log_rhi, "create_graphics_pipeline('{}') failed", job.name);
     return {};
   }
@@ -561,8 +569,9 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
   compiled.m_bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
   compiled.m_name = job.name;
   const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
-  if (NX_VK_CHECK(vkCreateComputePipelines(m_device, m_pipeline_cache, 1, &info,
-                                           nullptr, &compiled.m_pipeline)) !=
+  if (NX_VK_DEVICE_CHECK(
+          *this, vkCreateComputePipelines(m_device, m_pipeline_cache, 1, &info,
+                                          nullptr, &compiled.m_pipeline)) !=
       VK_SUCCESS) {
     nx::loge(log_rhi, "create_compute_pipeline('{}') failed", job.name);
     return {};

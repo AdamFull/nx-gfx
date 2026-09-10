@@ -31,6 +31,18 @@ VkResult vk_report(VkResult result, const char *call, const char *file,
 #define NX_VK_CHECK(expr)                                                      \
   ::nxe::rhi::vk_report((expr), #expr, __FILE__, __LINE__)
 
+/// Device-owned variant used after logical-device creation. In addition to
+/// logging, it captures VK_ERROR_DEVICE_LOST exactly once.
+#define NX_VK_DEVICE_CHECK(device, expr)                                       \
+  (device).check_result((expr), #expr, __FILE__, __LINE__)
+
+#define NX_VK_DEVICE_TRY(device, expr)                                         \
+  do {                                                                         \
+    if ((device).check_result((expr), #expr, __FILE__, __LINE__) !=            \
+        VK_SUCCESS)                                                            \
+      return false;                                                            \
+  } while (false)
+
 /// Checks a Vulkan call and returns false from the enclosing function on
 /// failure. Bring-up code is full of "do this or give up" sequences.
 #define NX_VK_TRY(expr)                                                        \
@@ -67,4 +79,4 @@ struct VkStateInfo {
 
 [[nodiscard]] VkStateInfo to_vk_state(ResourceState state) noexcept;
 
-}
+} // namespace nxe::rhi

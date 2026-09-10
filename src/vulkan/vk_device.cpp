@@ -17,19 +17,30 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT /*types*/,
     const VkDebugUtilsMessengerCallbackDataEXT *data, void *user_data) {
-  if (data == nullptr || data->pMessage == nullptr)
-    return VK_FALSE;
+  return user_data != nullptr
+             ? nx::cast<VulkanGpuCrashReporter *>(user_data)->debug_message(
+                   severity, data)
+             : VK_FALSE;
+}
 
-  if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-    nx::loge(log_rhi, "{}", data->pMessage);
-    if (user_data != nullptr && *nx::cast<bool *>(user_data))
-      nx::dbg_break();
-  } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-    nx::logw(log_rhi, "{}", data->pMessage);
-  } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {
-    nx::logd(log_rhi, "{}", data->pMessage);
-  }
-  return VK_FALSE;
+VkDebugUtilsMessengerCreateInfoEXT
+debug_messenger_info(VulkanGpuCrashReporter &reporter, const bool detailed,
+                     const bool address_bindings) noexcept {
+  VkDebugUtilsMessengerCreateInfoEXT info{
+      VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+  info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
+  if (detailed)
+    info.messageSeverity |= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+  info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                     VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+  if (address_bindings)
+    info.messageType |=
+        VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+  info.pfnUserCallback = debug_callback;
+  info.pUserData = &reporter;
+  return info;
 }
 
 bool has_extension(const nx::small_vector<VkExtensionProperties, 64> &available,
@@ -101,6 +112,12 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       listed(available, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
   const bool ext_depth_stencil_resolve =
       listed(available, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+  const bool ext_device_fault_khr =
+      listed(available, VK_KHR_DEVICE_FAULT_EXTENSION_NAME);
+  const bool ext_device_fault_ext =
+      listed(available, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+  const bool ext_address_binding =
+      listed(available, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
 
   // A feature struct may only be chained when the version or the extension that
   // defines it is there, so the chain is built from what this device has.
@@ -130,6 +147,12 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES};
   VkPhysicalDeviceShaderDrawParametersFeatures draw_params{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES};
+  VkPhysicalDeviceFaultFeaturesKHR fault_khr{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_KHR};
+  VkPhysicalDeviceFaultFeaturesEXT fault_ext{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+  VkPhysicalDeviceAddressBindingReportFeaturesEXT address_binding{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
 
   chain(draw_params);
 
@@ -154,6 +177,13 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
     if (ext_synchronization2)
       chain(sync2);
   }
+
+  if (ext_device_fault_khr)
+    chain(fault_khr);
+  else if (ext_device_fault_ext)
+    chain(fault_ext);
+  if (ext_address_binding)
+    chain(address_binding);
 
   vkGetPhysicalDeviceFeatures2(candidate, &features);
 
@@ -224,6 +254,15 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   out.draw_indirect_count = out.core_12 || ext_draw_indirect_count;
   out.storage_image_extended_formats =
       features.features.shaderStorageImageExtendedFormats != 0;
+  if (ext_device_fault_khr && fault_khr.deviceFault) {
+    out.device_fault = VulkanFaultRoute::Khr;
+    out.device_fault_vendor_binary = fault_khr.deviceFaultVendorBinary != 0;
+  } else if (ext_device_fault_ext && fault_ext.deviceFault) {
+    out.device_fault = VulkanFaultRoute::Ext;
+    out.device_fault_vendor_binary = fault_ext.deviceFaultVendorBinary != 0;
+  }
+  out.address_binding_report =
+      ext_address_binding && address_binding.reportAddressBinding;
   return out;
 }
 
@@ -292,7 +331,8 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   if (const char *platform_ext = platform_surface_extension())
     extensions.push_back(platform_ext);
 
-  m_debug_utils = desc.enable_validation &&
+  m_debug_utils = (desc.enable_validation ||
+                   desc.gpu_crash_mode != GpuCrashMode::Disabled) &&
                   has_extension(available, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
   if (m_debug_utils)
     extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -345,16 +385,8 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   info.enabledLayerCount = nx::cast<u32>(layers.size());
   info.ppEnabledLayerNames = layers.data();
 
-  VkDebugUtilsMessengerCreateInfoEXT messenger_info{
-      VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
-  messenger_info.messageSeverity =
-      VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-      VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
-  messenger_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-  messenger_info.pfnUserCallback = debug_callback;
-  messenger_info.pUserData = &m_break_on_error;
+  VkDebugUtilsMessengerCreateInfoEXT messenger_info = debug_messenger_info(
+      m_gpu_crash, desc.gpu_crash_mode == GpuCrashMode::Detailed, false);
   if (m_debug_utils)
     info.pNext = &messenger_info;
 
@@ -375,11 +407,39 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   // Loads every instance-level entry point; must precede any other vk* call.
   volkLoadInstance(m_instance);
 
-  if (m_debug_utils) {
-    NX_VK_CHECK(vkCreateDebugUtilsMessengerEXT(m_instance, &messenger_info,
-                                               nullptr, &m_messenger));
-  }
+  if (m_debug_utils)
+    (void)rebuild_debug_messenger(false);
   return true;
+}
+
+bool VulkanDevice::rebuild_debug_messenger(
+    const bool address_bindings) noexcept {
+  if (!m_debug_utils || m_instance == VK_NULL_HANDLE)
+    return !address_bindings;
+
+  if (m_messenger != VK_NULL_HANDLE) {
+    vkDestroyDebugUtilsMessengerEXT(m_instance, m_messenger, nullptr);
+    m_messenger = VK_NULL_HANDLE;
+  }
+
+  VkDebugUtilsMessengerCreateInfoEXT info = debug_messenger_info(
+      m_gpu_crash, m_gpu_crash.detailed(), address_bindings);
+  const VkResult result =
+      vkCreateDebugUtilsMessengerEXT(m_instance, &info, nullptr, &m_messenger);
+  if (result == VK_SUCCESS)
+    return true;
+
+  nx::logw(log_rhi, "could not create the {} debug messenger: {}",
+           address_bindings ? "address-binding" : "Vulkan",
+           vk_result_string(result));
+  if (!address_bindings)
+    return false;
+
+  info = debug_messenger_info(m_gpu_crash, m_gpu_crash.detailed(), false);
+  if (vkCreateDebugUtilsMessengerEXT(m_instance, &info, nullptr,
+                                     &m_messenger) != VK_SUCCESS)
+    m_messenger = VK_NULL_HANDLE;
+  return false;
 }
 
 bool VulkanDevice::select_physical_device() {
@@ -652,8 +712,14 @@ bool VulkanDevice::create_logical_device() {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
   VkPhysicalDeviceSynchronization2Features sync2{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
+  VkPhysicalDeviceFaultFeaturesKHR fault_khr{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_KHR};
+  VkPhysicalDeviceFaultFeaturesEXT fault_ext{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+  VkPhysicalDeviceAddressBindingReportFeaturesEXT address_binding{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
 
-  nx::small_vector<const char *, 12> device_extensions;
+  nx::small_vector<const char *, 16> device_extensions;
   device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
   if (m_routes.core_12) {
@@ -711,6 +777,33 @@ bool VulkanDevice::create_logical_device() {
     chain(sync2);
     device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+  }
+
+  if (m_gpu_crash.enabled()) {
+    if (m_routes.device_fault == VulkanFaultRoute::Khr) {
+      fault_khr.deviceFault = VK_TRUE;
+      fault_khr.deviceFaultVendorBinary =
+          m_gpu_crash.detailed() && m_routes.device_fault_vendor_binary
+              ? VK_TRUE
+              : VK_FALSE;
+      chain(fault_khr);
+      device_extensions.push_back(VK_KHR_DEVICE_FAULT_EXTENSION_NAME);
+    } else if (m_routes.device_fault == VulkanFaultRoute::Ext) {
+      fault_ext.deviceFault = VK_TRUE;
+      fault_ext.deviceFaultVendorBinary =
+          m_gpu_crash.detailed() && m_routes.device_fault_vendor_binary
+              ? VK_TRUE
+              : VK_FALSE;
+      chain(fault_ext);
+      device_extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    }
+    if (m_gpu_crash.detailed() && m_debug_utils &&
+        m_routes.address_binding_report) {
+      address_binding.reportAddressBinding = VK_TRUE;
+      chain(address_binding);
+      device_extensions.push_back(
+          VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
+    }
   }
 
   features.features.samplerAnisotropy = VK_TRUE;
@@ -781,6 +874,20 @@ bool VulkanDevice::create_logical_device() {
   volkLoadDevice(m_device);
   if (!route_promoted_entry_points())
     return false;
+
+  bool address_tracking = m_gpu_crash.enabled() && m_gpu_crash.detailed() &&
+                          m_debug_utils && m_routes.address_binding_report;
+  if (address_tracking)
+    address_tracking = rebuild_debug_messenger(true);
+  m_gpu_crash.attach(m_device, m_device_name, m_routes.device_fault,
+                     m_gpu_crash.detailed() &&
+                         m_routes.device_fault_vendor_binary,
+                     address_tracking);
+  nx::logd(log_rhi, "GPU crash diagnostics: fault={} address-bindings={}",
+           m_routes.device_fault == VulkanFaultRoute::Khr   ? "KHR"
+           : m_routes.device_fault == VulkanFaultRoute::Ext ? "EXT"
+                                                            : "basic",
+           address_tracking ? "on" : "off");
 
   for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i)
     vkGetDeviceQueue(m_device, m_queue_families[i], 0, &m_queues[i]);
@@ -871,7 +978,7 @@ bool VulkanDevice::create_allocator() {
   // with the matching flag.
   info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
-  NX_VK_TRY(vmaCreateAllocator(&info, &m_allocator));
+  NX_VK_DEVICE_TRY(*this, vmaCreateAllocator(&info, &m_allocator));
   return true;
 }
 
@@ -888,8 +995,11 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
     FrameContext &frame = m_frames.emplace_back();
 
     VkSemaphoreCreateInfo binary_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    NX_VK_TRY(vkCreateSemaphore(m_device, &binary_info, nullptr,
-                                &frame.acquire_semaphore));
+    NX_VK_DEVICE_TRY(*this, vkCreateSemaphore(m_device, &binary_info, nullptr,
+                                              &frame.acquire_semaphore));
+    set_object_name(vk_handle_value(frame.acquire_semaphore),
+                    VK_OBJECT_TYPE_SEMAPHORE,
+                    nx::format("frame {} acquire", i));
   }
   return true;
 }
@@ -899,7 +1009,8 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
 bool VulkanDevice::init(const DeviceDesc &desc) {
   m_init_error.clear();
   m_init_report = {.failure = DeviceInitFailure::Failed};
-  m_break_on_error = desc.break_on_validation_error;
+  m_gpu_crash.configure(desc.gpu_crash_mode, desc.break_on_validation_error);
+  m_report_frame.store(0, std::memory_order_relaxed);
 
   if (desc.native_driver.custom()) {
     const auto get_instance_proc_addr =
@@ -957,7 +1068,8 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
   type_info.initialValue = 0;
   VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
   semaphore_info.pNext = &type_info;
-  NX_VK_TRY(vkCreateSemaphore(m_device, &semaphore_info, nullptr, &m_timeline));
+  NX_VK_DEVICE_TRY(*this, vkCreateSemaphore(m_device, &semaphore_info, nullptr,
+                                            &m_timeline));
   set_object_name(vk_handle_value(m_timeline), VK_OBJECT_TYPE_SEMAPHORE,
                   "frame timeline");
 
@@ -1046,6 +1158,8 @@ void VulkanDevice::shutdown() noexcept {
     vkDestroyDevice(m_device, nullptr);
     m_device = VK_NULL_HANDLE;
   }
+  m_gpu_crash.reset();
+  m_report_frame.store(0, std::memory_order_relaxed);
   if (m_messenger != VK_NULL_HANDLE) {
     vkDestroyDebugUtilsMessengerEXT(m_instance, m_messenger, nullptr);
     m_messenger = VK_NULL_HANDLE;
@@ -1057,17 +1171,26 @@ void VulkanDevice::shutdown() noexcept {
 }
 
 void VulkanDevice::wait_idle() noexcept {
-  if (m_device == VK_NULL_HANDLE)
+  if (m_device == VK_NULL_HANDLE || device_status() == GpuDeviceStatus::Lost)
     return;
 
-  if (NX_VK_CHECK(vkDeviceWaitIdle(m_device)) == VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(*this, vkDeviceWaitIdle(m_device)) == VK_SUCCESS) {
     collect_garbage(~0ull);
     m_uploader.reclaim();
   }
 }
 
+VkResult VulkanDevice::check_result(const VkResult result,
+                                    const char *const call,
+                                    const char *const file,
+                                    const i32 line) const noexcept {
+  return m_gpu_crash.check(result, call, file, line,
+                           m_report_frame.load(std::memory_order_acquire));
+}
+
 void VulkanDevice::flush_uploads() noexcept {
-  if (m_device == VK_NULL_HANDLE || m_frame_active)
+  if (m_device == VK_NULL_HANDLE || m_frame_active ||
+      device_status() == GpuDeviceStatus::Lost)
     return;
 
   m_uploader.flush_batch();
@@ -1077,7 +1200,8 @@ void VulkanDevice::flush_uploads() noexcept {
   pool_info.queueFamilyIndex =
       m_queue_families[nx::cast<usize>(QueueType::Graphics)];
   VkCommandPool pool = VK_NULL_HANDLE;
-  if (NX_VK_CHECK(vkCreateCommandPool(m_device, &pool_info, nullptr, &pool)) !=
+  if (NX_VK_DEVICE_CHECK(
+          *this, vkCreateCommandPool(m_device, &pool_info, nullptr, &pool)) !=
       VK_SUCCESS)
     return;
 
@@ -1087,19 +1211,27 @@ void VulkanDevice::flush_uploads() noexcept {
   alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   alloc.commandBufferCount = 1;
   VkCommandBuffer cmd = VK_NULL_HANDLE;
-  if (NX_VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc, &cmd)) !=
-      VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(*this, vkAllocateCommandBuffers(m_device, &alloc,
+                                                         &cmd)) != VK_SUCCESS) {
     vkDestroyCommandPool(m_device, pool, nullptr);
     return;
   }
 
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cmd, &begin);
+  if (NX_VK_DEVICE_CHECK(*this, vkBeginCommandBuffer(cmd, &begin)) !=
+      VK_SUCCESS) {
+    vkDestroyCommandPool(m_device, pool, nullptr);
+    return;
+  }
   const u64 upload_wait = m_uploader.record_acquires(cmd);
-  NX_VK_CHECK(vkEndCommandBuffer(cmd));
+  if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(cmd)) != VK_SUCCESS) {
+    vkDestroyCommandPool(m_device, pool, nullptr);
+    return;
+  }
 
   ++m_timeline_value;
+  m_report_frame.store(m_timeline_value, std::memory_order_release);
   const u64 value = m_timeline_value;
 
   VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -1123,14 +1255,24 @@ void VulkanDevice::flush_uploads() noexcept {
   submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal;
-  NX_VK_CHECK(vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
-                                1, &submit, VK_NULL_HANDLE));
+  if (NX_VK_DEVICE_CHECK(
+          *this,
+          vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
+                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS) {
+    vkDestroyCommandPool(m_device, pool, nullptr);
+    return;
+  }
 
   VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
   wait.pValues = &value;
-  NX_VK_CHECK(vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX));
+  if (NX_VK_DEVICE_CHECK(*this,
+                         vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
+      VK_SUCCESS) {
+    vkDestroyCommandPool(m_device, pool, nullptr);
+    return;
+  }
 
   vkDestroyCommandPool(m_device, pool, nullptr);
   m_uploader.reclaim();
@@ -1138,7 +1280,8 @@ void VulkanDevice::flush_uploads() noexcept {
 
 void VulkanDevice::set_object_name(const u64 object, const VkObjectType type,
                                    const nx::string_view name) {
-  if (!m_debug_utils || m_device == VK_NULL_HANDLE)
+  if (!m_debug_utils || m_device == VK_NULL_HANDLE || object == 0 ||
+      name.empty())
     return;
 
   const nx::string terminated(name);
@@ -1147,7 +1290,8 @@ void VulkanDevice::set_object_name(const u64 object, const VkObjectType type,
   info.objectType = type;
   info.objectHandle = object;
   info.pObjectName = terminated.c_str();
-  NX_VK_CHECK(vkSetDebugUtilsObjectNameEXT(m_device, &info));
+  NX_VK_DEVICE_CHECK(*this, vkSetDebugUtilsObjectNameEXT(m_device, &info));
+  m_gpu_crash.name_object(object, type, name);
 }
 
 void VulkanDevice::destroy_texture_now(VulkanTexture &texture) noexcept {

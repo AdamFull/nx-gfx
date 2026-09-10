@@ -54,8 +54,8 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
     info.subresourceRange.baseMipLevel = base_mip;
     info.subresourceRange.levelCount = mip_count;
     info.subresourceRange.layerCount = texture.layers;
-    return NX_VK_CHECK(vkCreateImageView(m_device, &info, nullptr, &out)) ==
-           VK_SUCCESS;
+    return NX_VK_DEVICE_CHECK(*this, vkCreateImageView(m_device, &info, nullptr,
+                                                       &out)) == VK_SUCCESS;
   };
 
   if (texture.usage & TextureUsage::Sampled) {
@@ -67,13 +67,15 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
                    texture.mip_levels - base_mip, texture.srv))
       return false;
     set_object_name(vk_handle_value(texture.srv), VK_OBJECT_TYPE_IMAGE_VIEW,
-                    name);
+                    nx::format("{}.sampled", name));
   }
 
   if (texture.usage & (TextureUsage::RenderTarget | TextureUsage::DepthStencil |
                        TextureUsage::Transient)) {
     if (!make_view(flat_type, 0, 1, texture.rtv))
       return false;
+    set_object_name(vk_handle_value(texture.rtv), VK_OBJECT_TYPE_IMAGE_VIEW,
+                    nx::format("{}.attachment", name));
   }
 
   if (texture.usage & TextureUsage::Storage) {
@@ -82,6 +84,8 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
       if (!make_view(flat_type, mip, 1, uav))
         return false;
       texture.uavs.push_back(uav);
+      set_object_name(vk_handle_value(uav), VK_OBJECT_TYPE_IMAGE_VIEW,
+                      nx::format("{}.storage.mip{}", name, mip));
     }
   }
 
@@ -130,11 +134,16 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
     alloc_info.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
 
   VulkanTexture texture;
-  if (NX_VK_CHECK(vmaCreateImage(m_allocator, &info, &alloc_info,
-                                 &texture.image, &texture.allocation,
-                                 nullptr)) != VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(
+          *this, vmaCreateImage(m_allocator, &info, &alloc_info, &texture.image,
+                                &texture.allocation, nullptr)) != VK_SUCCESS) {
     nx::loge(log_rhi, "create_texture('{}'): allocation failed", desc.name);
     return {};
+  }
+  {
+    const nx::string allocation_name(desc.name);
+    vmaSetAllocationName(m_allocator, texture.allocation,
+                         allocation_name.c_str());
   }
 
   texture.format = desc.format;
@@ -183,8 +192,8 @@ VulkanDevice::texture_requirements(const TextureDesc &desc) const {
   const VkImageCreateInfo info = to_image_create_info(desc);
 
   VkImage image = VK_NULL_HANDLE;
-  if (NX_VK_CHECK(vkCreateImage(m_device, &info, nullptr, &image)) !=
-      VK_SUCCESS)
+  if (NX_VK_DEVICE_CHECK(
+          *this, vkCreateImage(m_device, &info, nullptr, &image)) != VK_SUCCESS)
     return {};
 
   VkMemoryRequirements result{};
@@ -228,11 +237,16 @@ HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
 
   VulkanHeap heap;
   heap.size = desc.size;
-  if (NX_VK_CHECK(vmaAllocateMemory(m_allocator, &requirements, &alloc_info,
-                                    &heap.allocation, nullptr)) != VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(*this, vmaAllocateMemory(m_allocator, &requirements,
+                                                  &alloc_info, &heap.allocation,
+                                                  nullptr)) != VK_SUCCESS) {
     nx::loge(log_rhi, "create_heap('{}'): {} KiB allocation failed", desc.name,
              desc.size / 1024);
     return {};
+  }
+  {
+    const nx::string allocation_name(desc.name);
+    vmaSetAllocationName(m_allocator, heap.allocation, allocation_name.c_str());
   }
   return m_heaps.insert(heap);
 }
@@ -262,9 +276,9 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
   const VkImageCreateInfo info = to_image_create_info(desc);
 
   VulkanTexture texture;
-  if (NX_VK_CHECK(vmaCreateAliasingImage2(m_allocator, heap->allocation, offset,
-                                          &info, &texture.image)) !=
-      VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(*this, vmaCreateAliasingImage2(
+                                    m_allocator, heap->allocation, offset,
+                                    &info, &texture.image)) != VK_SUCCESS) {
     nx::loge(log_rhi,
              "create_texture_in_heap('{}'): binding at offset {} failed",
              desc.name, offset);
@@ -332,6 +346,8 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
     return false;
 
   wait_idle();
+  if (device_status() == GpuDeviceStatus::Lost)
+    return false;
   std::swap(*held, *fresh);
   if (held->srv != VK_NULL_HANDLE)
     write_texture_descriptor(nx::cast<u32>(target.index()), held->srv);
@@ -374,9 +390,12 @@ bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,
   info.subresourceRange.levelCount = tex->mip_levels - base_mip;
   info.subresourceRange.layerCount = tex->layers;
   VkImageView view = VK_NULL_HANDLE;
-  if (NX_VK_CHECK(vkCreateImageView(m_device, &info, nullptr, &view)) !=
-      VK_SUCCESS)
+  if (NX_VK_DEVICE_CHECK(*this, vkCreateImageView(m_device, &info, nullptr,
+                                                  &view)) != VK_SUCCESS)
     return false;
+  set_object_name(
+      vk_handle_value(view), VK_OBJECT_TYPE_IMAGE_VIEW,
+      nx::format("texture {} sampled mip {}", handle.raw(), base_mip));
 
   // The bindless set is update-after-bind: an already submitted frame may see
   // an in-place descriptor update. Publishing a view that exposes the mip just
@@ -434,12 +453,18 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
 
   VulkanBuffer buffer;
   VmaAllocationInfo allocation_info{};
-  if (NX_VK_CHECK(vmaCreateBuffer(m_allocator, &info, &alloc_info,
-                                  &buffer.buffer, &buffer.allocation,
-                                  &allocation_info)) != VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(*this,
+                         vmaCreateBuffer(m_allocator, &info, &alloc_info,
+                                         &buffer.buffer, &buffer.allocation,
+                                         &allocation_info)) != VK_SUCCESS) {
     nx::loge(log_rhi, "create_buffer('{}'): allocation failed ({} bytes)",
              desc.name, desc.size);
     return {};
+  }
+  {
+    const nx::string allocation_name(desc.name);
+    vmaSetAllocationName(m_allocator, buffer.allocation,
+                         allocation_name.c_str());
   }
 
   buffer.size = desc.size;
@@ -490,8 +515,9 @@ SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
   info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
 
   VulkanSampler sampler;
-  if (NX_VK_CHECK(vkCreateSampler(m_device, &info, nullptr,
-                                  &sampler.sampler)) != VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(
+          *this, vkCreateSampler(m_device, &info, nullptr, &sampler.sampler)) !=
+      VK_SUCCESS) {
     nx::loge(log_rhi, "create_sampler('{}') failed", desc.name);
     return {};
   }
@@ -519,9 +545,11 @@ QueryPoolHandle VulkanDevice::create_timestamp_pool(const u32 count) {
 
   VulkanQueryPool queries;
   queries.count = count;
-  if (NX_VK_CHECK(vkCreateQueryPool(m_device, &info, nullptr, &queries.pool)) !=
-      VK_SUCCESS)
+  if (NX_VK_DEVICE_CHECK(*this, vkCreateQueryPool(m_device, &info, nullptr,
+                                                  &queries.pool)) != VK_SUCCESS)
     return {};
+  set_object_name(vk_handle_value(queries.pool), VK_OBJECT_TYPE_QUERY_POOL,
+                  "render graph timestamps");
   return m_query_pools.insert(queries);
 }
 
@@ -543,10 +571,11 @@ bool VulkanDevice::read_timestamps(const QueryPoolHandle handle,
 
   // No WAIT bit: a pool the GPU has not finished with answers NOT_READY, and
   // the caller reads an older one rather than stalling the frame to time it.
-  return vkGetQueryPoolResults(m_device, queries->pool, 0, count,
-                               nx::cast<usize>(count) * sizeof(u64), out.data(),
-                               sizeof(u64),
-                               VK_QUERY_RESULT_64_BIT) == VK_SUCCESS;
+  return NX_VK_DEVICE_CHECK(*this, vkGetQueryPoolResults(
+                                       m_device, queries->pool, 0, count,
+                                       nx::cast<usize>(count) * sizeof(u64),
+                                       out.data(), sizeof(u64),
+                                       VK_QUERY_RESULT_64_BIT)) == VK_SUCCESS;
 }
 
 u32 VulkanDevice::texture_index(const TextureHandle handle) const noexcept {

@@ -1,5 +1,6 @@
 
 #include "core/rendering/rhi/metal/mtl_internal.h"
+#include "core/rendering/rhi/metal/mtl_gpu_crash.h"
 
 #include "core/foundation/strings/format.h"
 
@@ -157,6 +158,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
 
     const char *name = [[device name] UTF8String];
     m_device_name = nx::string(name != nullptr ? name : "unknown Metal device");
+    configure_gpu_crash_reporting(*state, desc.gpu_crash_mode, m_device_name);
 
     const MTLArgumentBuffersTier tier = [device argumentBuffersSupport];
     const bool tier2 = tier >= MTLArgumentBuffersTier2;
@@ -302,15 +304,21 @@ void MetalDevice::shutdown() noexcept {
 }
 
 void MetalDevice::wait_idle() noexcept {
-  if (m_state == nullptr || m_state->queue == nil)
+  if (m_state == nullptr || m_state->queue == nil ||
+      device_status() == GpuDeviceStatus::Lost)
     return;
 
   @autoreleasepool {
-    id<MTLCommandBuffer> cmd = [m_state->queue commandBuffer];
-    cmd.label = @"wait_idle";
+    id<MTLCommandBuffer> cmd =
+        make_command_buffer(*m_state, "wait_idle", m_state->frames_submitted);
     [cmd commit];
     [cmd waitUntilCompleted];
   }
+}
+
+GpuDeviceStatus MetalDevice::device_status() const noexcept {
+  return m_state != nullptr ? gpu_device_status(*m_state)
+                            : GpuDeviceStatus::Ready;
 }
 
 void MetalDevice::flush_uploads() noexcept {
@@ -321,7 +329,8 @@ void MetalDevice::flush_uploads() noexcept {
 }
 
 AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
-  if (m_state == nullptr || m_state->layer == nil)
+  if (m_state == nullptr || m_state->layer == nil ||
+      device_status() == GpuDeviceStatus::Lost)
     return AcquireResult::SurfaceLost;
 
   MetalDeviceState *s = m_state;
@@ -331,6 +340,8 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
   }
 
   dispatch_semaphore_wait(s->frame_semaphore, DISPATCH_TIME_FOREVER);
+  if (device_status() == GpuDeviceStatus::Lost)
+    return AcquireResult::SurfaceLost;
 
   collect_garbage(*s, s->frames_submitted >= s->frames_in_flight
                           ? s->frames_submitted - s->frames_in_flight
@@ -352,13 +363,12 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
 
     MetalContextSlot &slot = s->contexts[0];
     slot = MetalContextSlot{};
-    slot.cmd = [s->queue commandBuffer];
+    slot.cmd = make_command_buffer(*s, "nx2d frame", s->frames_submitted);
     if (slot.cmd == nil) {
       s->drawable = nil;
       dispatch_semaphore_signal(s->frame_semaphore);
       return AcquireResult::SurfaceLost;
     }
-    slot.cmd.label = @"nx2d frame";
     slot.in_use = true;
 
     begin_command_buffer(slot);
@@ -391,7 +401,8 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
 
 bool MetalDevice::end_frame() {
   MetalDeviceState *s = m_state;
-  if (s == nullptr || !s->frame_active)
+  if (s == nullptr || !s->frame_active ||
+      device_status() == GpuDeviceStatus::Lost)
     return false;
   if (s->headless_frame) {
     nx::loge(log_rhi, "end_frame on a headless frame; use end_headless_frame");
@@ -449,7 +460,8 @@ bool MetalDevice::end_frame() {
 }
 
 bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
-  if (m_state == nullptr || m_state->queue == nil)
+  if (m_state == nullptr || m_state->queue == nil ||
+      device_status() == GpuDeviceStatus::Lost)
     return false;
 
   MetalDeviceState *s = m_state;
@@ -462,6 +474,8 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
     return false;
 
   dispatch_semaphore_wait(s->frame_semaphore, DISPATCH_TIME_FOREVER);
+  if (device_status() == GpuDeviceStatus::Lost)
+    return false;
 
   collect_garbage(*s, s->frames_submitted >= s->frames_in_flight
                           ? s->frames_submitted - s->frames_in_flight
@@ -477,12 +491,12 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
 
     MetalContextSlot &slot = s->contexts[0];
     slot = MetalContextSlot{};
-    slot.cmd = [s->queue commandBuffer];
+    slot.cmd =
+        make_command_buffer(*s, "nx2d headless frame", s->frames_submitted);
     if (slot.cmd == nil) {
       dispatch_semaphore_signal(s->frame_semaphore);
       return false;
     }
-    slot.cmd.label = @"nx2d headless frame";
     slot.in_use = true;
 
     begin_command_buffer(slot);
@@ -501,7 +515,8 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
 
 bool MetalDevice::end_headless_frame() {
   MetalDeviceState *s = m_state;
-  if (s == nullptr || !s->frame_active || !s->headless_frame)
+  if (s == nullptr || !s->frame_active || !s->headless_frame ||
+      device_status() == GpuDeviceStatus::Lost)
     return false;
 
   id<MTLCommandBuffer> last_cmd = nil;

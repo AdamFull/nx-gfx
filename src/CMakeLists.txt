@@ -39,6 +39,7 @@ set(NX_RHI_HEADERS
         bindless.h
         descs.h
         device.h
+        gpu_crash.h
         handles.h
         native_driver.h
         pipeline_compiler.h
@@ -49,6 +50,7 @@ set(NX_RHI_HEADERS
         upload_ring.h)
 
 set(NX_RHI_SOURCES
+        gpu_crash.cpp
         shader_loading.cpp
         shader_reflect.cpp
         shader_reflect_json.cpp
@@ -58,11 +60,13 @@ if (APPLE)
     set(NX_RHI_BACKEND "Metal")
     list(APPEND NX_RHI_HEADERS
             metal/mtl_device.h
+            metal/mtl_gpu_crash.h
             metal/mtl_internal.h)
     list(APPEND NX_RHI_SOURCES
             metal/mtl_bindless.mm
             metal/mtl_common.mm
             metal/mtl_device.mm
+            metal/mtl_gpu_crash.mm
             metal/mtl_pipeline.mm
             metal/mtl_swapchain.mm
             metal/mtl_upload.mm)
@@ -70,6 +74,7 @@ else ()
     set(NX_RHI_BACKEND "Vulkan")
     list(APPEND NX_RHI_HEADERS
             vulkan/vk_common.h
+            vulkan/vk_gpu_crash.h
             vulkan/vk_device.h
             vulkan/vk_upload.h
             vulkan/vk_video.h
@@ -77,6 +82,7 @@ else ()
     list(APPEND NX_RHI_SOURCES
             vulkan/vk_bindless.cpp
             vulkan/vk_common.cpp
+            vulkan/vk_gpu_crash.cpp
             vulkan/vk_device.cpp
             vulkan/vk_pipeline.cpp
             vulkan/vk_resources.cpp
@@ -109,6 +115,7 @@ if (APPLE)
             metal/mtl_bindless.mm
             metal/mtl_common.mm
             metal/mtl_device.mm
+            metal/mtl_gpu_crash.mm
             metal/mtl_pipeline.mm
             metal/mtl_swapchain.mm
             metal/mtl_upload.mm
@@ -131,6 +138,7 @@ else ()
         set_source_files_properties(
                 vulkan/vk_bindless.cpp
                 vulkan/vk_common.cpp
+                vulkan/vk_gpu_crash.cpp
                 vulkan/vk_device.cpp
                 vulkan/vk_pipeline.cpp
                 vulkan/vk_resources.cpp

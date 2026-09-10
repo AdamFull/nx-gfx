@@ -71,16 +71,20 @@ bool VulkanUploader::init(VulkanDevice *device) {
   VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   pool_info.queueFamilyIndex = m_copy_family;
-  if (NX_VK_CHECK(vkCreateCommandPool(m_vk, &pool_info, nullptr, &m_pool)) !=
+  if (NX_VK_DEVICE_CHECK(
+          *m_device, vkCreateCommandPool(m_vk, &pool_info, nullptr, &m_pool)) !=
       VK_SUCCESS)
     return false;
+  m_device->set_object_name(vk_handle_value(m_pool),
+                            VK_OBJECT_TYPE_COMMAND_POOL, "upload command pool");
 
   VkSemaphoreTypeCreateInfo type_info{
       VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
   type_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
   VkSemaphoreCreateInfo sem_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
   sem_info.pNext = &type_info;
-  if (NX_VK_CHECK(vkCreateSemaphore(m_vk, &sem_info, nullptr, &m_timeline)) !=
+  if (NX_VK_DEVICE_CHECK(*m_device, vkCreateSemaphore(m_vk, &sem_info, nullptr,
+                                                      &m_timeline)) !=
       VK_SUCCESS)
     return false;
   m_device->set_object_name(vk_handle_value(m_timeline),
@@ -95,14 +99,17 @@ bool VulkanUploader::init(VulkanDevice *device) {
   ring_ci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
                   VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
   VmaAllocationInfo ring_info{};
-  if (NX_VK_CHECK(vmaCreateBuffer(m_allocator, &buf_info, &ring_ci, &m_ring,
-                                  &m_ring_alloc, &ring_info)) != VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(*m_device,
+                         vmaCreateBuffer(m_allocator, &buf_info, &ring_ci,
+                                         &m_ring, &m_ring_alloc, &ring_info)) !=
+      VK_SUCCESS) {
     nx::loge(log_up, "staging ring ({} MiB) allocation failed",
              RING_CAPACITY / (1024 * 1024));
     return false;
   }
   m_ring_mapped = nx::cast<u8 *>(ring_info.pMappedData);
   m_ring_capacity = RING_CAPACITY;
+  vmaSetAllocationName(m_allocator, m_ring_alloc, "upload ring");
   m_device->set_object_name(vk_handle_value(m_ring), VK_OBJECT_TYPE_BUFFER,
                             "upload ring");
 
@@ -175,32 +182,37 @@ void VulkanUploader::shutdown() noexcept {
 
 u64 VulkanUploader::completed_value() const noexcept {
   u64 value = 0;
-  if (m_timeline != VK_NULL_HANDLE)
-    NX_VK_CHECK(vkGetSemaphoreCounterValueKHR(m_vk, m_timeline, &value));
+  if (m_timeline != VK_NULL_HANDLE && m_device != nullptr &&
+      m_device->device_status() == GpuDeviceStatus::Ready)
+    NX_VK_DEVICE_CHECK(*m_device,
+                       vkGetSemaphoreCounterValueKHR(m_vk, m_timeline, &value));
   return value;
 }
 
 u64 VulkanUploader::graphics_completed() const noexcept {
   u64 value = 0;
-  if (m_device != nullptr && m_device->m_timeline != VK_NULL_HANDLE)
-    NX_VK_CHECK(
-        vkGetSemaphoreCounterValueKHR(m_vk, m_device->m_timeline, &value));
+  if (m_device != nullptr && m_device->m_timeline != VK_NULL_HANDLE &&
+      m_device->device_status() == GpuDeviceStatus::Ready)
+    NX_VK_DEVICE_CHECK(*m_device, vkGetSemaphoreCounterValueKHR(
+                                      m_vk, m_device->m_timeline, &value));
   return value;
 }
 
 void VulkanUploader::wait_value(const u64 value) noexcept {
-  if (value == 0)
+  if (value == 0 || m_device == nullptr ||
+      m_device->device_status() == GpuDeviceStatus::Lost)
     return;
   u64 v = value;
   VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
   wait.pValues = &v;
-  NX_VK_CHECK(vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX));
+  NX_VK_DEVICE_CHECK(*m_device, vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX));
 }
 
 void VulkanUploader::wait_graphics(const u64 value) noexcept {
   if (value == 0 || m_device == nullptr ||
+      m_device->device_status() == GpuDeviceStatus::Lost ||
       m_device->m_timeline == VK_NULL_HANDLE)
     return;
   u64 v = value;
@@ -208,7 +220,7 @@ void VulkanUploader::wait_graphics(const u64 value) noexcept {
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_device->m_timeline;
   wait.pValues = &v;
-  NX_VK_CHECK(vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX));
+  NX_VK_DEVICE_CHECK(*m_device, vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX));
 }
 
 VkCommandBuffer VulkanUploader::begin_cmd() {
@@ -222,8 +234,12 @@ VkCommandBuffer VulkanUploader::begin_cmd() {
     alloc.commandPool = m_pool;
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = 1;
-    if (NX_VK_CHECK(vkAllocateCommandBuffers(m_vk, &alloc, &cmd)) != VK_SUCCESS)
+    if (NX_VK_DEVICE_CHECK(*m_device, vkAllocateCommandBuffers(
+                                          m_vk, &alloc, &cmd)) != VK_SUCCESS)
       return VK_NULL_HANDLE;
+    m_device->set_object_name(vk_handle_value(cmd),
+                              VK_OBJECT_TYPE_COMMAND_BUFFER,
+                              "upload command buffer");
   }
 
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -256,7 +272,8 @@ void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value) {
   submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal;
-  NX_VK_CHECK(vkQueueSubmit2KHR(m_queue, 1, &submit, VK_NULL_HANDLE));
+  NX_VK_DEVICE_CHECK(*m_device,
+                     vkQueueSubmit2KHR(m_queue, 1, &submit, VK_NULL_HANDLE));
 
   m_inflight.push_back({cmd, value});
 }
@@ -371,12 +388,16 @@ VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
                  : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
   VmaAllocationInfo alloc_info{};
-  if (NX_VK_CHECK(vmaCreateBuffer(m_allocator, &info, &alloc, &chunk.buffer,
-                                  &chunk.alloc, &alloc_info)) != VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(*m_device, vmaCreateBuffer(m_allocator, &info, &alloc,
+                                                    &chunk.buffer, &chunk.alloc,
+                                                    &alloc_info)) !=
+      VK_SUCCESS) {
     nx::loge(log_up, "dedicated staging of {} bytes failed", chunk.capacity);
     return nullptr;
   }
   chunk.mapped = nx::cast<u8 *>(alloc_info.pMappedData);
+  vmaSetAllocationName(m_allocator, chunk.alloc,
+                       host_read ? "readback staging" : "oversized upload");
   m_device->set_object_name(
       vk_handle_value(chunk.buffer), VK_OBJECT_TYPE_BUFFER,
       host_read ? "readback staging" : "oversized upload");
@@ -415,8 +436,10 @@ bool VulkanUploader::flush_upload_staging(const Chunk *const dedicated,
   const VmaAllocation allocation =
       dedicated != nullptr ? dedicated->alloc : m_ring_alloc;
   const u64 allocation_offset = dedicated != nullptr ? 0u : offset;
-  return NX_VK_CHECK(vmaFlushAllocation(m_allocator, allocation,
-                                        allocation_offset, size)) == VK_SUCCESS;
+  return NX_VK_DEVICE_CHECK(*m_device,
+                            vmaFlushAllocation(m_allocator, allocation,
+                                               allocation_offset, size)) ==
+         VK_SUCCESS;
 }
 
 UploadTicket

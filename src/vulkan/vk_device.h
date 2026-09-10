@@ -15,6 +15,7 @@
 #include "core/rendering/rhi/shader_reflect.h"
 #include "core/rendering/rhi/types.h"
 #include "core/rendering/rhi/vulkan/vk_common.h"
+#include "core/rendering/rhi/vulkan/vk_gpu_crash.h"
 #include "core/rendering/rhi/vulkan/vk_upload.h"
 
 #include <vk_mem_alloc.h>
@@ -36,6 +37,7 @@ struct DeviceDesc {
   bool enable_sync_validation = false;
 #endif
   bool break_on_validation_error = false;
+  GpuCrashMode gpu_crash_mode = GpuCrashMode::Basic;
   nx::string_view pipeline_cache_path;
   NativeDriverView native_driver;
   u32 frames_in_flight = 2;
@@ -138,6 +140,9 @@ struct DeviceRoutes {
   bool core_13 = false;
   bool draw_indirect_count = false;
   bool storage_image_extended_formats = false;
+  VulkanFaultRoute device_fault = VulkanFaultRoute::None;
+  bool device_fault_vendor_binary = false;
+  bool address_binding_report = false;
   /// Empty when the device can do everything the engine needs.
   nx::small_vector<nx::string_view, 16> missing;
 };
@@ -301,6 +306,9 @@ public:
   }
 
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
+  [[nodiscard]] GpuDeviceStatus device_status() const noexcept {
+    return m_gpu_crash.status();
+  }
 
   [[nodiscard]] u32 frames_in_flight() const noexcept {
     return m_frames_in_flight;
@@ -462,6 +470,11 @@ public:
   [[nodiscard]] const VulkanPipeline *
   pipeline(PipelineHandle handle) const noexcept;
 
+  /// Backend calls returning DEVICE_LOST pass through this owner so one
+  /// coherent report is collected before the device is torn down.
+  VkResult check_result(VkResult result, const char *call, const char *file,
+                        i32 line) const noexcept;
+
 private:
   friend class VulkanUploader;
 
@@ -477,6 +490,7 @@ private:
   compile_compute_pipeline(const VulkanComputePipelineCompileJob &job) const;
 
   bool create_instance(const DeviceDesc &desc);
+  bool rebuild_debug_messenger(bool address_bindings) noexcept;
   bool select_physical_device();
   bool create_logical_device();
   [[nodiscard]] u32 find_video_decode_family() const;
@@ -513,8 +527,8 @@ private:
   nx::string m_init_error;
   DeviceInitReport m_init_report;
   bool m_debug_utils = false;
-  bool m_break_on_error = false;
   bool m_sync_validation = false;
+  mutable VulkanGpuCrashReporter m_gpu_crash;
 
   VkQueue m_queues[nx::cast<usize>(QueueType::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(QueueType::Count)] = {};
@@ -535,6 +549,7 @@ private:
 
   VkSemaphore m_timeline = VK_NULL_HANDLE;
   u64 m_timeline_value = 0;
+  std::atomic<u64> m_report_frame{0};
   nx::small_vector<FrameContext, 3> m_frames;
   u32 m_frame_index = 0;
   u32 m_frames_in_flight = 2;

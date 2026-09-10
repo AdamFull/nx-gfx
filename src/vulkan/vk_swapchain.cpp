@@ -9,9 +9,9 @@ namespace {
 
 const nx::log::Category log_rhi = nx::log::category("rhi");
 
-[[nodiscard]] bool open_slot(VkDevice device, const u32 queue_family,
-                             VkDescriptorSet bindless, VkPipelineLayout layout,
-                             FrameContext &frame) {
+[[nodiscard]] bool open_slot(const VulkanDevice &owner, VkDevice device,
+                             const u32 queue_family, VkDescriptorSet bindless,
+                             VkPipelineLayout layout, FrameContext &frame) {
   CommandSlot &slot = frame.slot;
 
   if (slot.pool == VK_NULL_HANDLE) {
@@ -19,8 +19,9 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
         VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pool_info.queueFamilyIndex = queue_family;
-    if (NX_VK_CHECK(vkCreateCommandPool(device, &pool_info, nullptr,
-                                        &slot.pool)) != VK_SUCCESS)
+    if (NX_VK_DEVICE_CHECK(owner, vkCreateCommandPool(device, &pool_info,
+                                                      nullptr, &slot.pool)) !=
+        VK_SUCCESS)
       return false;
 
     VkCommandBufferAllocateInfo alloc{
@@ -28,16 +29,19 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
     alloc.commandPool = slot.pool;
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = 1;
-    if (NX_VK_CHECK(vkAllocateCommandBuffers(device, &alloc, &slot.cmd)) !=
-        VK_SUCCESS)
+    if (NX_VK_DEVICE_CHECK(owner, vkAllocateCommandBuffers(
+                                      device, &alloc, &slot.cmd)) != VK_SUCCESS)
       return false;
   } else {
-    NX_VK_CHECK(vkResetCommandPool(device, slot.pool, 0));
+    if (NX_VK_DEVICE_CHECK(owner, vkResetCommandPool(device, slot.pool, 0)) !=
+        VK_SUCCESS)
+      return false;
   }
 
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  if (NX_VK_CHECK(vkBeginCommandBuffer(slot.cmd, &begin)) != VK_SUCCESS)
+  if (NX_VK_DEVICE_CHECK(owner, vkBeginCommandBuffer(slot.cmd, &begin)) !=
+      VK_SUCCESS)
     return false;
 
   vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
@@ -139,10 +143,11 @@ VkSurfaceKHR create_surface(VkInstance instance,
   return surface;
 }
 
-}
+} // namespace
 
 bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
-  if (desc.window.kind == nx::NativeWindowKind::None ||
+  if (device_status() == GpuDeviceStatus::Lost ||
+      desc.window.kind == nx::NativeWindowKind::None ||
       desc.window.window == nullptr) {
     return false;
   }
@@ -151,6 +156,8 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
   // every suspend/resume, so the old surface must go rather than be reused.
   if (m_surface != VK_NULL_HANDLE) {
     wait_idle();
+    if (device_status() == GpuDeviceStatus::Lost)
+      return false;
     destroy_swapchain();
   }
 
@@ -273,20 +280,24 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
   info.oldSwapchain = m_swapchain;
 
   VkSwapchainKHR new_swapchain = VK_NULL_HANDLE;
-  NX_VK_TRY(vkCreateSwapchainKHR(m_device, &info, nullptr, &new_swapchain));
+  NX_VK_DEVICE_TRY(
+      *this, vkCreateSwapchainKHR(m_device, &info, nullptr, &new_swapchain));
 
   destroy_backbuffer_views();
   if (m_swapchain != VK_NULL_HANDLE)
     vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
   m_swapchain = new_swapchain;
   m_swapchain_extent = extent;
+  set_object_name(vk_handle_value(m_swapchain), VK_OBJECT_TYPE_SWAPCHAIN_KHR,
+                  "main swapchain");
 
   u32 actual_count = 0;
-  NX_VK_TRY(
-      vkGetSwapchainImagesKHR(m_device, m_swapchain, &actual_count, nullptr));
+  NX_VK_DEVICE_TRY(*this, vkGetSwapchainImagesKHR(m_device, m_swapchain,
+                                                  &actual_count, nullptr));
   nx::small_vector<VkImage, 4> images(actual_count);
-  NX_VK_TRY(vkGetSwapchainImagesKHR(m_device, m_swapchain, &actual_count,
-                                    images.data()));
+  NX_VK_DEVICE_TRY(*this,
+                   vkGetSwapchainImagesKHR(m_device, m_swapchain, &actual_count,
+                                           images.data()));
 
   for (u32 i = 0; i < actual_count; ++i) {
     VulkanTexture texture;
@@ -307,14 +318,23 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     view_info.subresourceRange.levelCount = 1;
     view_info.subresourceRange.layerCount = 1;
-    NX_VK_TRY(vkCreateImageView(m_device, &view_info, nullptr, &texture.rtv));
+    NX_VK_DEVICE_TRY(
+        *this, vkCreateImageView(m_device, &view_info, nullptr, &texture.rtv));
+
+    set_object_name(vk_handle_value(images[i]), VK_OBJECT_TYPE_IMAGE,
+                    nx::format("swapchain image {}", i));
+    set_object_name(vk_handle_value(texture.rtv), VK_OBJECT_TYPE_IMAGE_VIEW,
+                    nx::format("swapchain image {} attachment", i));
 
     m_backbuffers.push_back(m_textures.insert(std::move(texture)));
 
     VkSemaphore release = VK_NULL_HANDLE;
     VkSemaphoreCreateInfo semaphore_info{
         VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    NX_VK_TRY(vkCreateSemaphore(m_device, &semaphore_info, nullptr, &release));
+    NX_VK_DEVICE_TRY(
+        *this, vkCreateSemaphore(m_device, &semaphore_info, nullptr, &release));
+    set_object_name(vk_handle_value(release), VK_OBJECT_TYPE_SEMAPHORE,
+                    nx::format("swapchain image {} release", i));
     m_release_semaphores.push_back(release);
   }
 
@@ -324,9 +344,11 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
 }
 
 bool VulkanDevice::resize_swapchain(const u32 width, const u32 height) {
-  if (m_surface == VK_NULL_HANDLE)
+  if (m_surface == VK_NULL_HANDLE || device_status() == GpuDeviceStatus::Lost)
     return false;
   wait_idle();
+  if (device_status() == GpuDeviceStatus::Lost)
+    return false;
   return build_swapchain(width, height);
 }
 
@@ -365,7 +387,8 @@ void VulkanDevice::destroy_swapchain() noexcept {
 
 AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   NX_PROFILE_ZONE("vk::begin_frame");
-  if (m_swapchain == VK_NULL_HANDLE || m_swapchain_extent.width == 0)
+  if (device_status() == GpuDeviceStatus::Lost ||
+      m_swapchain == VK_NULL_HANDLE || m_swapchain_extent.width == 0)
     return AcquireResult::SurfaceLost;
 
   FrameContext &frame = m_frames[m_frame_index];
@@ -376,13 +399,17 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     wait.semaphoreCount = 1;
     wait.pSemaphores = &m_timeline;
     wait.pValues = &frame.timeline_value;
-    if (NX_VK_CHECK(vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
+    if (NX_VK_DEVICE_CHECK(*this,
+                           vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
         VK_SUCCESS)
       return AcquireResult::SurfaceLost;
   }
 
   u64 completed = 0;
-  NX_VK_CHECK(vkGetSemaphoreCounterValueKHR(m_device, m_timeline, &completed));
+  if (NX_VK_DEVICE_CHECK(*this, vkGetSemaphoreCounterValueKHR(
+                                    m_device, m_timeline, &completed)) !=
+      VK_SUCCESS)
+    return AcquireResult::SurfaceLost;
   collect_garbage(completed);
   m_uploader.reclaim();
 
@@ -399,14 +426,23 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   if (acquired == VK_ERROR_SURFACE_LOST_KHR)
     return AcquireResult::SurfaceLost;
   if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
-    NX_VK_CHECK(acquired);
+    NX_VK_DEVICE_CHECK(*this, acquired);
     return AcquireResult::SurfaceLost;
   }
 
-  if (!open_slot(m_device,
+  const bool new_slot = frame.slot.pool == VK_NULL_HANDLE;
+  if (!open_slot(*this, m_device,
                  m_queue_families[nx::cast<usize>(QueueType::Graphics)],
                  m_bindless.set, m_pipeline_layout, frame))
     return AcquireResult::SurfaceLost;
+  if (new_slot) {
+    set_object_name(vk_handle_value(frame.slot.pool),
+                    VK_OBJECT_TYPE_COMMAND_POOL,
+                    nx::format("frame {} command pool", m_frame_index));
+    set_object_name(vk_handle_value(frame.slot.cmd),
+                    VK_OBJECT_TYPE_COMMAND_BUFFER,
+                    nx::format("frame {} command buffer", m_frame_index));
+  }
 
   const VkCommandBuffer cmd = frame.slot.cmd;
 
@@ -429,7 +465,8 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
 }
 
 bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
-  if (m_device == VK_NULL_HANDLE || m_frame_active)
+  if (m_device == VK_NULL_HANDLE || m_frame_active ||
+      device_status() == GpuDeviceStatus::Lost)
     return false;
 
   if (m_frames.empty())
@@ -442,20 +479,33 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
     wait.semaphoreCount = 1;
     wait.pSemaphores = &m_timeline;
     wait.pValues = &frame.timeline_value;
-    if (NX_VK_CHECK(vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
+    if (NX_VK_DEVICE_CHECK(*this,
+                           vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
         VK_SUCCESS)
       return false;
   }
 
   u64 completed = 0;
-  NX_VK_CHECK(vkGetSemaphoreCounterValueKHR(m_device, m_timeline, &completed));
+  if (NX_VK_DEVICE_CHECK(*this, vkGetSemaphoreCounterValueKHR(
+                                    m_device, m_timeline, &completed)) !=
+      VK_SUCCESS)
+    return false;
   collect_garbage(completed);
   m_uploader.reclaim();
 
-  if (!open_slot(m_device,
+  const bool new_slot = frame.slot.pool == VK_NULL_HANDLE;
+  if (!open_slot(*this, m_device,
                  m_queue_families[nx::cast<usize>(QueueType::Graphics)],
                  m_bindless.set, m_pipeline_layout, frame))
     return false;
+  if (new_slot) {
+    set_object_name(vk_handle_value(frame.slot.pool),
+                    VK_OBJECT_TYPE_COMMAND_POOL,
+                    nx::format("frame {} command pool", m_frame_index));
+    set_object_name(vk_handle_value(frame.slot.cmd),
+                    VK_OBJECT_TYPE_COMMAND_BUFFER,
+                    nx::format("frame {} command buffer", m_frame_index));
+  }
 
   const VkCommandBuffer cmd = frame.slot.cmd;
   m_uploader.pump();
@@ -471,15 +521,19 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
 }
 
 bool VulkanDevice::end_headless_frame() {
-  if (!m_frame_active || !m_headless_frame)
+  if (!m_frame_active || !m_headless_frame ||
+      device_status() == GpuDeviceStatus::Lost)
     return false;
   m_frame_active = false;
   m_headless_frame = false;
 
   FrameContext &frame = m_frames[m_frame_index];
-  NX_VK_CHECK(vkEndCommandBuffer(frame.slot.cmd));
+  if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame.slot.cmd)) !=
+      VK_SUCCESS)
+    return false;
 
   ++m_timeline_value;
+  m_report_frame.store(m_timeline_value, std::memory_order_release);
   frame.timeline_value = m_timeline_value;
 
   // No acquire semaphore to wait on and no release semaphore to signal - there
@@ -511,15 +565,18 @@ bool VulkanDevice::end_headless_frame() {
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal_info;
 
-  if (NX_VK_CHECK(vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
-                                 1, &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
+  if (NX_VK_DEVICE_CHECK(
+          *this,
+          vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
+                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
     return false;
 
   VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
   wait.pValues = &m_timeline_value;
-  if (NX_VK_CHECK(vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) != VK_SUCCESS)
+  if (NX_VK_DEVICE_CHECK(*this, vkWaitSemaphoresKHR(m_device, &wait,
+                                                    UINT64_MAX)) != VK_SUCCESS)
     return false;
 
   m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
@@ -527,6 +584,8 @@ bool VulkanDevice::end_headless_frame() {
 }
 
 bool VulkanDevice::end_frame() {
+  if (device_status() == GpuDeviceStatus::Lost)
+    return false;
   if (!m_frame_active)
     return true;
   // Crossing the two kinds of frame would wait on an acquire semaphore nothing
@@ -568,9 +627,12 @@ bool VulkanDevice::end_frame() {
     }
   }
 
-  NX_VK_CHECK(vkEndCommandBuffer(frame.slot.cmd));
+  if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame.slot.cmd)) !=
+      VK_SUCCESS)
+    return false;
 
   ++m_timeline_value;
+  m_report_frame.store(m_timeline_value, std::memory_order_release);
   frame.timeline_value = m_timeline_value;
 
   // Wait on the swapchain acquire, and - when the transfer queue uploaded
@@ -609,8 +671,11 @@ bool VulkanDevice::end_frame() {
   submit.signalSemaphoreInfoCount = 2;
   submit.pSignalSemaphoreInfos = signal_infos;
 
-  NX_VK_CHECK(vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
-                             &submit, VK_NULL_HANDLE));
+  if (NX_VK_DEVICE_CHECK(
+          *this,
+          vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
+                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
+    return false;
 
   VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   present.waitSemaphoreCount = 1;
@@ -633,10 +698,10 @@ bool VulkanDevice::end_frame() {
   if (presented == VK_SUBOPTIMAL_KHR)
     return !surface_resized(m_physical_device, m_surface, m_swapchain_extent);
   if (presented != VK_SUCCESS) {
-    NX_VK_CHECK(presented);
+    NX_VK_DEVICE_CHECK(*this, presented);
     return false;
   }
   return true;
 }
 
-}
+} // namespace nxe::rhi

@@ -233,6 +233,8 @@ struct MetalUploadState {
 struct MetalDeviceState {
   id<MTLDevice> device = nil;
   id<MTLCommandQueue> queue = nil;
+  id gpu_crash_observer = nil;
+  bool gpu_crash_detailed = false;
 
   // Swapchain. The layer is owned by the window's view once attached; we keep a
   // strong reference so a resize can still reach it.
