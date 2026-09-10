@@ -11,7 +11,7 @@ namespace nxe::rhi {
 namespace {
 
 /// AppKit is main-thread-only. The desktop frame loop already runs there
-/// (GLFW requires it), so this is normally a straight call.
+/// (the desktop platform requires it), so this is normally a straight call.
 void on_main_thread(void (^block)(void)) {
   if ([NSThread isMainThread]) {
     block();
