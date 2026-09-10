@@ -804,7 +804,7 @@ bool VideoDecoder::decode(const u8 *const frame, const u32 size,
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = barrier_count;
     dep.pImageMemoryBarriers = barriers;
-    vkCmdPipelineBarrier2(m_cmd, &dep);
+    vkCmdPipelineBarrier2KHR(m_cmd, &dep);
   }
 
   VkVideoBeginCodingInfoKHR begin{
@@ -927,29 +927,22 @@ bool VideoDecoder::present(const u32 slot) {
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(m_cmd, &dep);
+    vkCmdPipelineBarrier2KHR(m_cmd, &dep);
   };
 
   barrier(src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
   barrier(m_sampleable, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-  VkImageCopy2 regions[2];
-  regions[0] = VkImageCopy2{VK_STRUCTURE_TYPE_IMAGE_COPY_2};
+  VkImageCopy regions[2]{};
   regions[0].srcSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
   regions[0].dstSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1};
   regions[0].extent = {m_extent.width, m_extent.height, 1};
-  regions[1] = VkImageCopy2{VK_STRUCTURE_TYPE_IMAGE_COPY_2};
   regions[1].srcSubresource = {VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1};
   regions[1].dstSubresource = {VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1};
   regions[1].extent = {m_extent.width / 2, m_extent.height / 2, 1};
-  VkCopyImageInfo2 copy{VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2};
-  copy.srcImage = src.image;
-  copy.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  copy.dstImage = m_sampleable.image;
-  copy.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  copy.regionCount = 2;
-  copy.pRegions = regions;
-  vkCmdCopyImage2(m_cmd, &copy);
+  vkCmdCopyImage(m_cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 m_sampleable.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2,
+                 regions);
 
   barrier(src, restore);
   barrier(m_sampleable, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1062,7 +1055,7 @@ bool VideoDecoder::show_last() {
     VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     d.imageMemoryBarrierCount = 1;
     d.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(m_gfx_cmd, &d);
+    vkCmdPipelineBarrier2KHR(m_gfx_cmd, &d);
   };
 
   barrier(m_sampleable.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1074,18 +1067,13 @@ bool VideoDecoder::show_last() {
 
   const auto copy_plane = [&](const VkImageAspectFlagBits src_aspect,
                               const VkImage dst, const u32 w, const u32 h) {
-    VkImageCopy2 region{VK_STRUCTURE_TYPE_IMAGE_COPY_2};
+    VkImageCopy region{};
     region.srcSubresource = {nx::cast<VkImageAspectFlags>(src_aspect), 0, 0, 1};
     region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.extent = {w, h, 1};
-    VkCopyImageInfo2 info{VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2};
-    info.srcImage = m_sampleable.image;
-    info.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    info.dstImage = dst;
-    info.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    info.regionCount = 1;
-    info.pRegions = &region;
-    vkCmdCopyImage2(m_gfx_cmd, &info);
+    vkCmdCopyImage(m_gfx_cmd, m_sampleable.image,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
   };
   copy_plane(VK_IMAGE_ASPECT_PLANE_0_BIT, y->image, m_extent.width,
              m_extent.height);

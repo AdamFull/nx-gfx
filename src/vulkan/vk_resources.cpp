@@ -182,17 +182,19 @@ MemoryRequirements
 VulkanDevice::texture_requirements(const TextureDesc &desc) const {
   const VkImageCreateInfo info = to_image_create_info(desc);
 
-  VkDeviceImageMemoryRequirements query{
-      VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS};
-  query.pCreateInfo = &info;
+  VkImage image = VK_NULL_HANDLE;
+  if (NX_VK_CHECK(vkCreateImage(m_device, &info, nullptr, &image)) !=
+      VK_SUCCESS)
+    return {};
 
-  VkMemoryRequirements2 result{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
-  vkGetDeviceImageMemoryRequirements(m_device, &query, &result);
+  VkMemoryRequirements result{};
+  vkGetImageMemoryRequirements(m_device, image, &result);
+  vkDestroyImage(m_device, image, nullptr);
 
   return MemoryRequirements{
-      .size = result.memoryRequirements.size,
-      .alignment = result.memoryRequirements.alignment,
-      .memory_type_bits = result.memoryRequirements.memoryTypeBits,
+      .size = result.size,
+      .alignment = result.alignment,
+      .memory_type_bits = result.memoryTypeBits,
   };
 }
 

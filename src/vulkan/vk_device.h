@@ -284,7 +284,8 @@ public:
 
   [[nodiscard]] static DeviceRoutes
   probe_routes(VkPhysicalDevice candidate,
-               const VkPhysicalDeviceProperties &props);
+               const VkPhysicalDeviceProperties &props,
+               u32 instance_api_version);
 
   VulkanDevice(const VulkanDevice &) = delete;
   VulkanDevice &operator=(const VulkanDevice &) = delete;
@@ -479,7 +480,7 @@ private:
   bool select_physical_device();
   bool create_logical_device();
   [[nodiscard]] u32 find_video_decode_family() const;
-  void route_promoted_entry_points() const noexcept;
+  [[nodiscard]] bool route_promoted_entry_points() noexcept;
   bool create_allocator();
   bool create_bindless_heap();
   bool create_pipeline_cache(nx::string_view path);
@@ -501,6 +502,7 @@ private:
   void free_rw_slot(u32 slot) noexcept;
 
   VkInstance m_instance = VK_NULL_HANDLE;
+  u32 m_instance_api_version = VK_API_VERSION_1_0;
   VkDebugUtilsMessengerEXT m_messenger = VK_NULL_HANDLE;
   VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
   DeviceRoutes m_routes;

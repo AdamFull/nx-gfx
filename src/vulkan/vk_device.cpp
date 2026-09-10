@@ -65,12 +65,15 @@ listed(const nx::small_vector<VkExtensionProperties, 128> &all,
 
 } // namespace
 
-DeviceRoutes
-VulkanDevice::probe_routes(VkPhysicalDevice candidate,
-                           const VkPhysicalDeviceProperties &props) {
+DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
+                                        const VkPhysicalDeviceProperties &props,
+                                        const u32 instance_api_version) {
   DeviceRoutes out;
-  out.core_12 = props.apiVersion >= VK_API_VERSION_1_2;
-  out.core_13 = props.apiVersion >= VK_API_VERSION_1_3;
+  const u32 core_version = props.apiVersion < instance_api_version
+                               ? props.apiVersion
+                               : instance_api_version;
+  out.core_12 = core_version >= VK_API_VERSION_1_2;
+  out.core_13 = core_version >= VK_API_VERSION_1_3;
 
   u32 count = 0;
   vkEnumerateDeviceExtensionProperties(candidate, nullptr, &count, nullptr);
@@ -266,6 +269,7 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
              VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
     return false;
   }
+  m_instance_api_version = available_version;
 
   const nx::string app_name(desc.application_name);
 
@@ -416,7 +420,8 @@ bool VulkanDevice::select_physical_device() {
       continue;
     }
 
-    const DeviceRoutes routes = probe_routes(candidate, props.properties);
+    const DeviceRoutes routes =
+        probe_routes(candidate, props.properties, m_instance_api_version);
     if (!routes.missing.empty()) {
       nx::string missing;
       for (const nx::string_view feature : routes.missing) {
@@ -494,7 +499,9 @@ bool VulkanDevice::select_physical_device() {
 
   m_device_name = props.properties.deviceName;
   m_caps.device_name = m_device_name;
-  m_caps.api_version = props.properties.apiVersion;
+  m_caps.api_version = props.properties.apiVersion < m_instance_api_version
+                           ? props.properties.apiVersion
+                           : m_instance_api_version;
   m_caps.driver_version = props.properties.driverVersion;
   m_caps.vendor_id = props.properties.vendorID;
   m_caps.discrete =
@@ -772,7 +779,8 @@ bool VulkanDevice::create_logical_device() {
   }
 
   volkLoadDevice(m_device);
-  route_promoted_entry_points();
+  if (!route_promoted_entry_points())
+    return false;
 
   for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i)
     vkGetDeviceQueue(m_device, m_queue_families[i], 0, &m_queues[i]);
@@ -793,7 +801,7 @@ bool VulkanDevice::create_logical_device() {
   return true;
 }
 
-void VulkanDevice::route_promoted_entry_points() const noexcept {
+bool VulkanDevice::route_promoted_entry_points() noexcept {
   if (m_routes.core_12) {
     vkGetBufferDeviceAddressKHR =
         reinterpret_cast<PFN_vkGetBufferDeviceAddressKHR>(
@@ -815,6 +823,33 @@ void VulkanDevice::route_promoted_entry_points() const noexcept {
         reinterpret_cast<PFN_vkCmdWriteTimestamp2KHR>(vkCmdWriteTimestamp2);
     vkQueueSubmit2KHR = reinterpret_cast<PFN_vkQueueSubmit2KHR>(vkQueueSubmit2);
   }
+
+  nx::small_vector<nx::string_view, 8> missing;
+  const auto require = [&missing](const auto entry,
+                                  const nx::string_view name) {
+    if (entry == nullptr)
+      missing.push_back(name);
+  };
+  require(vkGetBufferDeviceAddressKHR, "vkGetBufferDeviceAddressKHR");
+  require(vkGetSemaphoreCounterValueKHR, "vkGetSemaphoreCounterValueKHR");
+  require(vkWaitSemaphoresKHR, "vkWaitSemaphoresKHR");
+  require(vkCmdBeginRenderingKHR, "vkCmdBeginRenderingKHR");
+  require(vkCmdEndRenderingKHR, "vkCmdEndRenderingKHR");
+  require(vkCmdPipelineBarrier2KHR, "vkCmdPipelineBarrier2KHR");
+  require(vkCmdWriteTimestamp2KHR, "vkCmdWriteTimestamp2KHR");
+  require(vkQueueSubmit2KHR, "vkQueueSubmit2KHR");
+  if (missing.empty())
+    return true;
+
+  m_init_error = "The Vulkan driver is missing required device commands: ";
+  for (usize i = 0; i < missing.size(); ++i) {
+    if (i != 0)
+      m_init_error.append(", ");
+    m_init_error.append(missing[i]);
+  }
+  m_init_error.push_back('.');
+  nx::logc(log_rhi, "{}", m_init_error);
+  return false;
 }
 
 bool VulkanDevice::create_allocator() {
@@ -1088,14 +1123,14 @@ void VulkanDevice::flush_uploads() noexcept {
   submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal;
-  NX_VK_CHECK(vkQueueSubmit2(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
-                             &submit, VK_NULL_HANDLE));
+  NX_VK_CHECK(vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
+                                1, &submit, VK_NULL_HANDLE));
 
   VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
   wait.pValues = &value;
-  NX_VK_CHECK(vkWaitSemaphores(m_device, &wait, UINT64_MAX));
+  NX_VK_CHECK(vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX));
 
   vkDestroyCommandPool(m_device, pool, nullptr);
   m_uploader.reclaim();
