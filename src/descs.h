@@ -258,6 +258,15 @@ struct DeviceCaps {
 
   bool descriptor_indexing = false;
   bool buffer_device_address = false;
+
+  /// True on every backend in practice, for different reasons: Vulkan
+  /// requires all three at physical-device selection (device creation fails
+  /// otherwise, so this is a fact, not a probe), and Metal has never had a
+  /// render-pass-object or pipeline-barrier API to opt into in the first
+  /// place - its baseline behaviour already is what these name. Present for
+  /// diagnostics and ModuleCapability completeness; no code branches on
+  /// these being false because on a successfully-initialized device they
+  /// never are.
   bool dynamic_rendering = false;
   bool synchronization2 = false;
   bool timeline_semaphores = false;

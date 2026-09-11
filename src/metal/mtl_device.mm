@@ -180,6 +180,9 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     m_caps.synchronization2 = true;
     m_caps.timeline_semaphores = true;
 
+    // Unlike the three above, this isn't backed by an architectural argument
+    // the way Vulkan's queue-family probe is - whether compute genuinely
+    // overlaps render on a given GPU's scheduler is unverified here.
     m_caps.async_compute = true;
     m_caps.dedicated_transfer = false;
     m_caps.draw_indirect_count = metal3;
