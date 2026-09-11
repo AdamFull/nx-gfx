@@ -244,7 +244,9 @@ VkCommandBuffer VulkanUploader::begin_cmd() {
 
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cmd, &begin);
+  if (NX_VK_DEVICE_CHECK(*m_device, vkBeginCommandBuffer(cmd, &begin)) !=
+      VK_SUCCESS)
+    return VK_NULL_HANDLE;
   return cmd;
 }
 
@@ -281,7 +283,7 @@ void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value) {
 void VulkanUploader::flush_locked() {
   if (!m_batch_open)
     return;
-  vkEndCommandBuffer(m_batch_cmd);
+  NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(m_batch_cmd));
   m_value = m_batch_value;
   submit_signal(m_batch_cmd, m_batch_value);
   m_markers.push_back({m_ring_head, m_batch_value, m_graphics_hold});
@@ -1041,7 +1043,7 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   dep.pMemoryBarriers = &host;
   vkCmdPipelineBarrier2KHR(cmd, &dep);
 
-  vkEndCommandBuffer(cmd);
+  NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(cmd));
   const u64 value = ++m_value;
   submit_signal(cmd, value);
   chunk->value = value;
@@ -1126,7 +1128,7 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   host_dep.pMemoryBarriers = &host;
   vkCmdPipelineBarrier2KHR(cmd, &host_dep);
 
-  vkEndCommandBuffer(cmd);
+  NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(cmd));
   const u64 value = ++m_value;
   submit_signal(cmd, value);
   chunk->value = value;

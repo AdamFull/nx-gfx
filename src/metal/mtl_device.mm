@@ -325,7 +325,7 @@ void MetalDevice::flush_uploads() noexcept {
   if (m_state == nullptr || m_state->frame_active)
     return;
   m_uploader.pump();
-  m_uploader.flush();
+  m_uploader.flush_batch();
 }
 
 AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {

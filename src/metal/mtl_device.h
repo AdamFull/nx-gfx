@@ -104,6 +104,10 @@ public:
   [[nodiscard]] bool is_complete(UploadTicket ticket) const noexcept;
   void wait(UploadTicket ticket) noexcept;
   void flush() noexcept;
+  /// Submits any open batch without waiting for it, matching
+  /// VulkanUploader::flush_batch() - a caller that needs completion still
+  /// calls wait() on the ticket.
+  void flush_batch() noexcept;
 
   [[nodiscard]] UploaderStats stats() const noexcept;
 

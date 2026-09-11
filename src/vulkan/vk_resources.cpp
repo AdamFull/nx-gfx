@@ -180,6 +180,13 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
     write_texture_descriptor(nx::cast<u32>(handle.index()), stored.srv);
   for (const VkImageView uav : stored.uavs) {
     const u32 slot = alloc_rw_slot();
+    if (slot == BINDLESS_INVALID_INDEX) {
+      nx::loge(log_rhi, "'{}': out of rw-texture slots, destroying",
+               desc.name);
+      destroy_texture_now(stored);
+      m_textures.erase(handle);
+      return {};
+    }
     stored.uav_indices.push_back(slot);
     write_rw_texture_descriptor(slot, uav);
   }
@@ -320,6 +327,13 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
     write_texture_descriptor(nx::cast<u32>(handle.index()), stored.srv);
   for (const VkImageView uav : stored.uavs) {
     const u32 slot = alloc_rw_slot();
+    if (slot == BINDLESS_INVALID_INDEX) {
+      nx::loge(log_rhi, "'{}': out of rw-texture slots, destroying",
+               desc.name);
+      destroy_texture_now(stored);
+      m_textures.erase(handle);
+      return {};
+    }
     stored.uav_indices.push_back(slot);
     write_rw_texture_descriptor(slot, uav);
   }

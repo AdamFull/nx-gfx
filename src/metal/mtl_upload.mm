@@ -776,4 +776,13 @@ void MetalUploader::flush() noexcept {
   wait_for_value(*m_state, value);
 }
 
+void MetalUploader::flush_batch() noexcept {
+  if (m_state == nullptr)
+    return;
+
+  MetalUploadState &up = m_state->upload;
+  if (up.blit != nil)
+    (void)submit_batch(*m_state);
+}
+
 }
