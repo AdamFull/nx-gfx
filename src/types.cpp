@@ -154,7 +154,12 @@ constexpr UsageName BUFFER_USAGE_NAMES[] = {
 } // namespace
 
 nx::string_view to_string(const Format format) noexcept {
-  return info_of(format).name;
+  // Not info_of(format).name: that clamps an out-of-range value to index 0
+  // (Format::Unknown) for its numeric-field callers, which would make a
+  // genuinely invalid value indistinguishable from the real Unknown format
+  // here - the one caller that actually wants to tell those apart.
+  const auto i = nx::cast<usize>(format);
+  return i < nx::cast<usize>(Format::Count) ? FORMAT_TABLE[i].name : "Invalid";
 }
 
 bool format_is_float(const Format format) noexcept {

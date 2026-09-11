@@ -1330,6 +1330,8 @@ void MetalCommandContext::push_debug_group(const nx::string_view name,
   if (m_state == nullptr)
     return;
 
+  // pushDebugGroup: takes a label only - Metal has no per-group colour, unlike
+  // Vulkan's debug-utils labels. Kept as parameters so callers stay portable.
   (void)r;
   (void)g;
   (void)b;

@@ -10,8 +10,6 @@
 namespace nxe::rhi {
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 constexpr usize MAX_FAULTS = 64;
 
 nx::string_view address_type_name(const VkDeviceFaultAddressTypeKHR type) {
@@ -173,13 +171,13 @@ VkBool32 VulkanGpuCrashReporter::debug_message(
   if (message == nullptr)
     return VK_FALSE;
   if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-    nx::loge(log_rhi, "{}", message);
+    nx::loge(nx::log::rhi, "{}", message);
     if (m_break_on_validation_error)
       nx::dbg_break();
   } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-    nx::logw(log_rhi, "{}", message);
+    nx::logw(nx::log::rhi, "{}", message);
   } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {
-    nx::logd(log_rhi, "{}", message);
+    nx::logd(nx::log::rhi, "{}", message);
   }
   return VK_FALSE;
 }
@@ -240,7 +238,7 @@ VkResult VulkanGpuCrashReporter::check(const VkResult result,
       try {
         report_device_lost(call, file, line, frame);
       } catch (...) {
-        nx::loge(log_rhi, "GPU crash diagnostics could not be collected");
+        nx::loge(nx::log::rhi, "GPU crash diagnostics could not be collected");
       }
     }
   }
@@ -267,7 +265,7 @@ void VulkanGpuCrashReporter::report_device_lost(const char *const call,
   }
   append_objects_and_bindings(report);
   if (!report_gpu_crash(report))
-    nx::loge(log_rhi, "GPU crash report could not be persisted");
+    nx::loge(nx::log::rhi, "GPU crash report could not be persisted");
 }
 
 void VulkanGpuCrashReporter::collect_khr(GpuCrashReport &out) {

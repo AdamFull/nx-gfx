@@ -127,9 +127,9 @@ struct BindlessHeap {
   u64 heap_bytes = 0;
 };
 
-/// Everything one recording thread owns while a frame is open. One per
-/// CommandContext, not per device: the graph hands contexts to several worker
-/// threads at once, so encoder and bound state must not be shared.
+/// Everything one recording thread owns while a frame is open. Sized for one
+/// context today (see MetalDeviceState::MAX_CONTEXTS) - not per-device state,
+/// so encoder and bound state stay clear of whichever thread records.
 struct MetalContextSlot {
   id<MTLCommandBuffer> cmd = nil;
   id<MTLRenderCommandEncoder> encoder = nil;
@@ -256,7 +256,7 @@ struct MetalDeviceState {
   bool frame_active = false;
   bool headless_frame = false;
 
-  static constexpr usize MAX_CONTEXTS = 8;
+  static constexpr usize MAX_CONTEXTS = 1;
   nx::vector<MetalContextSlot> contexts;
   usize used_contexts = 0;
 

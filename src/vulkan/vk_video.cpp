@@ -138,8 +138,6 @@ VideoDecodeCaps query_video_decode_caps(const VulkanDevice &device,
 
 namespace {
 
-const nx::log::Category log_video = nx::log::category("rhi");
-
 [[nodiscard]] bool align_up(const u32 value, const u32 to, u32 &out) noexcept {
   const u64 alignment = nx::max<u64>(to, 1);
   const u64 aligned =
@@ -405,7 +403,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
   if (const VkResult r =
           vkGetPhysicalDeviceVideoCapabilitiesKHR(phys, &profile, &caps);
       r != VK_SUCCESS) {
-    nx::logw(log_video, "video: capabilities query failed ({})",
+    nx::logw(nx::log::rhi, "video: capabilities query failed ({})",
              nx::cast<i32>(r));
     m_device = nullptr;
     return false;
@@ -419,7 +417,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
       caps.minCodedExtent.height > caps.maxCodedExtent.height ||
       caps.maxDpbSlots < MIN_VP9_DPB_SLOTS ||
       caps.maxActiveReferencePictures < 3) {
-    nx::logw(log_video, "video: unusable decode capabilities");
+    nx::logw(nx::log::rhi, "video: unusable decode capabilities");
     m_device = nullptr;
     return false;
   }
@@ -430,7 +428,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
       !align_up(height, caps.pictureAccessGranularity.height, aligned_height) ||
       aligned_width > caps.maxCodedExtent.width ||
       aligned_height > caps.maxCodedExtent.height) {
-    nx::logw(log_video, "video: requested decode extent {}x{} is unsupported",
+    nx::logw(nx::log::rhi, "video: requested decode extent {}x{} is unsupported",
              width, height);
     m_device = nullptr;
     return false;
@@ -458,7 +456,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
   }
   if (m_dpb_format == VK_FORMAT_UNDEFINED ||
       m_picture_format == VK_FORMAT_UNDEFINED) {
-    nx::logw(log_video, "video: no decode image format for the profile");
+    nx::logw(nx::log::rhi, "video: no decode image format for the profile");
     m_device = nullptr;
     return false;
   }
@@ -485,7 +483,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
   if (const VkResult r = NX_VK_DEVICE_CHECK(
           device, vkCreateVideoSessionKHR(dev, &create, nullptr, &m_session));
       r != VK_SUCCESS) {
-    nx::logw(log_video, "video: vkCreateVideoSessionKHR failed ({})",
+    nx::logw(nx::log::rhi, "video: vkCreateVideoSessionKHR failed ({})",
              nx::cast<i32>(r));
     m_session = VK_NULL_HANDLE;
     m_device = nullptr;
@@ -515,7 +513,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     const VkMemoryRequirements &mr = requirements[i].memoryRequirements;
     const u32 type = session_memory_type(phys, mr.memoryTypeBits);
     if (type == ~0u) {
-      nx::logw(log_video, "video: no memory type for the session");
+      nx::logw(nx::log::rhi, "video: no memory type for the session");
       shutdown();
       return false;
     }
@@ -526,7 +524,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     if (const VkResult r = NX_VK_DEVICE_CHECK(
             device, vkAllocateMemory(dev, &allocate, nullptr, &memory));
         r != VK_SUCCESS) {
-      nx::logw(log_video, "video: session memory alloc failed ({})",
+      nx::logw(nx::log::rhi, "video: session memory alloc failed ({})",
                nx::cast<i32>(r));
       shutdown();
       return false;
@@ -543,7 +541,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
           device, vkBindVideoSessionMemoryKHR(dev, m_session, requirement_count,
                                               binds.data()));
       r != VK_SUCCESS) {
-    nx::logw(log_video, "video: bind session memory failed ({})",
+    nx::logw(nx::log::rhi, "video: bind session memory failed ({})",
              nx::cast<i32>(r));
     shutdown();
     return false;
@@ -560,7 +558,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
   for (VideoImage &slot : m_dpb) {
     if (!create_video_image(device, phys, profiles, m_dpb_format, m_extent,
                             dpb_usage, families, 2, slot)) {
-      nx::logw(log_video, "video: dpb image allocation failed");
+      nx::logw(nx::log::rhi, "video: dpb image allocation failed");
       shutdown();
       return false;
     }
@@ -570,7 +568,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
                           VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR |
                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                           families, 2, m_output)) {
-    nx::logw(log_video, "video: output image allocation failed");
+    nx::logw(nx::log::rhi, "video: output image allocation failed");
     shutdown();
     return false;
   }
@@ -582,7 +580,7 @@ bool VideoDecoder::init(VulkanDevice &device, const VideoCodec codec,
     return false;
   }
 
-  nx::logd(log_video, "video: decode session {}x{}, {} dpb slots",
+  nx::logd(nx::log::rhi, "video: decode session {}x{}, {} dpb slots",
            m_extent.width, m_extent.height, m_max_dpb_slots);
   return true;
 }

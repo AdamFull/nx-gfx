@@ -8,8 +8,6 @@
 namespace nxe::rhi {
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 /// Slang names the same concept differently per target: a push block is
 /// "pushConstantBuffer" for SPIR-V but "constantBuffer" for Metal.
 [[nodiscard]] ReflectKind to_kind(const nx::string_view kind,
@@ -25,7 +23,7 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
     return ReflectKind::StorageTexture;
   if (kind == "samplerState")
     return ReflectKind::Sampler;
-  nx::logw(log_rhi,
+  nx::logw(nx::log::rhi,
            "shader reflection: parameter '{}' has unrecognized kind '{}'; "
            "treating it as a storage buffer",
            name, kind);
@@ -60,7 +58,7 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
 
   auto doc = nx::json::parse(text);
   if (!doc) {
-    nx::loge(log_rhi, "shader reflection: {}", doc.error().message());
+    nx::loge(nx::log::rhi, "shader reflection: {}", doc.error().message());
     return false;
   }
   const nx::json::value &root = doc.value();

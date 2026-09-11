@@ -8,8 +8,6 @@
 namespace nxe::rhi {
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 inline constexpr u64 CAPACITY_FLOOR = 4096;
 
 }
@@ -31,7 +29,7 @@ bool GrowableBuffer::ensure(Device &device, const u64 bytes, BufferDesc desc) {
   desc.size = m_capacity;
   m_handle = device.create_buffer(desc);
   if (!m_handle.valid()) {
-    nx::loge(log_rhi, "could not allocate '{}' ({} bytes)", desc.name,
+    nx::loge(nx::log::rhi, "could not allocate '{}' ({} bytes)", desc.name,
              m_capacity);
     m_capacity = 0;
     return false;

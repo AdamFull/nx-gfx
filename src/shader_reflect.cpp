@@ -5,11 +5,6 @@
 #include <cstring>
 
 namespace nxe::rhi {
-namespace {
-
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
-}
 
 const ReflectMember *
 ReflectBlock::member(const nx::id_string field) const noexcept {
@@ -66,12 +61,12 @@ bool BlockWriter::set(const nx::id_string field, const void *data,
 
   const ReflectMember *member = m_block->member(field);
   if (member == nullptr) {
-    nx::loge(log_rhi, "block '{}' has no field '{}'", m_block->name.view(),
+    nx::loge(nx::log::rhi, "block '{}' has no field '{}'", m_block->name.view(),
              field.view());
     return false;
   }
   if (size != member->size) {
-    nx::loge(log_rhi, "'{}.{}': writing {} bytes into a {}-byte field",
+    nx::loge(nx::log::rhi, "'{}.{}': writing {} bytes into a {}-byte field",
              m_block->name.view(), field.view(), size, member->size);
     return false;
   }
@@ -88,7 +83,7 @@ bool BlockWriter::set_all(const void *data, const u32 size) noexcept {
   if (m_block == nullptr || data == nullptr)
     return false;
   if (size != m_data.size()) {
-    nx::loge(log_rhi, "block '{}' is {} bytes, not {}", m_block->name.view(),
+    nx::loge(nx::log::rhi, "block '{}' is {} bytes, not {}", m_block->name.view(),
              m_data.size(), size);
     return false;
   }

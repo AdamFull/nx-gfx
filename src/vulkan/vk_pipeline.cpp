@@ -90,8 +90,6 @@ private:
 
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 VkPrimitiveTopology to_vk_topology(const PrimitiveTopology topology) noexcept {
   switch (topology) {
   case PrimitiveTopology::TriangleList:
@@ -200,7 +198,7 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
       if (initial.size() >= 16 + VK_UUID_SIZE) {
         const u8 *uuid = initial.data() + 16;
         if (std::memcmp(uuid, props.pipelineCacheUUID, VK_UUID_SIZE) != 0) {
-          nx::logd(log_rhi, "pipeline cache is for another device, ignoring");
+          nx::logd(nx::log::rhi, "pipeline cache is for another device, ignoring");
           initial = {};
         }
       }
@@ -215,7 +213,7 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
                   VK_OBJECT_TYPE_PIPELINE_CACHE, "pipeline cache");
 
   if (initial.size())
-    nx::logd(log_rhi, "pipeline cache: loaded {} bytes", initial.size());
+    nx::logd(nx::log::rhi, "pipeline cache: loaded {} bytes", initial.size());
   return true;
 }
 
@@ -242,15 +240,15 @@ void VulkanDevice::save_pipeline_cache() noexcept {
   const auto written =
       nx::fs::file_write(m_pipeline_cache_path, {data.data(), size});
   if (written)
-    nx::logd(log_rhi, "pipeline cache: saved {} bytes", size);
+    nx::logd(nx::log::rhi, "pipeline cache: saved {} bytes", size);
   else
-    nx::logw(log_rhi, "pipeline cache: could not write {}",
+    nx::logw(nx::log::rhi, "pipeline cache: could not write {}",
              m_pipeline_cache_path);
 }
 
 ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   if (desc.code == nullptr || desc.code_size == 0 || desc.code_size % 4 != 0) {
-    nx::loge(log_rhi, "create_shader('{}'): invalid SPIR-V blob", desc.name);
+    nx::loge(nx::log::rhi, "create_shader('{}'): invalid SPIR-V blob", desc.name);
     return {};
   }
 
@@ -261,7 +259,7 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
 
   if (!desc.reflection_json.empty() &&
       !reflect_from_json(desc.reflection_json, shader.reflection))
-    nx::logw(log_rhi, "create_shader('{}'): reflection sidecar unusable",
+    nx::logw(nx::log::rhi, "create_shader('{}'): reflection sidecar unusable",
              desc.name);
 
   for (const ReflectComputeEntry &e : shader.reflection.compute_entries) {
@@ -333,7 +331,7 @@ bool VulkanDevice::prepare_graphics_pipeline(
     VulkanGraphicsPipelineCompileJob &out) const {
   const VulkanShader *vs = m_shaders.try_get(desc.vertex.shader);
   if (vs == nullptr) {
-    nx::loge(log_rhi, "create_graphics_pipeline('{}'): missing vertex shader",
+    nx::loge(nx::log::rhi, "create_graphics_pipeline('{}'): missing vertex shader",
              desc.name);
     return {};
   }
@@ -469,7 +467,7 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
           *this, vkCreateGraphicsPipelines(m_device, m_pipeline_cache, 1, &info,
                                            nullptr, &compiled.m_pipeline)) !=
       VK_SUCCESS) {
-    nx::loge(log_rhi, "create_graphics_pipeline('{}') failed", job.name);
+    nx::loge(nx::log::rhi, "create_graphics_pipeline('{}') failed", job.name);
     return {};
   }
   return compiled;
@@ -516,7 +514,7 @@ bool VulkanDevice::prepare_compute_pipeline(
     VulkanComputePipelineCompileJob &out) const {
   const VulkanShader *cs = m_shaders.try_get(desc.compute.shader);
   if (cs == nullptr) {
-    nx::loge(log_rhi, "create_compute_pipeline('{}'): missing shader",
+    nx::loge(nx::log::rhi, "create_compute_pipeline('{}'): missing shader",
              desc.name);
     return false;
   }
@@ -532,7 +530,7 @@ bool VulkanDevice::prepare_compute_pipeline(
         (desc.group_size[0] != declared.local_size[0] ||
          desc.group_size[1] != declared.local_size[1] ||
          desc.group_size[2] != declared.local_size[2])) {
-      nx::logw(log_rhi,
+      nx::logw(nx::log::rhi,
                "create_compute_pipeline('{}'): group_size {}x{}x{} does not "
                "match the shader's [numthreads({}, {}, {})]. Vulkan ignores "
                "the field, but Metal dispatches with it and will be wrong",
@@ -573,7 +571,7 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
           *this, vkCreateComputePipelines(m_device, m_pipeline_cache, 1, &info,
                                           nullptr, &compiled.m_pipeline)) !=
       VK_SUCCESS) {
-    nx::loge(log_rhi, "create_compute_pipeline('{}') failed", job.name);
+    nx::loge(nx::log::rhi, "create_compute_pipeline('{}') failed", job.name);
     return {};
   }
   return compiled;
@@ -635,7 +633,7 @@ void VulkanCommandContext::bind_index_buffer(const BufferHandle handle,
     return;
   const VulkanBuffer *buffer = m_device->buffer(handle);
   if (buffer == nullptr || buffer->buffer == VK_NULL_HANDLE) {
-    nx::loge(log_rhi, "bind_index_buffer: handle is not live");
+    nx::loge(nx::log::rhi, "bind_index_buffer: handle is not live");
     return;
   }
   vkCmdBindIndexBuffer(m_cmd, buffer->buffer, offset,
@@ -647,6 +645,8 @@ void VulkanCommandContext::draw(const u32 vertex_count,
                                 const u32 instance_count,
                                 const u32 first_vertex,
                                 const u32 first_instance) {
+  if (m_device == nullptr)
+    return;
   vkCmdDraw(m_cmd, vertex_count, instance_count, first_vertex, first_instance);
 }
 
@@ -655,18 +655,24 @@ void VulkanCommandContext::draw_indexed(const u32 index_count,
                                         const u32 first_index,
                                         const i32 vertex_offset,
                                         const u32 first_instance) {
+  if (m_device == nullptr)
+    return;
   vkCmdDrawIndexed(m_cmd, index_count, instance_count, first_index,
                    vertex_offset, first_instance);
 }
 
 void VulkanCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
                                     const u32 groups_z) {
+  if (m_device == nullptr)
+    return;
   vkCmdDispatch(m_cmd, groups_x, groups_y, groups_z);
 }
 
 void VulkanCommandContext::draw_indirect(const BufferHandle buffer,
                                          const u64 offset, const u32 draw_count,
                                          const u32 stride) {
+  if (m_device == nullptr)
+    return;
   const VulkanBuffer *buf = m_device->buffer(buffer);
   if (buf == nullptr)
     return;
@@ -679,6 +685,8 @@ void VulkanCommandContext::draw_indexed_indirect(const BufferHandle buffer,
                                                  const u64 offset,
                                                  const u32 draw_count,
                                                  const u32 stride) {
+  if (m_device == nullptr)
+    return;
   const VulkanBuffer *buf = m_device->buffer(buffer);
   if (buf == nullptr)
     return;
@@ -689,6 +697,8 @@ void VulkanCommandContext::draw_indexed_indirect(const BufferHandle buffer,
 
 void VulkanCommandContext::dispatch_indirect(const BufferHandle buffer,
                                              const u64 offset) {
+  if (m_device == nullptr)
+    return;
   const VulkanBuffer *buf = m_device->buffer(buffer);
   if (buf == nullptr)
     return;
@@ -697,7 +707,7 @@ void VulkanCommandContext::dispatch_indirect(const BufferHandle buffer,
 
 void VulkanCommandContext::begin_compute_pass(const nx::string_view name) {
   if (m_in_render_pass) {
-    nx::loge(log_rhi, "begin_compute_pass('{}') inside a render pass", name);
+    nx::loge(nx::log::rhi, "begin_compute_pass('{}') inside a render pass", name);
     return;
   }
   push_debug_group(name);

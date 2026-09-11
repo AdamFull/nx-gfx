@@ -5,8 +5,6 @@
 namespace nxe::rhi {
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 // Indexed by Format, so it must stay in the enum's order. The static_assert in
 // types.cpp guards the name table; this one guards the mapping.
 constexpr VkFormat VK_FORMATS[] = {
@@ -143,7 +141,7 @@ VkResult vk_report(const VkResult result, const char *call, const char *file,
       result == VK_NOT_READY || result == VK_TIMEOUT)
     return result;
 
-  nx::loge(log_rhi, "{} failed: {} ({}:{})", call, vk_result_string(result),
+  nx::loge(nx::log::rhi, "{} failed: {} ({}:{})", call, vk_result_string(result),
            file, line);
   return result;
 }

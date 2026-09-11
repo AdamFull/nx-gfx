@@ -7,8 +7,6 @@
 namespace nxe::rhi {
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 [[nodiscard]] bool open_slot(const VulkanDevice &owner, VkDevice device,
                              const u32 queue_family, VkDescriptorSet bindless,
                              VkPipelineLayout layout, FrameContext &frame) {
@@ -76,7 +74,7 @@ pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported) noexcept {
     if ((supported & nx::cast<VkCompositeAlphaFlagsKHR>(bit)) != 0)
       return bit;
   }
-  nx::logw(log_rhi,
+  nx::logw(nx::log::rhi,
            "surface reports no composite alpha mode; asking for opaque");
   return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 }
@@ -136,7 +134,7 @@ VkSurfaceKHR create_surface(VkInstance instance,
   }
 #endif
   default:
-    nx::logc(log_rhi, "unsupported native window kind for this Vulkan build");
+    nx::logc(nx::log::rhi, "unsupported native window kind for this Vulkan build");
     break;
   }
 
@@ -170,7 +168,7 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
       m_physical_device, m_queue_families[nx::cast<usize>(QueueType::Graphics)],
       m_surface, &present_supported));
   if (present_supported != VK_TRUE) {
-    nx::logc(log_rhi, "graphics queue cannot present to this surface");
+    nx::logc(nx::log::rhi, "graphics queue cannot present to this surface");
     return false;
   }
 
@@ -191,7 +189,7 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
     }
   }
   if (m_present_mode != wanted)
-    nx::logw(log_rhi, "present mode unsupported, falling back to FIFO");
+    nx::logw(nx::log::rhi, "present mode unsupported, falling back to FIFO");
 
   // Surface format: prefer the requested one, else the first sRGB-capable
   // 8-bit format, else whatever comes first.
@@ -199,7 +197,7 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
   NX_VK_TRY(vkGetPhysicalDeviceSurfaceFormatsKHR(m_physical_device, m_surface,
                                                  &format_count, nullptr));
   if (format_count == 0) {
-    nx::logc(log_rhi, "surface reports no formats");
+    nx::logc(nx::log::rhi, "surface reports no formats");
     return false;
   }
   nx::small_vector<VkSurfaceFormatKHR, 32> formats(format_count);
@@ -217,7 +215,7 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
   }
   m_swapchain_format = from_vk_format(chosen.format);
   if (m_swapchain_format == Format::Unknown) {
-    nx::logw(log_rhi, "surface format {} has no portable equivalent",
+    nx::logw(nx::log::rhi, "surface format {} has no portable equivalent",
              nx::cast<i32>(chosen.format));
   }
 
@@ -338,7 +336,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     m_release_semaphores.push_back(release);
   }
 
-  nx::logd(log_rhi, "swapchain: {}x{}, {} images, {}", extent.width,
+  nx::logd(nx::log::rhi, "swapchain: {}x{}, {} images, {}", extent.width,
            extent.height, actual_count, to_string(m_swapchain_format));
   return true;
 }
@@ -591,7 +589,7 @@ bool VulkanDevice::end_frame() {
   // Crossing the two kinds of frame would wait on an acquire semaphore nothing
   // ever signals, which hangs the GPU rather than failing.
   if (m_headless_frame) {
-    nx::loge(log_rhi, "end_frame on a headless frame; use end_headless_frame");
+    nx::loge(nx::log::rhi, "end_frame on a headless frame; use end_headless_frame");
     return false;
   }
   m_frame_active = false;

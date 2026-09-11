@@ -6,8 +6,6 @@
 namespace nxe::rhi {
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 VmaMemoryUsage to_vma_usage(const MemoryUsage usage) noexcept {
   switch (usage) {
   case MemoryUsage::Upload:
@@ -120,7 +118,7 @@ to_image_create_info(const TextureDesc &desc) noexcept {
 
 TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   if (desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
-    nx::loge(log_rhi, "create_texture('{}'): invalid format or extent",
+    nx::loge(nx::log::rhi, "create_texture('{}'): invalid format or extent",
              desc.name);
     return {};
   }
@@ -137,7 +135,7 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   if (NX_VK_DEVICE_CHECK(
           *this, vmaCreateImage(m_allocator, &info, &alloc_info, &texture.image,
                                 &texture.allocation, nullptr)) != VK_SUCCESS) {
-    nx::loge(log_rhi, "create_texture('{}'): allocation failed", desc.name);
+    nx::loge(nx::log::rhi, "create_texture('{}'): allocation failed", desc.name);
     return {};
   }
   {
@@ -181,7 +179,7 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   for (const VkImageView uav : stored.uavs) {
     const u32 slot = alloc_rw_slot();
     if (slot == BINDLESS_INVALID_INDEX) {
-      nx::loge(log_rhi, "'{}': out of rw-texture slots, destroying",
+      nx::loge(nx::log::rhi, "'{}': out of rw-texture slots, destroying",
                desc.name);
       destroy_texture_now(stored);
       m_textures.erase(handle);
@@ -216,7 +214,7 @@ VulkanDevice::texture_requirements(const TextureDesc &desc) const {
 
 HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
   if (desc.size == 0) {
-    nx::loge(log_rhi, "create_heap('{}'): zero size", desc.name);
+    nx::loge(nx::log::rhi, "create_heap('{}'): zero size", desc.name);
     return {};
   }
 
@@ -247,7 +245,7 @@ HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
   if (NX_VK_DEVICE_CHECK(*this, vmaAllocateMemory(m_allocator, &requirements,
                                                   &alloc_info, &heap.allocation,
                                                   nullptr)) != VK_SUCCESS) {
-    nx::loge(log_rhi, "create_heap('{}'): {} KiB allocation failed", desc.name,
+    nx::loge(nx::log::rhi, "create_heap('{}'): {} KiB allocation failed", desc.name,
              desc.size / 1024);
     return {};
   }
@@ -275,7 +273,7 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
   const VulkanHeap *heap = m_heaps.try_get(heap_handle);
   if (heap == nullptr || desc.format == Format::Unknown || desc.width == 0 ||
       desc.height == 0) {
-    nx::loge(log_rhi, "create_texture_in_heap('{}'): invalid heap or extent",
+    nx::loge(nx::log::rhi, "create_texture_in_heap('{}'): invalid heap or extent",
              desc.name);
     return {};
   }
@@ -286,7 +284,7 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
   if (NX_VK_DEVICE_CHECK(*this, vmaCreateAliasingImage2(
                                     m_allocator, heap->allocation, offset,
                                     &info, &texture.image)) != VK_SUCCESS) {
-    nx::loge(log_rhi,
+    nx::loge(nx::log::rhi,
              "create_texture_in_heap('{}'): binding at offset {} failed",
              desc.name, offset);
     return {};
@@ -328,7 +326,7 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
   for (const VkImageView uav : stored.uavs) {
     const u32 slot = alloc_rw_slot();
     if (slot == BINDLESS_INVALID_INDEX) {
-      nx::loge(log_rhi, "'{}': out of rw-texture slots, destroying",
+      nx::loge(nx::log::rhi, "'{}': out of rw-texture slots, destroying",
                desc.name);
       destroy_texture_now(stored);
       m_textures.erase(handle);
@@ -452,7 +450,7 @@ void VulkanDevice::set_texture_state(const TextureHandle handle,
 
 BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
   if (desc.size == 0) {
-    nx::loge(log_rhi, "create_buffer('{}'): zero size", desc.name);
+    nx::loge(nx::log::rhi, "create_buffer('{}'): zero size", desc.name);
     return {};
   }
 
@@ -471,7 +469,7 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
                          vmaCreateBuffer(m_allocator, &info, &alloc_info,
                                          &buffer.buffer, &buffer.allocation,
                                          &allocation_info)) != VK_SUCCESS) {
-    nx::loge(log_rhi, "create_buffer('{}'): allocation failed ({} bytes)",
+    nx::loge(nx::log::rhi, "create_buffer('{}'): allocation failed ({} bytes)",
              desc.name, desc.size);
     return {};
   }
@@ -532,7 +530,7 @@ SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
   if (NX_VK_DEVICE_CHECK(
           *this, vkCreateSampler(m_device, &info, nullptr, &sampler.sampler)) !=
       VK_SUCCESS) {
-    nx::loge(log_rhi, "create_sampler('{}') failed", desc.name);
+    nx::loge(nx::log::rhi, "create_sampler('{}') failed", desc.name);
     return {};
   }
 
@@ -901,7 +899,7 @@ void VulkanCommandContext::reset_queries(const QueryPoolHandle pool,
   if (queries == nullptr)
     return;
   if (m_in_render_pass) {
-    nx::loge(log_rhi, "reset_queries inside a render pass");
+    nx::loge(nx::log::rhi, "reset_queries inside a render pass");
     return;
   }
   vkCmdResetQueryPool(m_cmd, queries->pool, first,

@@ -1,12 +1,12 @@
 #include "core/rendering/rhi/image/basis_texture.h"
 
+#include "core/foundation/threading/sync.h"
 #include "core/rendering/rhi/image/ktx2.h"
 
 #include <transcoder/basisu_transcoder.h>
 
 #include <cstring>
 #include <limits>
-#include <mutex>
 
 namespace nxe::rhi {
 namespace {
@@ -14,8 +14,8 @@ namespace {
 using BasisFormat = basist::transcoder_texture_format;
 
 void initialize_transcoder() noexcept {
-  static std::once_flag once;
-  std::call_once(once, [] { basist::basisu_transcoder_init(); });
+  static nx::once_flag once;
+  nx::call_once(once, [] { basist::basisu_transcoder_init(); });
 }
 
 [[nodiscard]] bool target_format(const Format format,

@@ -6,8 +6,6 @@
 namespace nxe::rhi {
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 u32 clamp_count(const u32 desired, const u32 device_limit) noexcept {
   if (device_limit == 0)
     return desired;
@@ -101,7 +99,7 @@ bool VulkanDevice::create_bindless_heap() {
   set_object_name(vk_handle_value(m_pipeline_layout),
                   VK_OBJECT_TYPE_PIPELINE_LAYOUT, "bindless pipeline layout");
 
-  nx::logd(log_rhi, "bindless heap: {} samplers, {} textures, {} rw-textures",
+  nx::logd(nx::log::rhi, "bindless heap: {} samplers, {} textures, {} rw-textures",
            m_bindless.max_samplers, m_bindless.max_textures,
            m_bindless.max_rw_textures);
   return true;
@@ -110,7 +108,7 @@ bool VulkanDevice::create_bindless_heap() {
 void VulkanDevice::write_texture_descriptor(const u32 index,
                                             const VkImageView view) noexcept {
   if (index >= m_bindless.max_textures) {
-    nx::loge(log_rhi, "texture slot {} exceeds bindless capacity {}", index,
+    nx::loge(nx::log::rhi, "texture slot {} exceeds bindless capacity {}", index,
              m_bindless.max_textures);
     return;
   }
@@ -149,7 +147,7 @@ void VulkanDevice::write_rw_texture_descriptor(
 void VulkanDevice::write_sampler_descriptor(const u32 index,
                                             const VkSampler sampler) noexcept {
   if (index >= m_bindless.max_samplers) {
-    nx::loge(log_rhi, "sampler slot {} exceeds bindless capacity {}", index,
+    nx::loge(nx::log::rhi, "sampler slot {} exceeds bindless capacity {}", index,
              m_bindless.max_samplers);
     return;
   }
@@ -173,7 +171,7 @@ u32 VulkanDevice::alloc_rw_slot() noexcept {
     return slot;
   }
   if (m_bindless.rw_high_water >= m_bindless.max_rw_textures) {
-    nx::loge(log_rhi, "out of rw-texture slots ({} used)",
+    nx::loge(nx::log::rhi, "out of rw-texture slots ({} used)",
              m_bindless.max_rw_textures);
     return BINDLESS_INVALID_INDEX;
   }

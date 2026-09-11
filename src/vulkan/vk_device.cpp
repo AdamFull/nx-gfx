@@ -9,9 +9,19 @@
 namespace nxe::rhi {
 namespace {
 
-const nx::log::Category log_rhi = nx::log::category("rhi");
-
 constexpr u32 REQUIRED_API_VERSION = VK_API_VERSION_1_1;
+
+/// Links a pNext feature-struct chain one block at a time. Holds `tail` by
+/// reference rather than by value: create_logical_device reads the caller's
+/// own `tail` variable after the last chain() call to remember where the
+/// video feature block was spliced in, for the retry-without-video path.
+struct PNextChainer {
+  void **&tail;
+  template <typename T> void operator()(T &block) const noexcept {
+    *tail = &block;
+    tail = const_cast<void **>(&block.pNext);
+  }
+};
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -124,10 +134,7 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   VkPhysicalDeviceFeatures2 features{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
   void **tail = &features.pNext;
-  const auto chain = [&tail](auto &block) {
-    *tail = &block;
-    tail = const_cast<void **>(&block.pNext);
-  };
+  const PNextChainer chain{tail};
 
   VkPhysicalDeviceVulkan12Features features12{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
@@ -301,7 +308,7 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
                    VK_API_VERSION_MINOR(available_version),
                    VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
                    VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
-    nx::logc(log_rhi, "Vulkan {}.{} found, but {}.{} is required",
+    nx::logc(nx::log::rhi, "Vulkan {}.{} found, but {}.{} is required",
              VK_API_VERSION_MAJOR(available_version),
              VK_API_VERSION_MINOR(available_version),
              VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
@@ -349,13 +356,13 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
     for (const auto &layer : available_layers) {
       if (std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
         layers.push_back(layer.layerName);
-        nx::logi(log_rhi, "validation layer enabled: {}", layer.layerName);
+        nx::logi(nx::log::rhi, "validation layer enabled: {}", layer.layerName);
         found = true;
         break;
       }
     }
     if (!found) {
-      nx::logw(log_rhi,
+      nx::logw(nx::log::rhi,
                "validation requested but VK_LAYER_KHRONOS_validation is not "
                "installed; continuing without it");
     }
@@ -399,7 +406,7 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   if (m_sync_validation) {
     validation_features.pNext = info.pNext;
     info.pNext = &validation_features;
-    nx::logi(log_rhi, "synchronization validation enabled");
+    nx::logi(nx::log::rhi, "synchronization validation enabled");
   }
 
   NX_VK_TRY(vkCreateInstance(&info, nullptr, &m_instance));
@@ -429,7 +436,7 @@ bool VulkanDevice::rebuild_debug_messenger(
   if (result == VK_SUCCESS)
     return true;
 
-  nx::logw(log_rhi, "could not create the {} debug messenger: {}",
+  nx::logw(nx::log::rhi, "could not create the {} debug messenger: {}",
            address_bindings ? "address-binding" : "Vulkan",
            vk_result_string(result));
   if (!address_bindings)
@@ -448,7 +455,7 @@ bool VulkanDevice::select_physical_device() {
   if (count == 0) {
     m_init_report.failure = DeviceInitFailure::Unsupported;
     m_init_error = "No Vulkan graphics device was found.";
-    nx::logc(log_rhi, "no Vulkan physical devices found");
+    nx::logc(nx::log::rhi, "no Vulkan physical devices found");
     return false;
   }
 
@@ -476,7 +483,7 @@ bool VulkanDevice::select_physical_device() {
           VK_API_VERSION_MAJOR(version), VK_API_VERSION_MINOR(version),
           VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
           VK_API_VERSION_MINOR(REQUIRED_API_VERSION)));
-      nx::logd(log_rhi, "skipping {}", rejected.back());
+      nx::logd(nx::log::rhi, "skipping {}", rejected.back());
       continue;
     }
 
@@ -494,7 +501,7 @@ bool VulkanDevice::select_physical_device() {
                      nx::string_view(props.properties.deviceName),
                      VK_API_VERSION_MAJOR(version),
                      VK_API_VERSION_MINOR(version), missing));
-      nx::logd(log_rhi, "skipping {}", rejected.back());
+      nx::logd(nx::log::rhi, "skipping {}", rejected.back());
       continue;
     }
 
@@ -528,7 +535,7 @@ bool VulkanDevice::select_physical_device() {
       m_init_error.append(why);
       m_init_error.append("\n");
     }
-    nx::logc(log_rhi,
+    nx::logc(nx::log::rhi,
              "no usable Vulkan device. The floor is {}.{} with dynamic "
              "rendering, synchronization2, timeline semaphores, buffer device "
              "address, descriptor indexing and scalar block layout - by core "
@@ -536,7 +543,7 @@ bool VulkanDevice::select_physical_device() {
              VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
              VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
     for (const nx::string &why : rejected)
-      nx::loge(log_rhi, "  {}", why);
+      nx::loge(nx::log::rhi, "  {}", why);
     return false;
   }
 
@@ -611,13 +618,13 @@ bool VulkanDevice::select_physical_device() {
     }
   }
 
-  nx::logi(log_rhi, "device: {} ({}, Vulkan {}.{}.{}, {} MiB local)",
+  nx::logi(nx::log::rhi, "device: {} ({}, Vulkan {}.{}.{}, {} MiB local)",
            m_caps.device_name, m_caps.discrete ? "discrete" : "integrated",
            VK_API_VERSION_MAJOR(m_caps.api_version),
            VK_API_VERSION_MINOR(m_caps.api_version),
            VK_API_VERSION_PATCH(m_caps.api_version),
            m_caps.device_local_memory / (1024 * 1024));
-  nx::logd(log_rhi, "features: {}",
+  nx::logd(nx::log::rhi, "features: {}",
            m_routes.core_13   ? "core 1.3"
            : m_routes.core_12 ? "core 1.2, dynamic rendering and "
                                 "synchronization2 by extension"
@@ -649,7 +656,7 @@ bool VulkanDevice::create_logical_device() {
   }
 
   if (graphics == INVALID_FAMILY) {
-    nx::logc(log_rhi, "no graphics queue family");
+    nx::logc(nx::log::rhi, "no graphics queue family");
     return false;
   }
 
@@ -684,10 +691,7 @@ bool VulkanDevice::create_logical_device() {
   VkPhysicalDeviceFeatures2 features{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
   void **tail = &features.pNext;
-  const auto chain = [&tail](auto &block) {
-    *tail = &block;
-    tail = const_cast<void **>(&block.pNext);
-  };
+  const PNextChainer chain{tail};
 
   // Core at the floor, so it needs no road of its own. Slang emits the
   // DrawParameters capability for SV_VertexID / SV_InstanceID.
@@ -852,7 +856,7 @@ bool VulkanDevice::create_logical_device() {
   VkResult created =
       vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
   if (created != VK_SUCCESS && video_enabled) {
-    nx::logw(log_rhi,
+    nx::logw(nx::log::rhi,
              "driver rejected the video-decode setup; the device comes "
              "up without hardware decode");
     device_extensions.resize(base_extensions);
@@ -867,7 +871,7 @@ bool VulkanDevice::create_logical_device() {
     created = vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
   }
   if (created != VK_SUCCESS) {
-    nx::logc(log_rhi, "vkCreateDevice failed: {}", nx::cast<i32>(created));
+    nx::logc(nx::log::rhi, "vkCreateDevice failed: {}", nx::cast<i32>(created));
     return false;
   }
 
@@ -883,7 +887,7 @@ bool VulkanDevice::create_logical_device() {
                      m_gpu_crash.detailed() &&
                          m_routes.device_fault_vendor_binary,
                      address_tracking);
-  nx::logd(log_rhi, "GPU crash diagnostics: fault={} address-bindings={}",
+  nx::logd(nx::log::rhi, "GPU crash diagnostics: fault={} address-bindings={}",
            m_routes.device_fault == VulkanFaultRoute::Khr   ? "KHR"
            : m_routes.device_fault == VulkanFaultRoute::Ext ? "EXT"
                                                             : "basic",
@@ -896,13 +900,13 @@ bool VulkanDevice::create_logical_device() {
     m_video_decode.available = true;
     m_video_decode.family = video_family;
     vkGetDeviceQueue(m_device, video_family, 0, &m_video_decode.queue);
-    nx::logd(log_rhi, "video: hardware VP9 decode on queue family {}",
+    nx::logd(nx::log::rhi, "video: hardware VP9 decode on queue family {}",
              video_family);
   }
 
   m_caps.draw_indirect_count = m_routes.draw_indirect_count;
 
-  nx::logd(log_rhi, "queues: graphics={} compute={}{} copy={}{}", graphics,
+  nx::logd(nx::log::rhi, "queues: graphics={} compute={}{} copy={}{}", graphics,
            compute, m_caps.async_compute ? " (async)" : " (aliased)", copy,
            m_caps.dedicated_transfer ? " (dedicated)" : " (aliased)");
   return true;
@@ -955,7 +959,7 @@ bool VulkanDevice::route_promoted_entry_points() noexcept {
     m_init_error.append(missing[i]);
   }
   m_init_error.push_back('.');
-  nx::logc(log_rhi, "{}", m_init_error);
+  nx::logc(nx::log::rhi, "{}", m_init_error);
   return false;
 }
 
@@ -966,8 +970,6 @@ bool VulkanDevice::create_allocator() {
   functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
   functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
 
-  // TODO: Extend initialization here with vendor dependent extensions and other
-  // useful ones
   VmaAllocatorCreateInfo info{};
   info.physicalDevice = m_physical_device;
   info.device = m_device;
@@ -1004,8 +1006,6 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
   return true;
 }
 
-// Lifetime
-
 bool VulkanDevice::init(const DeviceDesc &desc) {
   m_init_error.clear();
   m_init_report = {.failure = DeviceInitFailure::Failed};
@@ -1020,7 +1020,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
       m_init_error = nx::format(
           "Graphics driver '{}' does not export vkGetInstanceProcAddr.",
           desc.native_driver.identity);
-      nx::logc(log_rhi, "graphics driver '{}' has no vkGetInstanceProcAddr",
+      nx::logc(nx::log::rhi, "graphics driver '{}' has no vkGetInstanceProcAddr",
                desc.native_driver.identity);
       return false;
     }
@@ -1030,11 +1030,11 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
           "Graphics driver '{}' does not expose the required Vulkan loader "
           "entry points.",
           desc.native_driver.identity);
-      nx::logc(log_rhi, "graphics driver '{}' has an incomplete Vulkan loader",
+      nx::logc(nx::log::rhi, "graphics driver '{}' has an incomplete Vulkan loader",
                desc.native_driver.identity);
       return false;
     }
-    nx::logi(log_rhi, "using graphics driver '{}'",
+    nx::logi(nx::log::rhi, "using graphics driver '{}'",
              desc.native_driver.identity);
   } else {
     if (const VkResult result = volkInitialize(); result != VK_SUCCESS) {
@@ -1043,7 +1043,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
           "No Vulkan loader was found ({}). Install a graphics driver with "
           "Vulkan support.",
           vk_result_string(result));
-      nx::logc(log_rhi,
+      nx::logc(nx::log::rhi,
                "no Vulkan loader found ({}). Install a GPU driver with Vulkan "
                "support.",
                vk_result_string(result));
