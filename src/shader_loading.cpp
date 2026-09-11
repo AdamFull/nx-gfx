@@ -1,11 +1,14 @@
 #include "core/rendering/rhi/shader_loading.h"
 
+#include "core/foundation/diagnostics/log.h"
 #include "core/foundation/serialization/asset_policy.h"
 #include "core/foundation/strings/format.h"
 #include "core/rendering/rhi/descs.h"
 
 namespace nxe::rhi {
 namespace {
+
+const nx::log::Category log_rhi = nx::log::category("rhi");
 
 constexpr u64 MAX_SHADER_BYTES = 64u * 1024u * 1024u;
 
@@ -61,12 +64,19 @@ acquire_shader_source(nx::vfs::AsyncIoContext &context,
 
   const nx::string sidecar = nx::format("/shaders/{}.refl.json", name);
   const nx::vfs::FileInfo sidecar_info = context.stat(sidecar.view());
-  if (sidecar_info.exists && !sidecar_info.is_directory &&
-      sidecar_info.size <= MAX_SHADER_BYTES) {
+  if (readable(sidecar_info)) {
     auto reflection = context.read(sidecar.view(), MAX_SHADER_BYTES);
     if (reflection)
       out.reflection = std::move(reflection.value());
   }
+  // The build always emits binary and sidecar together (one slangc
+  // invocation, one custom-command rule), so a missing or unreadable sidecar
+  // here means a stale/hand-edited shader directory, not a legitimate case -
+  // material parameter binding for this shader silently has nothing to work
+  // with otherwise.
+  if (out.reflection.empty())
+    nx::logw(log_rhi, "shader '{}': no reflection sidecar at '{}'", name,
+             sidecar);
 
   out.code = std::move(code.value());
   out.selected_file = binary;

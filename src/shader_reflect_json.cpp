@@ -25,6 +25,10 @@ const nx::log::Category log_rhi = nx::log::category("rhi");
     return ReflectKind::StorageTexture;
   if (kind == "samplerState")
     return ReflectKind::Sampler;
+  nx::logw(log_rhi,
+           "shader reflection: parameter '{}' has unrecognized kind '{}'; "
+           "treating it as a storage buffer",
+           name, kind);
   return ReflectKind::StorageBuffer;
 }
 
