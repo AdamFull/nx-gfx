@@ -226,7 +226,10 @@ void MetalDevice::destroy_swapchain() noexcept {
     s->layer = nil;
   }
 
-  s->frame_semaphore = nil;
+  // frame_semaphore is device-scoped (created once in init(), sized by
+  // frames_in_flight) and outlives any number of swapchain destroy/recreate
+  // cycles; niling it here left begin_frame() waiting on a nil semaphore
+  // after the next create_swapchain(), which never recreated it.
   s->swapchain_format = Format::Unknown;
   s->extent = {};
 }
