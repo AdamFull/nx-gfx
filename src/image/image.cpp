@@ -1,10 +1,10 @@
-#include "core/rendering/rhi/image/image.h"
+#include "rendering/rhi/image/image.h"
 
-#include "core/rendering/rhi/image/basis_texture.h"
-#include "core/rendering/rhi/image/dds.h"
-#include "core/rendering/rhi/image/image_decode.h"
-#include "core/rendering/rhi/image/ktx.h"
-#include "core/rendering/rhi/image/ktx2.h"
+#include "rendering/rhi/image/basis_texture.h"
+#include "rendering/rhi/image/dds.h"
+#include "rendering/rhi/image/image_decode.h"
+#include "rendering/rhi/image/ktx.h"
+#include "rendering/rhi/image/ktx2.h"
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"

@@ -4,7 +4,7 @@
 // Slang reserves `core` for its built-in module, so the engine core is a
 // guarded source include rather than a module named after this file.
 
-#include "core/rendering/rhi/shaders/core_layout.h"
+#include "rendering/rhi/shaders/core_layout.h"
 
 public static const uint kInvalidIndex = 0xFFFFFFFF;
 

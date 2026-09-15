@@ -1,4 +1,4 @@
-#include "core/rendering/rhi/image/texture_import.h"
+#include "rendering/rhi/image/texture_import.h"
 
 #include "core/foundation/serialization/json.h"
 #include "core/foundation/strings/format.h"

@@ -1,7 +1,7 @@
 
-#include "core/rendering/rhi/vulkan/vk_upload.h"
+#include "rendering/rhi/vulkan/vk_upload.h"
 
-#include "core/rendering/rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_device.h"
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"

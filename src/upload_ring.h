@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/rendering/rhi/device.h"
+#include "rendering/rhi/device.h"
 
 #include "core/foundation/strings/utf8_string.h"
 

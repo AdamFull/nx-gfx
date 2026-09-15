@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/rendering/rhi/image/image.h"
+#include "rendering/rhi/image/image.h"
 
 #include <cstring>
 #include <limits>

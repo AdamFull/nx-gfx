@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/foundation/threading/cancellation.h"
-#include "core/rendering/rhi/image/image.h"
+#include "rendering/rhi/image/image.h"
 
 #include <span>
 

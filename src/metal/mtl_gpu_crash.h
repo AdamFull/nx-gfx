@@ -7,7 +7,7 @@
 #import <Metal/Metal.h>
 
 #include "core/foundation/strings/utf8_string.h"
-#include "core/rendering/rhi/gpu_crash.h"
+#include "rendering/rhi/gpu_crash.h"
 
 namespace nxe::rhi {
 

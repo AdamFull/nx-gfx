@@ -1,4 +1,4 @@
-#include "core/rendering/rhi/gpu_crash.h"
+#include "rendering/rhi/gpu_crash.h"
 
 #include "core/foundation/diagnostics/crash.h"
 #include "core/foundation/diagnostics/log.h"

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/foundation/threading/sync.h"
-#include "core/rendering/rhi/gpu_crash.h"
-#include "core/rendering/rhi/vulkan/vk_common.h"
+#include "rendering/rhi/gpu_crash.h"
+#include "rendering/rhi/vulkan/vk_common.h"
 
 #include <atomic>
 

@@ -1,4 +1,4 @@
-#include "core/rendering/rhi/types.h"
+#include "rendering/rhi/types.h"
 
 namespace nxe::rhi {
 namespace {

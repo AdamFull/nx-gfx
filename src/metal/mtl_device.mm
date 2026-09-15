@@ -1,6 +1,6 @@
 
-#include "core/rendering/rhi/metal/mtl_internal.h"
-#include "core/rendering/rhi/metal/mtl_gpu_crash.h"
+#include "rendering/rhi/metal/mtl_internal.h"
+#include "rendering/rhi/metal/mtl_gpu_crash.h"
 
 #include "core/foundation/strings/format.h"
 

@@ -2,7 +2,7 @@
 
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/threading/cancellation.h"
-#include "core/rendering/rhi/image/basis_texture.h"
+#include "rendering/rhi/image/basis_texture.h"
 
 #include <span>
 

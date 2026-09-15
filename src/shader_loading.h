@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/foundation/vfs/asset_pipeline.h"
-#include "core/rendering/rhi/shader_nva.h"
+#include "rendering/rhi/shader_nva.h"
 
 namespace nxe::rhi {
 

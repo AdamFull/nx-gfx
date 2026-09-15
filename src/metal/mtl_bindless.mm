@@ -1,5 +1,5 @@
 
-#include "core/rendering/rhi/metal/mtl_internal.h"
+#include "rendering/rhi/metal/mtl_internal.h"
 
 namespace nxe::rhi {
 namespace {

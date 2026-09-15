@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/foundation/core/foundation.h"
-#include "core/rendering/rhi/shaders/core_layout.h"
+#include "rendering/rhi/shaders/core_layout.h"
 
 namespace nxe::rhi {
 

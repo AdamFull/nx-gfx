@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/rendering/rhi/vulkan/vk_common.h"
+#include "rendering/rhi/vulkan/vk_common.h"
 
 namespace nxe::rhi {
 

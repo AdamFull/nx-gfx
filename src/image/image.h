@@ -5,8 +5,8 @@
 #include "core/foundation/core/result.h"
 #include "core/foundation/platform/filesystem.h"
 #include "core/foundation/strings/utf8_string_view.h"
-#include "core/rendering/rhi/descs.h"
-#include "core/rendering/rhi/types.h"
+#include "rendering/rhi/descs.h"
+#include "rendering/rhi/types.h"
 
 #include <span>
 

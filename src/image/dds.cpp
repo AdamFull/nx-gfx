@@ -1,6 +1,6 @@
-#include "core/rendering/rhi/image/dds.h"
+#include "rendering/rhi/image/dds.h"
 
-#include "core/rendering/rhi/image/image_decode.h"
+#include "rendering/rhi/image/image_decode.h"
 
 #include <cstring>
 #include <limits>

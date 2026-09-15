@@ -1,4 +1,4 @@
-#include "core/rendering/rhi/shader_nva.h"
+#include "rendering/rhi/shader_nva.h"
 
 #include "core/foundation/serialization/nva.h"
 

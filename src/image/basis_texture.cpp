@@ -1,7 +1,7 @@
-#include "core/rendering/rhi/image/basis_texture.h"
+#include "rendering/rhi/image/basis_texture.h"
 
 #include "core/foundation/threading/sync.h"
-#include "core/rendering/rhi/image/ktx2.h"
+#include "rendering/rhi/image/ktx2.h"
 
 #include <transcoder/basisu_transcoder.h>
 

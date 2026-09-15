@@ -1,4 +1,4 @@
-#include "core/rendering/rhi/image/texture_nva.h"
+#include "rendering/rhi/image/texture_nva.h"
 
 #include "core/foundation/serialization/nva.h"
 

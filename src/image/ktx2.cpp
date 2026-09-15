@@ -1,4 +1,4 @@
-#include "core/rendering/rhi/image/ktx2.h"
+#include "rendering/rhi/image/ktx2.h"
 
 #include <zstd.h>
 

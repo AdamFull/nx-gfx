@@ -1,4 +1,4 @@
-#include "core/rendering/rhi/vulkan/vk_gpu_crash.h"
+#include "rendering/rhi/vulkan/vk_gpu_crash.h"
 
 #include "core/foundation/diagnostics/crash.h"
 #include "core/foundation/diagnostics/diagnostic.h"

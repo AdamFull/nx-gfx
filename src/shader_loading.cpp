@@ -1,9 +1,9 @@
-#include "core/rendering/rhi/shader_loading.h"
+#include "rendering/rhi/shader_loading.h"
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/serialization/asset_policy.h"
 #include "core/foundation/strings/format.h"
-#include "core/rendering/rhi/descs.h"
+#include "rendering/rhi/descs.h"
 
 namespace nxe::rhi {
 namespace {

@@ -1,8 +1,8 @@
 
-#include "core/rendering/rhi/vulkan/vk_video.h"
-#include "core/rendering/rhi/vulkan/vk_common.h"
-#include "core/rendering/rhi/vulkan/vk_device.h"
-#include "core/rendering/rhi/vulkan/vk_vp9.h"
+#include "rendering/rhi/vulkan/vk_video.h"
+#include "rendering/rhi/vulkan/vk_common.h"
+#include "rendering/rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_vp9.h"
 
 #include "core/foundation/diagnostics/log.h"
 

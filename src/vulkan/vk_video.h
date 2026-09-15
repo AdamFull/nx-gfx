@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/foundation/containers/small_vector.h"
-#include "core/rendering/rhi/types.h"
-#include "core/rendering/rhi/vulkan/vk_common.h"
+#include "rendering/rhi/types.h"
+#include "rendering/rhi/vulkan/vk_common.h"
 
 namespace nxe::rhi {
 

@@ -6,11 +6,11 @@
 #include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
-#include "core/rendering/rhi/handles.h"
-#include "core/rendering/rhi/image/image.h"
-#include "core/rendering/rhi/types.h"
-#include "core/rendering/rhi/upload.h"
-#include "core/rendering/rhi/vulkan/vk_common.h"
+#include "rendering/rhi/handles.h"
+#include "rendering/rhi/image/image.h"
+#include "rendering/rhi/types.h"
+#include "rendering/rhi/upload.h"
+#include "rendering/rhi/vulkan/vk_common.h"
 
 #include <vk_mem_alloc.h>
 

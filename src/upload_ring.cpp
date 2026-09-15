@@ -1,4 +1,4 @@
-#include "core/rendering/rhi/upload_ring.h"
+#include "rendering/rhi/upload_ring.h"
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/strings/format.h"

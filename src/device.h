@@ -1,11 +1,11 @@
 #pragma once
 
-#include "core/rendering/rhi/descs.h"
-#include "core/rendering/rhi/handles.h"
-#include "core/rendering/rhi/types.h"
+#include "rendering/rhi/descs.h"
+#include "rendering/rhi/handles.h"
+#include "rendering/rhi/types.h"
 
 #if defined(NX_RHI_VULKAN)
-#include "core/rendering/rhi/vulkan/vk_device.h"
+#include "rendering/rhi/vulkan/vk_device.h"
 
 namespace nxe::rhi {
 using Device = VulkanDevice;
@@ -14,7 +14,7 @@ using Uploader = VulkanUploader;
 }
 
 #elif defined(NX_RHI_METAL)
-#include "core/rendering/rhi/metal/mtl_device.h"
+#include "rendering/rhi/metal/mtl_device.h"
 
 namespace nxe::rhi {
 using Device = MetalDevice;

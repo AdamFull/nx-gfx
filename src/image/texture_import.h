@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/foundation/strings/utf8_string.h"
-#include "core/rendering/rhi/types.h"
+#include "rendering/rhi/types.h"
 
 #include <optional>
 
