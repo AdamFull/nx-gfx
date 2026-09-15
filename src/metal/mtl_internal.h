@@ -10,6 +10,7 @@
 #include "core/foundation/containers/concurrent_queue.h"
 #include "core/foundation/containers/slot_map.h"
 #include "core/foundation/containers/small_vector.h"
+#include "core/foundation/containers/sync_slot_map.h"
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
@@ -269,7 +270,7 @@ struct MetalDeviceState {
   /// Pipeline compilation and archive mutation may run on worker threads.
   nx::mutex pipeline_archive_lock;
 
-  nx::slot_map<MetalTexture, TextureHandle> textures;
+  nx::sync_slot_map<MetalTexture, TextureHandle> textures;
   nx::slot_map<MetalBuffer, BufferHandle> buffers;
   nx::slot_map<MetalSampler, SamplerHandle> samplers;
   nx::slot_map<MetalHeap, HeapHandle> heaps;
