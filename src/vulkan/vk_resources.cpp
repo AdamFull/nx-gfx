@@ -3,6 +3,8 @@
 
 #include "core/foundation/diagnostics/log.h"
 
+#include <cstring>
+
 namespace nxe::rhi {
 namespace {
 
