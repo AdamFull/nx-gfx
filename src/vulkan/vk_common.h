@@ -6,6 +6,24 @@
 
 #include <volk.h>
 
+// On Linux, volk pulls in vulkan.h with VK_USE_PLATFORM_XLIB_KHR, which
+// drags in X11/Xlib.h - and X11 #defines several of these as raw macros
+// (None as 0L, etc.), silently rewriting every `SomeEnum::None` after this
+// point into `SomeEnum::0L` and similar nonsense. This is the first Vulkan
+// header nearly every RHI translation unit includes, so undefining them
+// once here keeps this whole subtree's own enumerators (TextureUsage::None,
+// BufferUsage::None, VulkanFaultRoute::None, ...) meaning what they say,
+// without every header that happens to declare one needing to know why.
+// Harmless if X11 was never pulled in (Windows, macOS): #undef on a name
+// that isn't a macro is a no-op, not an error.
+#undef None
+#undef Bool
+#undef True
+#undef False
+#undef Status
+#undef Complex
+#undef Success
+
 #include <type_traits>
 
 namespace nxe::rhi {
