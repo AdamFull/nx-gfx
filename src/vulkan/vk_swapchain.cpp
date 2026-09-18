@@ -108,7 +108,8 @@ VkSurfaceKHR create_surface(VkInstance instance,
     VkXlibSurfaceCreateInfoKHR info{
         VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
     info.dpy = nx::cast<Display *>(window.display);
-    info.window = nx::cast<::Window>(nx::cast<uintptr_t>(window.window));
+    info.window =
+        nx::cast<::Window>(reinterpret_cast<uintptr_t>(window.window));
     NX_VK_CHECK(vkCreateXlibSurfaceKHR(instance, &info, nullptr, &surface));
     break;
   }
