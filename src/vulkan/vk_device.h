@@ -17,9 +17,8 @@
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/vulkan/vk_common.h"
 #include "rendering/rhi/vulkan/vk_gpu_crash.h"
+#include "rendering/rhi/vulkan/vk_mem_alloc_include.h"
 #include "rendering/rhi/vulkan/vk_upload.h"
-
-#include <vk_mem_alloc.h>
 
 #include <span>
 

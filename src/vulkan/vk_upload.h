@@ -11,8 +11,7 @@
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/upload.h"
 #include "rendering/rhi/vulkan/vk_common.h"
-
-#include <vk_mem_alloc.h>
+#include "rendering/rhi/vulkan/vk_mem_alloc_include.h"
 
 #include <atomic>
 #include <span>

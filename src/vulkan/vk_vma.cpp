@@ -2,4 +2,4 @@
 #include <volk.h>
 
 #define VMA_IMPLEMENTATION
-#include <vk_mem_alloc.h>
+#include "rendering/rhi/vulkan/vk_mem_alloc_include.h"
