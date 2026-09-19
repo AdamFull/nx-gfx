@@ -48,12 +48,21 @@ public:
 
   /// Copies @p bytes of @p data into this frame's buffer for @p array and
   /// returns its device address, or 0 if it could not be grown or mapped.
-  [[nodiscard]] u64 write(u32 array, const void *data, u64 bytes);
+  /// @p reserve_bytes makes the buffer at least that big even when @p bytes is
+  /// less: for an array the GPU fills the rest of after the CPU has written its
+  /// share.
+  [[nodiscard]] u64 write(u32 array, const void *data, u64 bytes,
+                          u64 reserve_bytes = 0);
 
   /// A buffer of at least @p bytes whose contents are left alone. For an array
   /// the shader dereferences even on a frame that has nothing to put in it: a
   /// zero address would fault where an empty buffer just reads no elements.
   [[nodiscard]] u64 reserve(u32 array, u64 bytes);
+
+  /// This frame's buffer for @p array, for handing to something that tracks
+  /// buffers by handle (the render graph). Invalid until it has been written or
+  /// reserved this frame.
+  [[nodiscard]] BufferHandle buffer(u32 array) const noexcept;
 
   [[nodiscard]] bool valid() const noexcept { return m_device != nullptr; }
   [[nodiscard]] u32 frame_count() const noexcept { return m_frames; }

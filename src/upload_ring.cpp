@@ -103,9 +103,10 @@ GrowableBuffer *UploadRing::acquire(const u32 array, const u64 bytes) {
   return &buffer;
 }
 
-u64 UploadRing::write(const u32 array, const void *const data,
-                      const u64 bytes) {
-  GrowableBuffer *const buffer = acquire(array, bytes == 0 ? 1 : bytes);
+u64 UploadRing::write(const u32 array, const void *const data, const u64 bytes,
+                      const u64 reserve_bytes) {
+  const u64 needed = nx::max(bytes, reserve_bytes);
+  GrowableBuffer *const buffer = acquire(array, needed == 0 ? 1 : needed);
   if (buffer == nullptr)
     return 0;
 
@@ -117,6 +118,12 @@ u64 UploadRing::write(const u32 array, const void *const data,
     m_device->flush_buffer(buffer->handle(), 0, bytes);
   }
   return m_device->buffer_address(buffer->handle());
+}
+
+BufferHandle UploadRing::buffer(const u32 array) const noexcept {
+  if (m_device == nullptr || array >= m_arrays)
+    return {};
+  return m_buffers[nx::cast<usize>(m_frame) * m_arrays + array].handle();
 }
 
 u64 UploadRing::reserve(const u32 array, const u64 bytes) {
