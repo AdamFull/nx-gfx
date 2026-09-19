@@ -332,8 +332,9 @@ void MetalDevice::flush_uploads() noexcept {
 }
 
 AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
-  if (m_state == nullptr || m_state->layer == nil ||
-      device_status() == GpuDeviceStatus::Lost)
+  if (m_state == nullptr || device_status() == GpuDeviceStatus::Lost)
+    return AcquireResult::SurfaceLost;
+  if (m_state->layer == nil && !m_state->offscreen)
     return AcquireResult::SurfaceLost;
 
   MetalDeviceState *s = m_state;
@@ -353,10 +354,14 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
   uploader_pump(*s);
 
   @autoreleasepool {
-    s->drawable = [s->layer nextDrawable];
-    if (s->drawable == nil) {
-      dispatch_semaphore_signal(s->frame_semaphore);
-      return AcquireResult::OutOfDate;
+    // Offscreen: no layer to take a drawable from, and the backbuffer texture
+    // is already the one this frame draws into.
+    if (!s->offscreen) {
+      s->drawable = [s->layer nextDrawable];
+      if (s->drawable == nil) {
+        dispatch_semaphore_signal(s->frame_semaphore);
+        return AcquireResult::OutOfDate;
+      }
     }
 
     s->contexts.resize(MetalDeviceState::MAX_CONTEXTS);
@@ -381,8 +386,10 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
   }
 
   // Re-point the backbuffer handle at this frame's drawable. The handle is
-  // stable across frames; the MTLTexture behind it is not.
-  if (MetalTexture *backbuffer = s->textures.try_get(s->backbuffer)) {
+  // stable across frames; the MTLTexture behind it is not. Offscreen there is
+  // no drawable and the texture is the handle's own, so it is left alone.
+  if (MetalTexture *backbuffer =
+          s->offscreen ? nullptr : s->textures.try_get(s->backbuffer)) {
     backbuffer->texture = s->drawable.texture;
     backbuffer->width = s->extent.width;
     backbuffer->height = s->extent.height;
@@ -393,6 +400,9 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
   out_context.m_state = s;
   out_context.m_slot = 0;
   out_context.m_in_render_pass = false;
+
+  if (s->offscreen)
+    return AcquireResult::Success;
 
   const CGSize drawable_size = s->layer.drawableSize;
   if (nx::cast<u32>(drawable_size.width) != s->extent.width ||
@@ -456,7 +466,11 @@ bool MetalDevice::end_frame() {
   s->frame_active = false;
   ++s->frames_submitted;
 
-  if (MetalTexture *backbuffer = s->textures.try_get(s->backbuffer))
+  // The drawable's texture belongs to the layer and must not outlive the
+  // frame. An offscreen backbuffer is this device's own, and clearing it would
+  // leave the next frame with nothing to draw into.
+  if (MetalTexture *backbuffer =
+          s->offscreen ? nullptr : s->textures.try_get(s->backbuffer))
     backbuffer->texture = nil;
 
   return true;

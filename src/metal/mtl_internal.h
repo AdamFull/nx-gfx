@@ -256,6 +256,9 @@ struct MetalDeviceState {
 
   bool frame_active = false;
   bool headless_frame = false;
+  /// The backbuffer is a texture this device made rather than a layer's
+  /// drawable, so there is nothing to acquire and nothing to present.
+  bool offscreen = false;
 
   static constexpr usize MAX_CONTEXTS = 1;
   nx::vector<MetalContextSlot> contexts;

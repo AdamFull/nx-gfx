@@ -219,8 +219,18 @@ public:
   void flush_uploads() noexcept;
 
   [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
+  /// A swapchain with no layer behind it: a texture of its own that nothing
+  /// presents. Everything that reads swapchain_format(), swapchain_extent() or
+  /// current_backbuffer() sees a normal swapchain, so a renderer draws a whole
+  /// frame without a window. begin_frame()/end_frame() work as usual - the
+  /// drawable and the present are what they drop.
+  [[nodiscard]] bool create_offscreen_swapchain(u32 width, u32 height,
+                                                Format format);
   [[nodiscard]] bool resize_swapchain(u32 width, u32 height);
   void destroy_swapchain() noexcept;
+
+  /// Whether the current swapchain is one with no layer behind it.
+  [[nodiscard]] bool offscreen_swapchain() const noexcept;
 
   [[nodiscard]] bool supports(Format format, TextureUsageFlags usage) const;
 

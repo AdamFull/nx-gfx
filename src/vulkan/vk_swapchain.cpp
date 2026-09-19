@@ -223,6 +223,50 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
   return build_swapchain(desc.width, desc.height);
 }
 
+bool VulkanDevice::create_offscreen_swapchain(const u32 width, const u32 height,
+                                             const Format format) {
+  if (device_status() == GpuDeviceStatus::Lost || width == 0 || height == 0 ||
+      format == Format::Unknown)
+    return false;
+
+  if (m_swapchain != VK_NULL_HANDLE || !m_backbuffers.empty()) {
+    wait_idle();
+    if (device_status() == GpuDeviceStatus::Lost)
+      return false;
+    destroy_swapchain();
+  }
+
+  m_swapchain_format = format;
+  m_swapchain_extent = {width, height};
+  m_offscreen = true;
+
+  // One image per frame in flight, same as a surface swapchain gets, so a
+  // frame never writes the image the one before it is still reading.
+  // CopySrc because a frame capture reads the backbuffer back, and Sampled
+  // because a pass may sample what an earlier one wrote to it.
+  for (u32 i = 0; i < m_frames_in_flight; ++i) {
+    const nx::string name = nx::format("offscreen backbuffer {}", i);
+    const TextureHandle image = create_texture({
+        .name = name.view(),
+        .format = format,
+        .width = width,
+        .height = height,
+        .usage = TextureUsage::RenderTarget | TextureUsage::Sampled |
+                 TextureUsage::CopySrc,
+    });
+    if (!image.valid()) {
+      destroy_swapchain();
+      return false;
+    }
+    m_backbuffers.push_back(image);
+  }
+
+  m_image_index = 0;
+  nx::logd(nx::log::rhi, "offscreen swapchain: {}x{}, {} images, {}", width,
+           height, m_frames_in_flight, to_string(format));
+  return true;
+}
+
 bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
   VkSurfaceCapabilitiesKHR caps{};
   NX_VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device,
@@ -343,6 +387,8 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
 }
 
 bool VulkanDevice::resize_swapchain(const u32 width, const u32 height) {
+  if (m_offscreen)
+    return create_offscreen_swapchain(width, height, m_swapchain_format);
   if (m_surface == VK_NULL_HANDLE || device_status() == GpuDeviceStatus::Lost)
     return false;
   wait_idle();
@@ -371,6 +417,20 @@ void VulkanDevice::destroy_swapchain() noexcept {
   if (m_device == VK_NULL_HANDLE)
     return;
 
+  if (m_offscreen) {
+    // These images are this device's own, so they go back the way any texture
+    // does - destroy_backbuffer_views() would drop the views and leak the
+    // allocations behind them.
+    for (const TextureHandle handle : m_backbuffers)
+      destroy_texture(handle);
+    m_backbuffers.clear();
+    m_offscreen = false;
+    m_swapchain_extent = {0, 0};
+    m_swapchain_format = Format::Unknown;
+    m_image_index = 0;
+    return;
+  }
+
   destroy_backbuffer_views();
 
   if (m_swapchain != VK_NULL_HANDLE) {
@@ -387,7 +447,8 @@ void VulkanDevice::destroy_swapchain() noexcept {
 AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   NX_PROFILE_ZONE("vk::begin_frame");
   if (device_status() == GpuDeviceStatus::Lost ||
-      m_swapchain == VK_NULL_HANDLE || m_swapchain_extent.width == 0)
+      m_swapchain_extent.width == 0 ||
+      (m_swapchain == VK_NULL_HANDLE && !m_offscreen))
     return AcquireResult::SurfaceLost;
 
   FrameContext &frame = m_frames[m_frame_index];
@@ -413,7 +474,11 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   m_uploader.reclaim();
 
   VkResult acquired = VK_SUCCESS;
-  {
+  if (m_offscreen) {
+    // Nothing to acquire from, and so no acquire semaphore for end_frame to
+    // wait on: the image for this frame is the one that belongs to its slot.
+    m_image_index = m_frame_index;
+  } else {
     NX_PROFILE_ZONE_COLOR("vk::acquire", 0x604040);
     acquired = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
                                      frame.acquire_semaphore, VK_NULL_HANDLE,
@@ -525,7 +590,10 @@ bool VulkanDevice::end_headless_frame() {
     return false;
   m_frame_active = false;
   m_headless_frame = false;
+  return submit_without_present();
+}
 
+bool VulkanDevice::submit_without_present() {
   FrameContext &frame = m_frames[m_frame_index];
   if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame.slot.cmd)) !=
       VK_SUCCESS)
@@ -594,6 +662,12 @@ bool VulkanDevice::end_frame() {
     return false;
   }
   m_frame_active = false;
+
+  // No surface, so there is nothing to transition to PRESENT_SRC and nothing
+  // to present to: the frame is finished by submitting it. The image keeps
+  // whatever state the last pass left it in, which is what a reader wants.
+  if (m_offscreen)
+    return submit_without_present();
 
   FrameContext &frame = m_frames[m_frame_index];
   const VkCommandBuffer cmd = frame.slot.cmd;

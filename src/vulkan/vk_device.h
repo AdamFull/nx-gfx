@@ -269,8 +269,20 @@ public:
   void flush_uploads() noexcept;
 
   [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
+  /// A swapchain with no surface: images of its own that nothing presents.
+  /// Everything that reads swapchain_format(), swapchain_extent() or
+  /// current_backbuffer() sees a normal swapchain, so a renderer draws a whole
+  /// frame without a window behind it. begin_frame()/end_frame() work as usual
+  /// - the acquire and the present are what they drop.
+  [[nodiscard]] bool create_offscreen_swapchain(u32 width, u32 height,
+                                                Format format);
   [[nodiscard]] bool resize_swapchain(u32 width, u32 height);
   void destroy_swapchain() noexcept;
+
+  /// Whether the current swapchain is one with no surface behind it.
+  [[nodiscard]] bool offscreen_swapchain() const noexcept {
+    return m_offscreen;
+  }
 
   [[nodiscard]] bool supports(Format format, TextureUsageFlags usage) const;
 
@@ -287,6 +299,11 @@ public:
   [[nodiscard]] bool begin_headless_frame(VulkanCommandContext &out_context);
 
   [[nodiscard]] bool end_headless_frame();
+
+  /// Ends and submits the open frame with no present and no swapchain
+  /// semaphores, then waits for it. Shared by the headless frame and the
+  /// offscreen swapchain, which differ only in whether a backbuffer exists.
+  [[nodiscard]] bool submit_without_present();
 
   [[nodiscard]] TextureHandle current_backbuffer() const noexcept {
     return m_backbuffers.empty() ? TextureHandle{}
@@ -510,6 +527,9 @@ private:
   nx::small_vector<VkSemaphore, 4> m_release_semaphores;
   u32 m_image_index = 0;
   bool m_frame_active = false;
+  /// The backbuffers are images this device made rather than a surface's, so
+  /// they are destroyed as textures and neither acquired nor presented.
+  bool m_offscreen = false;
 
   nx::sync_slot_map<VulkanTexture, TextureHandle> m_textures;
   nx::slot_map<VulkanBuffer, BufferHandle> m_buffers;

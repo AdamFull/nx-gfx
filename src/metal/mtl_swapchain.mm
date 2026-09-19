@@ -152,10 +152,52 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
   return true;
 }
 
+bool MetalDevice::create_offscreen_swapchain(const u32 width, const u32 height,
+                                            const Format format) {
+  if (m_state == nullptr || device_status() == GpuDeviceStatus::Lost)
+    return false;
+  if (width == 0 || height == 0 || format == Format::Unknown)
+    return false;
+
+  destroy_swapchain();
+
+  MetalDeviceState *s = m_state;
+  // CopySrc because a frame capture reads the backbuffer back, and Sampled
+  // because a pass may sample what an earlier one wrote to it.
+  const TextureHandle image = create_texture({
+      .name = "offscreen backbuffer",
+      .format = format,
+      .width = width,
+      .height = height,
+      .usage = TextureUsage::RenderTarget | TextureUsage::Sampled |
+               TextureUsage::CopySrc,
+  });
+  if (!image.valid())
+    return false;
+
+  s->backbuffer = image;
+  s->swapchain_format = format;
+  s->extent = {width, height};
+  s->offscreen = true;
+
+  nx::logd(log_rhi, "offscreen swapchain: {}x{} {}", width, height,
+           to_string(format));
+  return true;
+}
+
+bool MetalDevice::offscreen_swapchain() const noexcept {
+  return m_state != nullptr && m_state->offscreen;
+}
+
 bool MetalDevice::resize_swapchain(const u32 width, const u32 height) {
-  if (m_state == nullptr || m_state->layer == nil)
+  if (m_state == nullptr)
     return false;
   if (width == 0 || height == 0)
+    return false;
+  if (m_state->offscreen)
+    return create_offscreen_swapchain(width, height,
+                                      m_state->swapchain_format);
+  if (m_state->layer == nil)
     return false;
 
   MetalDeviceState *s = m_state;
@@ -182,7 +224,24 @@ bool MetalDevice::resize_swapchain(const u32 width, const u32 height) {
 }
 
 void MetalDevice::destroy_swapchain() noexcept {
-  if (m_state == nullptr || m_state->layer == nil)
+  if (m_state == nullptr)
+    return;
+
+  if (m_state->offscreen) {
+    // A texture this device made, so it goes back the way any texture does
+    // rather than being erased from under its allocation.
+    MetalDeviceState *const state = m_state;
+    wait_idle();
+    destroy_texture(state->backbuffer);
+    state->backbuffer = {};
+    state->offscreen = false;
+    state->frame_active = false;
+    state->swapchain_format = Format::Unknown;
+    state->extent = {};
+    return;
+  }
+
+  if (m_state->layer == nil)
     return;
 
   MetalDeviceState *s = m_state;
