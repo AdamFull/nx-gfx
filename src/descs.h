@@ -188,7 +188,18 @@ struct GraphicsPipelineDesc {
   Format color_formats[MAX_COLOR_ATTACHMENTS] = {};
   u32 color_count = 0;
   Format depth_format = Format::Unknown;
-  BlendState blend[MAX_COLOR_ATTACHMENTS] = {};
+  // No "= {}" here (unlike color_formats above): GCC has a real bug binding
+  // a temporary aggregate-initialized from a braced-init-list directly to a
+  // reference function parameter when one of its members is an array of
+  // class type with its own default member initializer - every
+  // compile_pipeline(device, {...}) call site failed with "no known
+  // conversion" on Linux, even the ones that never touch .blend. Safe to
+  // drop: BlendState's own fields all have default member initializers, so
+  // omitting .blend from an aggregate-init list already value-initializes
+  // each element identically via [dcl.init.aggr]'s "empty initializer list"
+  // rule, and plain `GraphicsPipelineDesc d;` default-init still runs
+  // BlendState's implicit default constructor per element either way.
+  BlendState blend[MAX_COLOR_ATTACHMENTS];
 
   PrimitiveTopology topology = PrimitiveTopology::TriangleList;
   CullMode cull = CullMode::None;
