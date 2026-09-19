@@ -691,10 +691,11 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   region.size = src.size();
 
   VkBufferMemoryBarrier2 before_copy{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-  before_copy.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-  before_copy.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-  before_copy.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-  before_copy.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_copy.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  before_copy.srcAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_WRITE_BIT);
+  before_copy.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  before_copy.dstAccessMask =
+      VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
   before_copy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   before_copy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   before_copy.buffer = buf->buffer;
@@ -718,9 +719,9 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
     const VkStateInfo fin = to_vk_state(final_state);
     VkBufferMemoryBarrier2 bar{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     bar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    bar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    bar.srcAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_WRITE_BIT);
     bar.dstStageMask = fin.stage;
-    bar.dstAccessMask = fin.access;
+    bar.dstAccessMask = to_buffer_access(fin.access);
     bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bar.buffer = buf->buffer;
@@ -761,9 +762,9 @@ UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
 
   VkBufferMemoryBarrier2 before_fill{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   before_fill.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-  before_fill.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_fill.srcAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_WRITE_BIT);
   before_fill.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-  before_fill.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_fill.dstAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_WRITE_BIT);
   before_fill.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   before_fill.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   before_fill.buffer = buf->buffer;
@@ -784,9 +785,9 @@ UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
     VkBufferMemoryBarrier2 after_fill{
         VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     after_fill.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-    after_fill.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    after_fill.srcAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_WRITE_BIT);
     after_fill.dstStageMask = fin.stage;
-    after_fill.dstAccessMask = fin.access;
+    after_fill.dstAccessMask = to_buffer_access(fin.access);
     after_fill.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     after_fill.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     after_fill.buffer = buf->buffer;
@@ -1014,9 +1015,9 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
 
   VkBufferMemoryBarrier2 before_read{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   before_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-  before_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  before_read.srcAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_WRITE_BIT);
   before_read.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-  before_read.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+  before_read.dstAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_READ_BIT);
   before_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   before_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   before_read.buffer = buf->buffer;
@@ -1268,7 +1269,7 @@ void VulkanUploader::record_releases() {
 
     VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.srcAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_WRITE_BIT);
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
     barrier.dstAccessMask = VK_ACCESS_2_NONE;
     barrier.srcQueueFamilyIndex = m_copy_family;
@@ -1411,7 +1412,7 @@ u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
     barrier.srcAccessMask = VK_ACCESS_2_NONE;
     barrier.dstStageMask = dst.stage;
-    barrier.dstAccessMask = dst.access;
+    barrier.dstAccessMask = to_buffer_access(dst.access);
     barrier.srcQueueFamilyIndex = m_copy_family;
     barrier.dstQueueFamilyIndex = m_graphics_family;
     barrier.buffer = acq.buffer;

@@ -304,6 +304,21 @@ VkPresentModeKHR to_vk_present_mode(const PresentMode mode) noexcept {
   }
 }
 
+VkAccessFlags2 to_buffer_access(const VkAccessFlags2 access) noexcept {
+  constexpr VkAccessFlags2 WRITES =
+      VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+      VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT |
+      VK_ACCESS_2_MEMORY_WRITE_BIT;
+  if (access == VK_ACCESS_2_NONE)
+    return VK_ACCESS_2_NONE;
+  VkAccessFlags2 out = 0;
+  if ((access & WRITES) != 0)
+    out |= VK_ACCESS_2_MEMORY_WRITE_BIT;
+  if ((access & ~WRITES) != 0)
+    out |= VK_ACCESS_2_MEMORY_READ_BIT;
+  return out;
+}
+
 VkStateInfo to_vk_state(const ResourceState state) noexcept {
   constexpr VkPipelineStageFlags2 ALL_SHADERS =
       VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |

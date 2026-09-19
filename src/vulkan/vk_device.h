@@ -112,6 +112,7 @@ struct VulkanShader {
     u32 local_size[3] = {};
   };
   nx::small_vector<ComputeEntry, 4> compute_entries;
+  nx::small_vector<nx::string, 4> entry_points;
   ShaderReflection reflection;
 };
 

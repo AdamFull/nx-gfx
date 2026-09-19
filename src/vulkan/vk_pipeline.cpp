@@ -246,6 +246,53 @@ void VulkanDevice::save_pipeline_cache() noexcept {
              m_pipeline_cache_path);
 }
 
+namespace {
+
+/// Names every OpEntryPoint in @p code. Leaves @p out empty if the blob is not
+/// SPIR-V this can walk, which the callers read as "do not check".
+void collect_entry_points(const void *const code, const usize bytes,
+                          nx::small_vector<nx::string, 4> &out) {
+  constexpr u32 SPIRV_MAGIC = 0x07230203u;
+  constexpr u32 OP_ENTRY_POINT = 15u;
+  constexpr usize HEADER_WORDS = 5;
+  // Execution model, entry id, then the name as a NUL-padded literal.
+  constexpr u32 ENTRY_PREFIX_WORDS = 3;
+
+  const auto *const words = static_cast<const u32 *>(code);
+  const usize count = bytes / sizeof(u32);
+  if (count <= HEADER_WORDS || words[0] != SPIRV_MAGIC)
+    return;
+
+  for (usize i = HEADER_WORDS; i < count;) {
+    const u32 op = words[i] & 0xFFFFu;
+    const usize length = words[i] >> 16u;
+    if (length == 0 || i + length > count)
+      return;
+    if (op == OP_ENTRY_POINT && length > ENTRY_PREFIX_WORDS) {
+      const auto *const name =
+          reinterpret_cast<const char *>(&words[i + ENTRY_PREFIX_WORDS]);
+      const usize room = (length - ENTRY_PREFIX_WORDS) * sizeof(u32);
+      usize n = 0;
+      while (n < room && name[n] != '\0')
+        ++n;
+      out.push_back(nx::string(nx::string_view(name, n)));
+    }
+    i += length;
+  }
+}
+
+[[nodiscard]] bool declares_entry(const VulkanShader &shader,
+                                  const nx::string_view entry) noexcept {
+  if (shader.entry_points.empty())
+    return true;
+  for (const nx::string &name : shader.entry_points)
+    if (name.view() == entry)
+      return true;
+  return false;
+}
+
+} // namespace
+
 ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   if (desc.code == nullptr || desc.code_size == 0 || desc.code_size % 4 != 0) {
     nx::loge(nx::log::rhi, "create_shader('{}'): invalid SPIR-V blob", desc.name);
@@ -256,6 +303,8 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   shader.module = create_module(*this, m_device, desc.code, desc.code_size);
   if (shader.module == VK_NULL_HANDLE)
     return {};
+
+  collect_entry_points(desc.code, desc.code_size, shader.entry_points);
 
   if (!desc.reflection_json.empty() &&
       !reflect_from_json(desc.reflection_json, shader.reflection))
@@ -337,6 +386,22 @@ bool VulkanDevice::prepare_graphics_pipeline(
   }
 
   const VulkanShader *fs = m_shaders.try_get(desc.fragment.shader);
+
+  if (!declares_entry(*vs, desc.vertex.entry_point)) {
+    nx::loge(nx::log::rhi,
+             "create_graphics_pipeline('{}'): the vertex shader declares no "
+             "entry point '{}'",
+             desc.name, desc.vertex.entry_point);
+    return false;
+  }
+  if (fs != nullptr && !desc.fragment.entry_point.empty() &&
+      !declares_entry(*fs, desc.fragment.entry_point)) {
+    nx::loge(nx::log::rhi,
+             "create_graphics_pipeline('{}'): the fragment shader declares no "
+             "entry point '{}'",
+             desc.name, desc.fragment.entry_point);
+    return false;
+  }
 
   VulkanGraphicsPipelineCompileJob job;
   job.name = nx::string(desc.name);
@@ -516,6 +581,14 @@ bool VulkanDevice::prepare_compute_pipeline(
   if (cs == nullptr) {
     nx::loge(nx::log::rhi, "create_compute_pipeline('{}'): missing shader",
              desc.name);
+    return false;
+  }
+
+  if (!declares_entry(*cs, desc.compute.entry_point)) {
+    nx::loge(nx::log::rhi,
+             "create_compute_pipeline('{}'): the shader declares no entry "
+             "point '{}'",
+             desc.name, desc.compute.entry_point);
     return false;
   }
 

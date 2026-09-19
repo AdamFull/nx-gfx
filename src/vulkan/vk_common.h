@@ -79,4 +79,6 @@ struct VkStateInfo {
 
 [[nodiscard]] VkStateInfo to_vk_state(ResourceState state) noexcept;
 
+[[nodiscard]] VkAccessFlags2 to_buffer_access(VkAccessFlags2 access) noexcept;
+
 } // namespace nxe::rhi

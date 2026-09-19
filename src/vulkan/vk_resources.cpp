@@ -761,9 +761,9 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
 
     VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     barrier.srcStageMask = src.stage;
-    barrier.srcAccessMask = src.access;
+    barrier.srcAccessMask = to_buffer_access(src.access);
     barrier.dstStageMask = dst.stage;
-    barrier.dstAccessMask = dst.access;
+    barrier.dstAccessMask = to_buffer_access(dst.access);
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.buffer = buffer->buffer;
