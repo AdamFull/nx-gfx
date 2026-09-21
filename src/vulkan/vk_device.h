@@ -145,8 +145,10 @@ struct DeviceRoutes {
   VulkanFaultRoute device_fault = VulkanFaultRoute::None;
   bool device_fault_vendor_binary = false;
   bool address_binding_report = false;
-  /// Only taken up by a profiling build, where Tracy calibrates against it.
+  /// Only taken up by a profiling build, where Tracy calibrates against these
+  /// and resets the copy queue's queries from the host.
   VulkanCalibrationRoute calibrated_timestamps = VulkanCalibrationRoute::None;
+  bool host_query_reset = false;
   /// Empty when the device can do everything the engine needs.
   nx::small_vector<nx::string_view, 16> missing;
 };
@@ -432,6 +434,9 @@ public:
   [[nodiscard]] VulkanGpuProfiler &gpu_profiler() noexcept {
     return m_gpu_profiler;
   }
+  [[nodiscard]] VulkanGpuProfiler &copy_profiler() noexcept {
+    return m_copy_profiler;
+  }
   [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept {
     return m_pipeline_layout;
   }
@@ -501,6 +506,7 @@ private:
   bool m_sync_validation = false;
   mutable VulkanGpuCrashReporter m_gpu_crash;
   VulkanGpuProfiler m_gpu_profiler;
+  VulkanGpuProfiler m_copy_profiler;
 
   VkQueue m_queues[nx::cast<usize>(QueueType::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(QueueType::Count)] = {};

@@ -9,12 +9,43 @@
 #include <cstring>
 #include <memory>
 #include <new>
+#include <time.h>
 
 namespace nxe::rhi {
+namespace {
+
+/// Tracy's host-reset context asserts it found a host clock, which release
+/// builds compile out, so look first - the way Tracy looks: the first four
+/// domains, one clock per platform.
+[[nodiscard]] bool has_host_clock(
+    const VkPhysicalDevice physical,
+    const PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT domains) noexcept {
+#if defined(_WIN32) || (defined(__linux__) && defined(CLOCK_MONOTONIC_RAW))
+#if defined(_WIN32)
+  constexpr VkTimeDomainEXT host = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
+#else
+  constexpr VkTimeDomainEXT host = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT;
+#endif
+  u32 count = 0;
+  domains(physical, &count, nullptr);
+  count = nx::min(count, 4u);
+  VkTimeDomainEXT found[4] = {};
+  domains(physical, &count, found);
+  for (u32 i = 0; i < count; ++i)
+    if (found[i] == host)
+      return true;
+#else
+  (void)physical;
+  (void)domains;
+#endif
+  return false;
+}
+
+} // namespace
 
 void VulkanGpuProfiler::init(
     const VkPhysicalDevice physical, const VkDevice device, const VkQueue queue,
-    const u32 family, const nx::string_view name,
+    const u32 family, const nx::string_view label,
     const PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT domains,
     const PFN_vkGetCalibratedTimestampsEXT calibrated) {
   static_assert(sizeof(tracy::VkCtxScope) <= ZONE_BYTES);
@@ -38,10 +69,28 @@ void VulkanGpuProfiler::init(
   if (vkAllocateCommandBuffers(device, &alloc, &cmd) == VK_SUCCESS) {
     m_context = tracy::CreateVkContext(physical, device, queue, cmd, domains,
                                        calibrated);
-    const nx::string label = nx::format("Vulkan {}", name);
-    m_context->Name(label.c_str(), nx::cast<u16>(label.size()));
+    set_label(label);
   }
   vkDestroyCommandPool(device, pool, nullptr);
+}
+
+void VulkanGpuProfiler::init_host_reset(
+    const VkPhysicalDevice physical, const VkDevice device,
+    const nx::string_view label,
+    const PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT domains,
+    const PFN_vkGetCalibratedTimestampsEXT calibrated) {
+  if (m_context != nullptr || vkResetQueryPool == nullptr ||
+      domains == nullptr || calibrated == nullptr ||
+      !has_host_clock(physical, domains))
+    return;
+  m_context = tracy::CreateVkContext(physical, device, vkResetQueryPool,
+                                     domains, calibrated);
+  set_label(label);
+}
+
+void VulkanGpuProfiler::set_label(const nx::string_view label) {
+  const nx::string full = nx::format("Vulkan {}", label);
+  m_context->Name(full.c_str(), nx::cast<u16>(full.size()));
 }
 
 void VulkanGpuProfiler::shutdown() noexcept {
@@ -55,6 +104,13 @@ void VulkanGpuProfiler::shutdown() noexcept {
 void VulkanGpuProfiler::collect(const VkCommandBuffer cmd) {
   if (m_context != nullptr)
     m_context->Collect(cmd);
+}
+
+void VulkanGpuProfiler::collect_host(const bool queue_idle) {
+  if (m_context == nullptr ||
+      (!queue_idle && !tracy::GetProfiler().IsConnected()))
+    return;
+  m_context->Collect(VK_NULL_HANDLE);
 }
 
 void VulkanGpuProfiler::begin_zone(const VkCommandBuffer cmd,
@@ -92,8 +148,13 @@ void VulkanGpuProfiler::init(VkPhysicalDevice, VkDevice, VkQueue, u32,
                              nx::string_view,
                              PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT,
                              PFN_vkGetCalibratedTimestampsEXT) {}
+void VulkanGpuProfiler::init_host_reset(
+    VkPhysicalDevice, VkDevice, nx::string_view,
+    PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT,
+    PFN_vkGetCalibratedTimestampsEXT) {}
 void VulkanGpuProfiler::shutdown() noexcept {}
 void VulkanGpuProfiler::collect(VkCommandBuffer) {}
+void VulkanGpuProfiler::collect_host(bool) {}
 void VulkanGpuProfiler::begin_zone(VkCommandBuffer, nx::string_view) {}
 void VulkanGpuProfiler::end_zone() {}
 void VulkanGpuProfiler::end_open_zones() {}

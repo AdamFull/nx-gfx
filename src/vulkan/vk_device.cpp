@@ -274,6 +274,7 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   }
   out.address_binding_report =
       ext_address_binding && address_binding.reportAddressBinding;
+  out.host_query_reset = out.core_12 && features12.hostQueryReset;
   out.calibrated_timestamps = ext_calibrated_khr ? VulkanCalibrationRoute::Khr
                               : ext_calibrated_ext
                                   ? VulkanCalibrationRoute::Ext
@@ -819,6 +820,8 @@ bool VulkanDevice::create_logical_device() {
   }
 
 #if NX_PROFILE_ENABLED
+  if (m_routes.host_query_reset)
+    features12.hostQueryReset = VK_TRUE;
   if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr)
     device_extensions.push_back(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
   else if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext)
@@ -1109,8 +1112,22 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
       domains = vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
       calibrated = vkGetCalibratedTimestampsEXT;
     }
-    m_gpu_profiler.init(m_physical_device, m_device, graphics_queue(),
-                        graphics_family(), m_device_name, domains, calibrated);
+    m_gpu_profiler.init(
+        m_physical_device, m_device, graphics_queue(), graphics_family(),
+        nx::format("{} graphics", m_device_name), domains, calibrated);
+
+    u32 family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &family_count,
+                                             nullptr);
+    nx::small_vector<VkQueueFamilyProperties, 8> families(family_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &family_count,
+                                             families.data());
+    const u32 copy = m_queue_families[nx::cast<usize>(QueueType::Copy)];
+    if (m_routes.host_query_reset && copy < family_count &&
+        families[copy].timestampValidBits > 0)
+      m_copy_profiler.init_host_reset(m_physical_device, m_device,
+                                      nx::format("{} copy", m_device_name),
+                                      domains, calibrated);
   }
 #endif
 
@@ -1124,6 +1141,7 @@ void VulkanDevice::shutdown() noexcept {
 
   m_uploader.shutdown();
   m_gpu_profiler.shutdown();
+  m_copy_profiler.shutdown();
 
   destroy_swapchain();
 

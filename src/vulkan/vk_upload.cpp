@@ -313,6 +313,8 @@ void VulkanUploader::reclaim_locked() {
       m_inflight.erase(m_inflight.begin() + nx::cast<isize>(i - 1));
     }
   }
+
+  m_device->copy_profiler().collect_host(m_inflight.empty() && !m_batch_open);
 }
 
 u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
@@ -501,6 +503,8 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     nx::loge(log_up, "upload_texture: no command batch to record into");
     return UploadTicket::failure();
   }
+  const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
+                                      "upload texture");
 
   nx::small_vector<VkBufferImageCopy, 16> copies;
   u64 offset = 0;
@@ -684,6 +688,8 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
     nx::loge(log_up, "upload_buffer: no command batch to record into");
     return UploadTicket::failure();
   }
+  const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
+                                      "upload buffer");
 
   VkBufferCopy region{};
   region.srcOffset = base_offset;
@@ -759,6 +765,8 @@ UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
     nx::loge(log_up, "clear_buffer: no command batch to record into");
     return UploadTicket::failure();
   }
+  const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
+                                      "clear buffer");
 
   VkBufferMemoryBarrier2 before_fill{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   before_fill.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
@@ -1012,6 +1020,7 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   const VkCommandBuffer cmd = begin_cmd();
   if (cmd == VK_NULL_HANDLE)
     return {};
+  m_device->copy_profiler().begin_zone(cmd, "read buffer");
 
   VkBufferMemoryBarrier2 before_read{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   before_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -1044,6 +1053,7 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   dep.pMemoryBarriers = &host;
   vkCmdPipelineBarrier2KHR(cmd, &dep);
 
+  m_device->copy_profiler().end_zone();
   NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(cmd));
   const u64 value = ++m_value;
   submit_signal(cmd, value);
@@ -1079,6 +1089,7 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   const VkCommandBuffer cmd = begin_cmd();
   if (cmd == VK_NULL_HANDLE)
     return {};
+  m_device->copy_profiler().begin_zone(cmd, "read texture");
 
   const VkStateInfo from = to_vk_state(tex->state);
   const bool qfot = needs_ownership_transfer();
@@ -1129,6 +1140,7 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   host_dep.pMemoryBarriers = &host;
   vkCmdPipelineBarrier2KHR(cmd, &host_dep);
 
+  m_device->copy_profiler().end_zone();
   NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(cmd));
   const u64 value = ++m_value;
   submit_signal(cmd, value);
