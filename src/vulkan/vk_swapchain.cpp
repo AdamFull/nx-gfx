@@ -509,6 +509,7 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   }
 
   const VkCommandBuffer cmd = frame.slot.cmd;
+  m_gpu_profiler.collect(cmd);
 
   // Turn finished async decodes into textures, submit the batch of uploads
   // accumulated since the last frame, then take ownership of everything it
@@ -572,6 +573,7 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   }
 
   const VkCommandBuffer cmd = frame.slot.cmd;
+  m_gpu_profiler.collect(cmd);
   m_uploader.pump();
   m_uploader.flush_batch();
   m_frame_upload_wait = m_uploader.record_acquires(cmd);
@@ -595,6 +597,7 @@ bool VulkanDevice::end_headless_frame() {
 
 bool VulkanDevice::submit_without_present() {
   FrameContext &frame = m_frames[m_frame_index];
+  m_gpu_profiler.end_open_zones();
   if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame.slot.cmd)) !=
       VK_SUCCESS)
     return false;
@@ -671,6 +674,7 @@ bool VulkanDevice::end_frame() {
 
   FrameContext &frame = m_frames[m_frame_index];
   const VkCommandBuffer cmd = frame.slot.cmd;
+  m_gpu_profiler.end_open_zones();
 
   // The image must be in PRESENT_SRC before handing it to the present engine.
   if (VulkanTexture *backbuffer =

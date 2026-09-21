@@ -128,6 +128,10 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       listed(available, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
   const bool ext_address_binding =
       listed(available, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
+  const bool ext_calibrated_khr =
+      listed(available, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+  const bool ext_calibrated_ext =
+      listed(available, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
 
   // A feature struct may only be chained when the version or the extension that
   // defines it is there, so the chain is built from what this device has.
@@ -270,6 +274,10 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   }
   out.address_binding_report =
       ext_address_binding && address_binding.reportAddressBinding;
+  out.calibrated_timestamps = ext_calibrated_khr ? VulkanCalibrationRoute::Khr
+                              : ext_calibrated_ext
+                                  ? VulkanCalibrationRoute::Ext
+                                  : VulkanCalibrationRoute::None;
   return out;
 }
 
@@ -810,6 +818,13 @@ bool VulkanDevice::create_logical_device() {
     }
   }
 
+#if NX_PROFILE_ENABLED
+  if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr)
+    device_extensions.push_back(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+  else if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext)
+    device_extensions.push_back(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+#endif
+
   features.features.samplerAnisotropy = VK_TRUE;
   features.features.multiDrawIndirect = VK_TRUE;
   features.features.shaderInt16 = VK_TRUE;
@@ -1083,6 +1098,22 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
     return false;
   }
 
+#if NX_PROFILE_ENABLED
+  if (m_caps.timestamps) {
+    PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT domains = nullptr;
+    PFN_vkGetCalibratedTimestampsEXT calibrated = nullptr;
+    if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr) {
+      domains = vkGetPhysicalDeviceCalibrateableTimeDomainsKHR;
+      calibrated = vkGetCalibratedTimestampsKHR;
+    } else if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext) {
+      domains = vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
+      calibrated = vkGetCalibratedTimestampsEXT;
+    }
+    m_gpu_profiler.init(m_physical_device, m_device, graphics_queue(),
+                        graphics_family(), m_device_name, domains, calibrated);
+  }
+#endif
+
   m_init_report.failure = DeviceInitFailure::None;
   return true;
 }
@@ -1092,6 +1123,7 @@ void VulkanDevice::shutdown() noexcept {
     wait_idle();
 
   m_uploader.shutdown();
+  m_gpu_profiler.shutdown();
 
   destroy_swapchain();
 

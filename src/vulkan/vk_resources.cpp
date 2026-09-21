@@ -922,8 +922,10 @@ void VulkanCommandContext::write_timestamp(const QueryPoolHandle pool,
 void VulkanCommandContext::push_debug_group(const nx::string_view name,
                                             const f32 r, const f32 g,
                                             const f32 b) {
-  if (m_device == nullptr || !m_device->debug_utils_enabled() ||
-      m_cmd == VK_NULL_HANDLE)
+  if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
+    return;
+  m_device->gpu_profiler().begin_zone(m_cmd, name);
+  if (!m_device->debug_utils_enabled())
     return;
 
   const nx::string terminated(name);
@@ -937,8 +939,10 @@ void VulkanCommandContext::push_debug_group(const nx::string_view name,
 }
 
 void VulkanCommandContext::pop_debug_group() {
-  if (m_device == nullptr || !m_device->debug_utils_enabled() ||
-      m_cmd == VK_NULL_HANDLE)
+  if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
+    return;
+  m_device->gpu_profiler().end_zone();
+  if (!m_device->debug_utils_enabled())
     return;
   vkCmdEndDebugUtilsLabelEXT(m_cmd);
 }
