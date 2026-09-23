@@ -109,6 +109,24 @@ enum class ResourceState : u16 {
   Count
 };
 
+[[nodiscard]] constexpr bool
+is_write_state(const ResourceState state) noexcept {
+  switch (state) {
+  case ResourceState::General:
+  case ResourceState::CopyDst:
+  case ResourceState::ShaderWriteOnly:
+  case ResourceState::ShaderReadWrite:
+  case ResourceState::ColorAttachment:
+  case ResourceState::ColorAttachmentWrite:
+  case ResourceState::DepthStencilWrite:
+  case ResourceState::DepthStencilReadWrite:
+  case ResourceState::HostWrite:
+    return true;
+  default:
+    return false;
+  }
+}
+
 enum class TextureUsage : u16 {
   None = 0,
   Sampled = 1 << 0,

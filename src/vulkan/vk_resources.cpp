@@ -9,13 +9,6 @@
 namespace nxe::rhi {
 namespace {
 
-constexpr VkAccessFlags2 WRITE_ACCESS =
-    VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-    VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT |
-    VK_ACCESS_2_MEMORY_WRITE_BIT;
-
 VmaMemoryUsage to_vma_usage(const MemoryUsage usage) noexcept {
   switch (usage) {
   case MemoryUsage::Upload:
@@ -729,7 +722,7 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
     const VkStateInfo dst = to_vk_state(desc.to);
     // A written state kept across the barrier still orders the writes before
     // it against the accesses after it.
-    if (!desc.discard && from == desc.to && (src.access & WRITE_ACCESS) == 0)
+    if (!desc.discard && from == desc.to && !is_write_state(from))
       continue;
     if (desc.discard) {
       src.stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
