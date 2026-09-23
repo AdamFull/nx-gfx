@@ -483,6 +483,7 @@ private:
   void destroy_backbuffer_views() noexcept;
   void set_object_name(u64 object, VkObjectType type, nx::string_view name);
   void collect_garbage(u64 completed_timeline_value) noexcept;
+  [[nodiscard]] VkResult wait_timeline(u64 value) noexcept;
   void destroy_texture_now(VulkanTexture &texture) noexcept;
 
   void write_texture_descriptor(u32 index, VkImageView view) noexcept;

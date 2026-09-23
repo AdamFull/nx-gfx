@@ -3,6 +3,7 @@
 #include "rendering/rhi/vulkan/vk_device.h"
 
 #include "core/foundation/diagnostics/log.h"
+#include "core/foundation/fibers/scheduler.h"
 
 namespace nxe::rhi {
 namespace {
@@ -444,6 +445,23 @@ void VulkanDevice::destroy_swapchain() noexcept {
   m_swapchain_extent = {0, 0};
 }
 
+// A render job that would block in the driver waits on a blocking-service
+// thread, so its worker keeps running other jobs meanwhile.
+VkResult VulkanDevice::wait_timeline(const u64 value) noexcept {
+  u64 reached = 0;
+  VkResult result =
+      vkGetSemaphoreCounterValueKHR(m_device, m_timeline, &reached);
+  if (result != VK_SUCCESS || reached >= value)
+    return result;
+  VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+  wait.semaphoreCount = 1;
+  wait.pSemaphores = &m_timeline;
+  wait.pValues = &value;
+  nx::fiber::run_blocking(
+      [&] { result = vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX); });
+  return result;
+}
+
 AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   NX_PROFILE_ZONE("vk::begin_frame");
   if (device_status() == GpuDeviceStatus::Lost ||
@@ -455,12 +473,7 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
 
   if (frame.timeline_value > 0) {
     NX_PROFILE_ZONE_COLOR("vk::wait_gpu", 0x604040);
-    VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-    wait.semaphoreCount = 1;
-    wait.pSemaphores = &m_timeline;
-    wait.pValues = &frame.timeline_value;
-    if (NX_VK_DEVICE_CHECK(*this,
-                           vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
+    if (NX_VK_DEVICE_CHECK(*this, wait_timeline(frame.timeline_value)) !=
         VK_SUCCESS)
       return AcquireResult::SurfaceLost;
   }
@@ -480,9 +493,14 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     m_image_index = m_frame_index;
   } else {
     NX_PROFILE_ZONE_COLOR("vk::acquire", 0x604040);
-    acquired = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
-                                     frame.acquire_semaphore, VK_NULL_HANDLE,
-                                     &m_image_index);
+    const auto acquire = [&](const u64 timeout) {
+      return vkAcquireNextImageKHR(m_device, m_swapchain, timeout,
+                                   frame.acquire_semaphore, VK_NULL_HANDLE,
+                                   &m_image_index);
+    };
+    acquired = acquire(0);
+    if (acquired == VK_NOT_READY || acquired == VK_TIMEOUT)
+      nx::fiber::run_blocking([&] { acquired = acquire(UINT64_MAX); });
   }
 
   if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
@@ -540,12 +558,7 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   FrameContext &frame = m_frames[m_frame_index];
   if (frame.timeline_value > 0) {
     NX_PROFILE_ZONE_COLOR("vk::wait_gpu", 0x604040);
-    VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-    wait.semaphoreCount = 1;
-    wait.pSemaphores = &m_timeline;
-    wait.pValues = &frame.timeline_value;
-    if (NX_VK_DEVICE_CHECK(*this,
-                           vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
+    if (NX_VK_DEVICE_CHECK(*this, wait_timeline(frame.timeline_value)) !=
         VK_SUCCESS)
       return false;
   }
@@ -641,12 +654,7 @@ bool VulkanDevice::submit_without_present() {
                             &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
     return false;
 
-  VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-  wait.semaphoreCount = 1;
-  wait.pSemaphores = &m_timeline;
-  wait.pValues = &m_timeline_value;
-  if (NX_VK_DEVICE_CHECK(*this, vkWaitSemaphoresKHR(m_device, &wait,
-                                                    UINT64_MAX)) != VK_SUCCESS)
+  if (NX_VK_DEVICE_CHECK(*this, wait_timeline(m_timeline_value)) != VK_SUCCESS)
     return false;
 
   m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
@@ -764,8 +772,10 @@ bool VulkanDevice::end_frame() {
   VkResult presented = VK_SUCCESS;
   {
     NX_PROFILE_ZONE("vk::present");
-    presented = vkQueuePresentKHR(
-        m_queues[nx::cast<usize>(QueueType::Graphics)], &present);
+    nx::fiber::run_blocking([&] {
+      presented = vkQueuePresentKHR(
+          m_queues[nx::cast<usize>(QueueType::Graphics)], &present);
+    });
   }
 
   m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
