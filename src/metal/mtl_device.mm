@@ -2,12 +2,37 @@
 #include "rendering/rhi/metal/mtl_internal.h"
 #include "rendering/rhi/metal/mtl_gpu_crash.h"
 
+#include "core/foundation/fibers/scheduler.h"
 #include "core/foundation/strings/format.h"
 
 #include <cstdlib>
 
 namespace nxe::rhi {
 namespace {
+
+// A render job that would block waits on a blocking-service thread, so its
+// worker keeps running other jobs meanwhile.
+void wait_frame_slot(const dispatch_semaphore_t semaphore) noexcept {
+  if (dispatch_semaphore_wait(semaphore, DISPATCH_TIME_NOW) == 0)
+    return;
+  nx::fiber::run_blocking([semaphore] {
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+  });
+}
+
+// nextDrawable blocks until the compositor frees a drawable, for up to a
+// second. Service threads have no autorelease pool of their own, and the call
+// must not sit inside the caller's: a pool is popped on the thread that pushed
+// it, and the fiber changes threads across the hop.
+id<CAMetalDrawable> next_drawable(CAMetalLayer *const layer) noexcept {
+  id<CAMetalDrawable> drawable = nil;
+  nx::fiber::run_blocking([&] {
+    @autoreleasepool {
+      drawable = [layer nextDrawable];
+    }
+  });
+  return drawable;
+}
 
 void enable_metal_validation() noexcept {
   if (::getenv("METAL_DEVICE_WRAPPER_TYPE") != nullptr)
@@ -332,7 +357,7 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     return AcquireResult::SurfaceLost;
   }
 
-  dispatch_semaphore_wait(s->frame_semaphore, DISPATCH_TIME_FOREVER);
+  wait_frame_slot(s->frame_semaphore);
   if (device_status() == GpuDeviceStatus::Lost)
     return AcquireResult::SurfaceLost;
 
@@ -342,17 +367,17 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
   uploader_reclaim(*s);
   m_uploader.flush_batch();
 
-  @autoreleasepool {
-    // Offscreen: no layer to take a drawable from, and the backbuffer texture
-    // is already the one this frame draws into.
-    if (!s->offscreen) {
-      s->drawable = [s->layer nextDrawable];
-      if (s->drawable == nil) {
-        dispatch_semaphore_signal(s->frame_semaphore);
-        return AcquireResult::OutOfDate;
-      }
+  // Offscreen: no layer to take a drawable from, and the backbuffer texture is
+  // already the one this frame draws into.
+  if (!s->offscreen) {
+    s->drawable = next_drawable(s->layer);
+    if (s->drawable == nil) {
+      dispatch_semaphore_signal(s->frame_semaphore);
+      return AcquireResult::OutOfDate;
     }
+  }
 
+  @autoreleasepool {
     s->contexts.resize(MetalDeviceState::MAX_CONTEXTS);
     for (MetalContextSlot &slot : s->contexts)
       slot.in_use = false;
@@ -479,7 +504,7 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
   if (s->frame_semaphore == nil)
     return false;
 
-  dispatch_semaphore_wait(s->frame_semaphore, DISPATCH_TIME_FOREVER);
+  wait_frame_slot(s->frame_semaphore);
   if (device_status() == GpuDeviceStatus::Lost)
     return false;
 
