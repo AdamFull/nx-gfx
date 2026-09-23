@@ -240,7 +240,8 @@ struct DispatchIndirectCommand {
 };
 
 /// Barrier describing a texture's state transition. The render graph is the
-/// intended producer of these; hand-written barriers are expert-mode.
+/// intended producer of these; hand-written barriers are expert-mode. From a
+/// written state to itself, it orders the accesses on either side of it.
 struct TextureBarrier {
   TextureHandle texture;
   ResourceState from = ResourceState::Undefined;
