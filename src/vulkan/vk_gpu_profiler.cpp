@@ -95,7 +95,7 @@ void VulkanGpuProfiler::set_label(const nx::string_view label) {
 
 void VulkanGpuProfiler::shutdown() noexcept {
   // The command buffers the open zones were recorded into are gone by now.
-  m_depth = 0;
+  m_zones.depth = 0;
   if (m_context != nullptr)
     tracy::DestroyVkContext(m_context);
   m_context = nullptr;
@@ -113,29 +113,29 @@ void VulkanGpuProfiler::collect_host(const bool queue_idle) {
   m_context->Collect(VK_NULL_HANDLE);
 }
 
-void VulkanGpuProfiler::begin_zone(const VkCommandBuffer cmd,
+void VulkanGpuProfiler::begin_zone(Zones &zones, const VkCommandBuffer cmd,
                                    const nx::string_view name) {
   if (m_context == nullptr || cmd == VK_NULL_HANDLE)
     return;
-  if (m_depth < MAX_DEPTH)
-    new (m_zones[m_depth]) tracy::VkCtxScope(
+  if (zones.depth < MAX_DEPTH)
+    new (zones.slots[zones.depth]) tracy::VkCtxScope(
         m_context, __LINE__, __FILE__, sizeof(__FILE__) - 1, __func__,
         std::strlen(__func__), name.data(), name.size(), cmd, true);
-  ++m_depth;
+  ++zones.depth;
 }
 
-void VulkanGpuProfiler::end_zone() {
-  if (m_depth == 0)
+void VulkanGpuProfiler::end_zone(Zones &zones) {
+  if (zones.depth == 0)
     return;
-  --m_depth;
-  if (m_depth < MAX_DEPTH)
-    std::destroy_at(
-        std::launder(reinterpret_cast<tracy::VkCtxScope *>(m_zones[m_depth])));
+  --zones.depth;
+  if (zones.depth < MAX_DEPTH)
+    std::destroy_at(std::launder(
+        reinterpret_cast<tracy::VkCtxScope *>(zones.slots[zones.depth])));
 }
 
-void VulkanGpuProfiler::end_open_zones() {
-  while (m_depth > 0)
-    end_zone();
+void VulkanGpuProfiler::end_open_zones(Zones &zones) {
+  while (zones.depth > 0)
+    end_zone(zones);
 }
 
 } // namespace nxe::rhi
@@ -155,9 +155,9 @@ void VulkanGpuProfiler::init_host_reset(
 void VulkanGpuProfiler::shutdown() noexcept {}
 void VulkanGpuProfiler::collect(VkCommandBuffer) {}
 void VulkanGpuProfiler::collect_host(bool) {}
-void VulkanGpuProfiler::begin_zone(VkCommandBuffer, nx::string_view) {}
-void VulkanGpuProfiler::end_zone() {}
-void VulkanGpuProfiler::end_open_zones() {}
+void VulkanGpuProfiler::begin_zone(Zones &, VkCommandBuffer, nx::string_view) {}
+void VulkanGpuProfiler::end_zone(Zones &) {}
+void VulkanGpuProfiler::end_open_zones(Zones &) {}
 
 } // namespace nxe::rhi
 

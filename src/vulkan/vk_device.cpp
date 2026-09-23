@@ -606,6 +606,7 @@ bool VulkanDevice::select_physical_device() {
   m_caps.timestamp_period_ns = props.properties.limits.timestampPeriod;
   m_caps.timestamps = m_caps.timestamp_period_ns > 0.f &&
                       props.properties.limits.timestampComputeAndGraphics;
+  m_caps.parallel_recording = true;
   m_caps.max_bindless_sampled_images =
       indexing.maxDescriptorSetUpdateAfterBindSampledImages;
   m_caps.max_bindless_storage_images =
@@ -1192,6 +1193,9 @@ void VulkanDevice::shutdown() noexcept {
       vkDestroySemaphore(m_device, frame.acquire_semaphore, nullptr);
     if (frame.slot.pool != VK_NULL_HANDLE)
       vkDestroyCommandPool(m_device, frame.slot.pool, nullptr);
+    for (const nx::unique_ptr<CommandSlot> &recorder : frame.recorders)
+      if (recorder->pool != VK_NULL_HANDLE)
+        vkDestroyCommandPool(m_device, recorder->pool, nullptr);
   }
   m_frames.clear();
 

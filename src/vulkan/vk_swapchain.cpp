@@ -8,48 +8,6 @@
 namespace nxe::rhi {
 namespace {
 
-[[nodiscard]] bool open_slot(const VulkanDevice &owner, VkDevice device,
-                             const u32 queue_family, VkDescriptorSet bindless,
-                             VkPipelineLayout layout, FrameContext &frame) {
-  CommandSlot &slot = frame.slot;
-
-  if (slot.pool == VK_NULL_HANDLE) {
-    VkCommandPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pool_info.queueFamilyIndex = queue_family;
-    if (NX_VK_DEVICE_CHECK(owner, vkCreateCommandPool(device, &pool_info,
-                                                      nullptr, &slot.pool)) !=
-        VK_SUCCESS)
-      return false;
-
-    VkCommandBufferAllocateInfo alloc{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    alloc.commandPool = slot.pool;
-    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc.commandBufferCount = 1;
-    if (NX_VK_DEVICE_CHECK(owner, vkAllocateCommandBuffers(
-                                      device, &alloc, &slot.cmd)) != VK_SUCCESS)
-      return false;
-  } else {
-    if (NX_VK_DEVICE_CHECK(owner, vkResetCommandPool(device, slot.pool, 0)) !=
-        VK_SUCCESS)
-      return false;
-  }
-
-  VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  if (NX_VK_DEVICE_CHECK(owner, vkBeginCommandBuffer(slot.cmd, &begin)) !=
-      VK_SUCCESS)
-    return false;
-
-  vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
-                          BINDLESS_SET, 1, &bindless, 0, nullptr);
-  vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout,
-                          BINDLESS_SET, 1, &bindless, 0, nullptr);
-  return true;
-}
-
 [[nodiscard]] bool surface_resized(VkPhysicalDevice physical,
                                    VkSurfaceKHR surface,
                                    const VkExtent2D current) noexcept {
@@ -462,6 +420,176 @@ VkResult VulkanDevice::wait_timeline(const u64 value) noexcept {
   return result;
 }
 
+// Takes the slot's next command buffer, allocating it the first time, and
+// begins it with the bindless set bound at both bind points.
+VkCommandBuffer VulkanDevice::next_command_buffer(CommandSlot &slot) {
+  if (slot.pool == VK_NULL_HANDLE) {
+    VkCommandPoolCreateInfo pool_info{
+        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex =
+        m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+    if (NX_VK_DEVICE_CHECK(*this, vkCreateCommandPool(m_device, &pool_info,
+                                                      nullptr, &slot.pool)) !=
+        VK_SUCCESS)
+      return VK_NULL_HANDLE;
+    set_object_name(vk_handle_value(slot.pool), VK_OBJECT_TYPE_COMMAND_POOL,
+                    nx::format("frame {} command pool", m_frame_index));
+  }
+  if (slot.used == slot.cmds.size()) {
+    VkCommandBufferAllocateInfo alloc{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    alloc.commandPool = slot.pool;
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (NX_VK_DEVICE_CHECK(*this, vkAllocateCommandBuffers(m_device, &alloc,
+                                                           &cmd)) != VK_SUCCESS)
+      return VK_NULL_HANDLE;
+    set_object_name(vk_handle_value(cmd), VK_OBJECT_TYPE_COMMAND_BUFFER,
+                    nx::format("frame {} command buffer {}", m_frame_index,
+                               slot.cmds.size()));
+    slot.cmds.push_back(cmd);
+  }
+  const VkCommandBuffer cmd = slot.cmds[slot.used];
+
+  VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  if (NX_VK_DEVICE_CHECK(*this, vkBeginCommandBuffer(cmd, &begin)) !=
+      VK_SUCCESS)
+    return VK_NULL_HANDLE;
+  ++slot.used;
+
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          m_pipeline_layout, BINDLESS_SET, 1, &m_bindless.set,
+                          0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          m_pipeline_layout, BINDLESS_SET, 1, &m_bindless.set,
+                          0, nullptr);
+  return cmd;
+}
+
+// Only once the GPU is done with the slot: resets every pool the frame used
+// last time round and begins the frame's own command buffer.
+VkCommandBuffer VulkanDevice::open_frame_slot(FrameContext &frame) {
+  const auto reset = [&](CommandSlot &slot) {
+    if (slot.used == 0)
+      return true;
+    slot.used = 0;
+    return NX_VK_DEVICE_CHECK(
+               *this, vkResetCommandPool(m_device, slot.pool, 0)) == VK_SUCCESS;
+  };
+  if (!reset(frame.slot))
+    return VK_NULL_HANDLE;
+  frame.idle.clear();
+  for (const nx::unique_ptr<CommandSlot> &recorder : frame.recorders) {
+    if (!reset(*recorder))
+      return VK_NULL_HANDLE;
+    frame.idle.push_back(recorder.get());
+  }
+  frame.order.clear();
+  const VkCommandBuffer cmd = next_command_buffer(frame.slot);
+  if (cmd != VK_NULL_HANDLE)
+    frame.order.push_back(cmd);
+  return cmd;
+}
+
+// Ends the frame context's command buffer and lists what the frame submits,
+// in order. A split recording that never ended is left out.
+bool VulkanDevice::close_frame(
+    FrameContext &frame, nx::small_vector<VkCommandBufferSubmitInfo, 8> &out) {
+  m_gpu_profiler.end_open_zones(frame.slot.zones);
+  if (frame.order.empty() || frame.order.back() == VK_NULL_HANDLE ||
+      NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame.order.back())) !=
+          VK_SUCCESS)
+    return false;
+  for (const VkCommandBuffer cmd : frame.order) {
+    if (cmd == VK_NULL_HANDLE) {
+      nx::loge(nx::log::rhi, "a recording split off the frame never ended");
+      continue;
+    }
+    VkCommandBufferSubmitInfo info{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    info.commandBuffer = cmd;
+    out.push_back(info);
+  }
+  return true;
+}
+
+RecordingSplit VulkanDevice::split_frame(VulkanCommandContext &frame_context,
+                                         const u32 count) {
+  if (!m_frame_active || count == 0 || frame_context.m_slot != nullptr ||
+      frame_context.m_cmd == VK_NULL_HANDLE)
+    return {};
+  if (frame_context.m_in_render_pass) {
+    nx::loge(nx::log::rhi, "split_frame inside a render pass");
+    return {};
+  }
+  FrameContext &frame = m_frames[m_frame_index];
+  m_gpu_profiler.end_open_zones(frame.slot.zones);
+  if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame_context.m_cmd)) !=
+      VK_SUCCESS) {
+    frame.order.back() = VK_NULL_HANDLE;
+    frame_context.m_cmd = VK_NULL_HANDLE;
+    return {};
+  }
+  const RecordingSplit split{nx::cast<u32>(frame.order.size()), count};
+  frame.order.resize(frame.order.size() + count, VK_NULL_HANDLE);
+  frame_context.m_cmd = next_command_buffer(frame.slot);
+  frame.order.push_back(frame_context.m_cmd);
+  return split;
+}
+
+bool VulkanDevice::begin_recording(const RecordingSplit split, const u32 index,
+                                   VulkanCommandContext &out) {
+  if (!m_frame_active || index >= split.count)
+    return false;
+  FrameContext &frame = m_frames[m_frame_index];
+  CommandSlot *slot = nullptr;
+  {
+    const nx::scoped_lock<nx::mutex> held(m_recording_lock);
+    if (!frame.idle.empty()) {
+      slot = frame.idle.back();
+      frame.idle.pop_back();
+    } else {
+      slot = frame.recorders.emplace_back(nx::make_unique<CommandSlot>()).get();
+    }
+  }
+  const VkCommandBuffer cmd = next_command_buffer(*slot);
+  if (cmd == VK_NULL_HANDLE) {
+    const nx::scoped_lock<nx::mutex> held(m_recording_lock);
+    frame.idle.push_back(slot);
+    return false;
+  }
+  out = {};
+  out.m_cmd = cmd;
+  out.m_device = this;
+  out.m_zones = &slot->zones;
+  out.m_slot = slot;
+  out.m_position = split.first + index;
+  return true;
+}
+
+void VulkanDevice::end_recording(VulkanCommandContext &recording) {
+  CommandSlot *slot = recording.m_slot;
+  if (slot == nullptr)
+    return;
+  if (recording.m_in_render_pass) {
+    nx::loge(nx::log::rhi, "a split recording ended inside a render pass");
+    recording.end_render_pass();
+  }
+  m_gpu_profiler.end_open_zones(slot->zones);
+  FrameContext &frame = m_frames[m_frame_index];
+  if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(recording.m_cmd)) ==
+      VK_SUCCESS)
+    frame.order[recording.m_position] = recording.m_cmd;
+  {
+    const nx::scoped_lock<nx::mutex> held(m_recording_lock);
+    frame.idle.push_back(slot);
+  }
+  recording = {};
+}
+
 AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   NX_PROFILE_ZONE("vk::begin_frame");
   if (device_status() == GpuDeviceStatus::Lost ||
@@ -512,21 +640,9 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     return AcquireResult::SurfaceLost;
   }
 
-  const bool new_slot = frame.slot.pool == VK_NULL_HANDLE;
-  if (!open_slot(*this, m_device,
-                 m_queue_families[nx::cast<usize>(QueueType::Graphics)],
-                 m_bindless.set, m_pipeline_layout, frame))
+  const VkCommandBuffer cmd = open_frame_slot(frame);
+  if (cmd == VK_NULL_HANDLE)
     return AcquireResult::SurfaceLost;
-  if (new_slot) {
-    set_object_name(vk_handle_value(frame.slot.pool),
-                    VK_OBJECT_TYPE_COMMAND_POOL,
-                    nx::format("frame {} command pool", m_frame_index));
-    set_object_name(vk_handle_value(frame.slot.cmd),
-                    VK_OBJECT_TYPE_COMMAND_BUFFER,
-                    nx::format("frame {} command buffer", m_frame_index));
-  }
-
-  const VkCommandBuffer cmd = frame.slot.cmd;
   m_gpu_profiler.collect(cmd);
 
   // Turn finished async decodes into textures, submit the batch of uploads
@@ -536,9 +652,10 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   m_uploader.flush_batch();
   m_frame_upload_wait = m_uploader.record_acquires(cmd);
 
+  out_context = {};
   out_context.m_cmd = cmd;
   out_context.m_device = this;
-  out_context.m_in_render_pass = false;
+  out_context.m_zones = &frame.slot.zones;
   m_frame_active = true;
 
   const bool suboptimal =
@@ -571,29 +688,18 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   collect_garbage(completed);
   m_uploader.reclaim();
 
-  const bool new_slot = frame.slot.pool == VK_NULL_HANDLE;
-  if (!open_slot(*this, m_device,
-                 m_queue_families[nx::cast<usize>(QueueType::Graphics)],
-                 m_bindless.set, m_pipeline_layout, frame))
+  const VkCommandBuffer cmd = open_frame_slot(frame);
+  if (cmd == VK_NULL_HANDLE)
     return false;
-  if (new_slot) {
-    set_object_name(vk_handle_value(frame.slot.pool),
-                    VK_OBJECT_TYPE_COMMAND_POOL,
-                    nx::format("frame {} command pool", m_frame_index));
-    set_object_name(vk_handle_value(frame.slot.cmd),
-                    VK_OBJECT_TYPE_COMMAND_BUFFER,
-                    nx::format("frame {} command buffer", m_frame_index));
-  }
-
-  const VkCommandBuffer cmd = frame.slot.cmd;
   m_gpu_profiler.collect(cmd);
   m_uploader.pump();
   m_uploader.flush_batch();
   m_frame_upload_wait = m_uploader.record_acquires(cmd);
 
+  out_context = {};
   out_context.m_cmd = cmd;
   out_context.m_device = this;
-  out_context.m_in_render_pass = false;
+  out_context.m_zones = &frame.slot.zones;
   m_frame_active = true;
   m_headless_frame = true;
   return true;
@@ -610,9 +716,8 @@ bool VulkanDevice::end_headless_frame() {
 
 bool VulkanDevice::submit_without_present() {
   FrameContext &frame = m_frames[m_frame_index];
-  m_gpu_profiler.end_open_zones();
-  if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame.slot.cmd)) !=
-      VK_SUCCESS)
+  nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
+  if (!close_frame(frame, cmd_infos))
     return false;
 
   ++m_timeline_value;
@@ -636,15 +741,11 @@ bool VulkanDevice::submit_without_present() {
   signal_info.value = m_timeline_value;
   signal_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
-  VkCommandBufferSubmitInfo cmd_info{
-      VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-  cmd_info.commandBuffer = frame.slot.cmd;
-
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
   submit.waitSemaphoreInfoCount = wait_count;
   submit.pWaitSemaphoreInfos = wait_count > 0 ? &wait_info : nullptr;
-  submit.commandBufferInfoCount = 1;
-  submit.pCommandBufferInfos = &cmd_info;
+  submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
+  submit.pCommandBufferInfos = cmd_infos.data();
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal_info;
 
@@ -681,8 +782,7 @@ bool VulkanDevice::end_frame() {
     return submit_without_present();
 
   FrameContext &frame = m_frames[m_frame_index];
-  const VkCommandBuffer cmd = frame.slot.cmd;
-  m_gpu_profiler.end_open_zones();
+  const VkCommandBuffer cmd = frame.order.back();
 
   // The image must be in PRESENT_SRC before handing it to the present engine.
   if (VulkanTexture *backbuffer =
@@ -712,8 +812,8 @@ bool VulkanDevice::end_frame() {
     }
   }
 
-  if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame.slot.cmd)) !=
-      VK_SUCCESS)
+  nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
+  if (!close_frame(frame, cmd_infos))
     return false;
 
   ++m_timeline_value;
@@ -744,15 +844,11 @@ bool VulkanDevice::end_frame() {
   signal_infos[1].value = m_timeline_value;
   signal_infos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
-  VkCommandBufferSubmitInfo cmd_info{
-      VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-  cmd_info.commandBuffer = frame.slot.cmd;
-
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
   submit.waitSemaphoreInfoCount = wait_count;
   submit.pWaitSemaphoreInfos = wait_infos;
-  submit.commandBufferInfoCount = 1;
-  submit.pCommandBufferInfos = &cmd_info;
+  submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
+  submit.pCommandBufferInfos = cmd_infos.data();
   submit.signalSemaphoreInfoCount = 2;
   submit.pSignalSemaphoreInfos = signal_infos;
 

@@ -153,6 +153,8 @@ struct DeviceRoutes {
   nx::small_vector<nx::string_view, 16> missing;
 };
 
+struct CommandSlot;
+
 class VulkanCommandContext {
 public:
   VulkanCommandContext() = default;
@@ -221,16 +223,31 @@ private:
 
   VkCommandBuffer m_cmd = VK_NULL_HANDLE;
   VulkanDevice *m_device = nullptr;
+  VulkanGpuProfiler::Zones *m_zones = nullptr;
+  /// Set by begin_recording: the pool this context holds, and the place in
+  /// the frame's submission its command buffer fills.
+  CommandSlot *m_slot = nullptr;
+  u32 m_position = 0;
   bool m_in_render_pass = false;
 };
 
+/// A command pool and the command buffers allocated from it. One recorder uses
+/// it at a time; it is reset when its frame slot comes round again.
 struct CommandSlot {
   VkCommandPool pool = VK_NULL_HANDLE;
-  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  nx::small_vector<VkCommandBuffer, 2> cmds;
+  u32 used = 0;
+  VulkanGpuProfiler::Zones zones;
 };
 
 struct FrameContext {
+  /// What the frame's own context records into.
   CommandSlot slot;
+  /// One for each recording split off the frame that ran at the same time.
+  nx::small_vector<nx::unique_ptr<CommandSlot>, 4> recorders;
+  nx::small_vector<CommandSlot *, 4> idle;
+  /// Every command buffer the frame submits, in submission order.
+  nx::small_vector<VkCommandBuffer, 8> order;
   VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
   u64 timeline_value = 0;
 };
@@ -301,6 +318,19 @@ public:
 
   [[nodiscard]] AcquireResult begin_frame(VulkanCommandContext &out_context);
   [[nodiscard]] bool end_frame();
+
+  /// Ends the frame context's command buffer and reserves @p count more after
+  /// it, to be recorded apart; the context then continues in a new one, and
+  /// must not record until every split recording has ended. An empty split
+  /// means none was made.
+  [[nodiscard]] RecordingSplit split_frame(VulkanCommandContext &frame,
+                                           u32 count);
+  /// Begins recording @p index of @p split with a command pool of its own. Any
+  /// thread or job may record it, one at a time, and must end it before the
+  /// frame ends.
+  [[nodiscard]] bool begin_recording(RecordingSplit split, u32 index,
+                                     VulkanCommandContext &out);
+  void end_recording(VulkanCommandContext &recording);
 
   [[nodiscard]] bool begin_headless_frame(VulkanCommandContext &out_context);
 
@@ -483,6 +513,11 @@ private:
   void destroy_backbuffer_views() noexcept;
   void set_object_name(u64 object, VkObjectType type, nx::string_view name);
   void collect_garbage(u64 completed_timeline_value) noexcept;
+  [[nodiscard]] VkCommandBuffer next_command_buffer(CommandSlot &slot);
+  [[nodiscard]] VkCommandBuffer open_frame_slot(FrameContext &frame);
+  [[nodiscard]] bool
+  close_frame(FrameContext &frame,
+              nx::small_vector<VkCommandBufferSubmitInfo, 8> &out);
   [[nodiscard]] VkResult wait_timeline(u64 value) noexcept;
   void destroy_texture_now(VulkanTexture &texture) noexcept;
 
@@ -530,6 +565,8 @@ private:
   u64 m_timeline_value = 0;
   std::atomic<u64> m_report_frame{0};
   nx::small_vector<FrameContext, 3> m_frames;
+  /// Guards the recorders and idle lists of the frame being recorded.
+  nx::mutex m_recording_lock;
   u32 m_frame_index = 0;
   u32 m_frames_in_flight = 2;
 

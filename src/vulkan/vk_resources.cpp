@@ -1,6 +1,7 @@
 
 #include "rendering/rhi/vulkan/vk_device.h"
 
+#include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
 
 #include <cstring>
@@ -746,7 +747,11 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
         desc.layer_count == ~0u ? VK_REMAINING_ARRAY_LAYERS : desc.layer_count;
 
     image_barriers.push_back(barrier);
-    if (tracking == StateTracking::Update)
+    // A split recording runs out of submission order, so the state it would
+    // record could be overwritten by one that the GPU runs before it.
+    NX_ASSERT(tracking != StateTracking::Update || m_slot == nullptr,
+              "a split recording cannot track texture state");
+    if (tracking == StateTracking::Update && m_slot == nullptr)
       texture->state = desc.to;
   }
 
@@ -924,7 +929,8 @@ void VulkanCommandContext::push_debug_group(const nx::string_view name,
                                             const f32 b) {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
     return;
-  m_device->gpu_profiler().begin_zone(m_cmd, name);
+  if (m_zones != nullptr)
+    m_device->gpu_profiler().begin_zone(*m_zones, m_cmd, name);
   if (!m_device->debug_utils_enabled())
     return;
 
@@ -941,7 +947,8 @@ void VulkanCommandContext::push_debug_group(const nx::string_view name,
 void VulkanCommandContext::pop_debug_group() {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
     return;
-  m_device->gpu_profiler().end_zone();
+  if (m_zones != nullptr)
+    m_device->gpu_profiler().end_zone(*m_zones);
   if (!m_device->debug_utils_enabled())
     return;
   vkCmdEndDebugUtilsLabelEXT(m_cmd);

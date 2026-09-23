@@ -42,10 +42,28 @@ public:
   /// every query, so that waits until nothing recorded is left to run.
   void collect_host(bool queue_idle);
 
-  void begin_zone(VkCommandBuffer cmd, nx::string_view name);
-  void end_zone();
-  /// Closes whatever a frame left open; a zone cannot span command buffers.
-  void end_open_zones();
+  static constexpr u32 MAX_DEPTH = 16;
+  static constexpr usize ZONE_BYTES = 32;
+
+  /// The zones one command buffer has open. A zone cannot span command
+  /// buffers, so each context recording its own keeps its own. Past
+  /// MAX_DEPTH, zones are counted but not recorded.
+  struct Zones {
+#if NX_PROFILE_ENABLED
+    u32 depth = 0;
+    alignas(std::max_align_t) std::byte slots[MAX_DEPTH][ZONE_BYTES];
+#endif
+  };
+
+  void begin_zone(Zones &zones, VkCommandBuffer cmd, nx::string_view name);
+  void end_zone(Zones &zones);
+  /// Closes whatever a command buffer left open, before it ends.
+  void end_open_zones(Zones &zones);
+
+  void begin_zone(VkCommandBuffer cmd, nx::string_view name) {
+    begin_zone(m_zones, cmd, name);
+  }
+  void end_zone() { end_zone(m_zones); }
 
   /// A zone for one scope. Its command buffer must still be recording when the
   /// scope ends; a null one times nothing.
@@ -69,18 +87,13 @@ public:
     bool m_open;
   };
 
-#if NX_PROFILE_ENABLED
 private:
-  static constexpr u32 MAX_DEPTH = 16;
-  static constexpr usize ZONE_BYTES = 32;
-
+#if NX_PROFILE_ENABLED
   void set_label(nx::string_view label);
 
   tracy::VkCtx *m_context = nullptr;
-  /// Past MAX_DEPTH, zones are counted but not recorded.
-  u32 m_depth = 0;
-  alignas(std::max_align_t) std::byte m_zones[MAX_DEPTH][ZONE_BYTES];
 #endif
+  Zones m_zones;
 };
 
 } // namespace nxe::rhi

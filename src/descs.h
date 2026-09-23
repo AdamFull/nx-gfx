@@ -260,6 +260,14 @@ struct BufferBarrier {
   u64 size = ~0ull;
 };
 
+/// Command buffers split off a frame by split_frame. They are submitted in
+/// index order, after what the frame recorded before the split and before what
+/// it records after.
+struct RecordingSplit {
+  u32 first = 0;
+  u32 count = 0;
+};
+
 struct DeviceCaps {
   nx::string_view device_name;
   u32 api_version = 0;
@@ -287,6 +295,9 @@ struct DeviceCaps {
   bool draw_indirect_count = false;
   bool memoryless_attachments = false;
   bool timestamps = false;
+  /// One frame's commands can be recorded on several threads at once, through
+  /// split_frame and begin_recording.
+  bool parallel_recording = false;
 
   u32 max_msaa_samples = 1;
 

@@ -240,6 +240,17 @@ public:
   [[nodiscard]] AcquireResult begin_frame(MetalCommandContext &out_context);
   [[nodiscard]] bool end_frame();
 
+  // A frame records into one command buffer here, so caps() reports no
+  // parallel_recording and nothing is ever split off it.
+  [[nodiscard]] RecordingSplit split_frame(MetalCommandContext &, u32) {
+    return {};
+  }
+  [[nodiscard]] bool begin_recording(RecordingSplit, u32,
+                                     MetalCommandContext &) {
+    return false;
+  }
+  void end_recording(MetalCommandContext &) {}
+
   [[nodiscard]] bool begin_headless_frame(MetalCommandContext &out_context);
 
   [[nodiscard]] bool end_headless_frame();
