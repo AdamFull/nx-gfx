@@ -7,7 +7,6 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
-#include "core/foundation/containers/concurrent_queue.h"
 #include "core/foundation/containers/slot_map.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/containers/sync_slot_map.h"
@@ -196,39 +195,6 @@ struct MetalUploadState {
   u64 submitted = 0;
   std::atomic<u64> completed{0};
   u64 bytes_staged = 0;
-
-  enum class Source : u8 { Path, Memory };
-
-  struct LoadJob {
-    u32 id = 0;
-    u32 generation = 0;
-    Source source = Source::Path;
-    TextureUsageFlags usage = TextureUsage::Sampled | TextureUsage::CopyDst;
-  };
-
-  struct LoadSlot {
-    std::atomic<LoadStatus> status{LoadStatus::None};
-    u32 generation = 0;
-    nx::string path;
-    nx::blob<u8> encoded;
-    ImageData decoded;
-    TextureHandle texture;
-    TextureUsageFlags usage = TextureUsage::Sampled | TextureUsage::CopyDst;
-    bool in_use = false;
-  };
-
-  static constexpr usize MAX_LOADS = 256;
-
-  nx::thread worker;
-  nx::mpmc::Queue<LoadJob, 256> job_queue;
-  nx::mpmc::Queue<LoadJob, 256> done_queue;
-  nx::event job_signal{false, false};
-  std::atomic<bool> worker_running{false};
-  nx::mutex load_mutex;
-  LoadSlot loads[MAX_LOADS];
-  u32 next_load_id = 1;
-  u64 loads_ready = 0;
-  u64 loads_failed = 0;
 };
 
 struct MetalDeviceState {
@@ -356,9 +322,7 @@ void retire(MetalDeviceState &state,
             const MetalDeviceState::PendingDelete &pending);
 void collect_garbage(MetalDeviceState &state, u64 completed_frame);
 
-[[nodiscard]] bool uploader_init(MetalDeviceState &state);
 void uploader_shutdown(MetalDeviceState &state) noexcept;
-void uploader_pump(MetalDeviceState &state);
 /// Returns staging borrowed by batches the GPU has finished with.
 void uploader_reclaim(MetalDeviceState &state) noexcept;
 

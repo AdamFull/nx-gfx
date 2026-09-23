@@ -645,10 +645,9 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     return AcquireResult::SurfaceLost;
   m_gpu_profiler.collect(cmd);
 
-  // Turn finished async decodes into textures, submit the batch of uploads
-  // accumulated since the last frame, then take ownership of everything it
-  // produced and note the copy-timeline value this frame's submit must wait on.
-  m_uploader.pump();
+  // Submit the batch of uploads accumulated since the last frame, then take
+  // ownership of everything it produced and note the copy-timeline value this
+  // frame's submit must wait on.
   m_uploader.flush_batch();
   m_frame_upload_wait = m_uploader.record_acquires(cmd);
 
@@ -692,7 +691,6 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   if (cmd == VK_NULL_HANDLE)
     return false;
   m_gpu_profiler.collect(cmd);
-  m_uploader.pump();
   m_uploader.flush_batch();
   m_frame_upload_wait = m_uploader.record_acquires(cmd);
 

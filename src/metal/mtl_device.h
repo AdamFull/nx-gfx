@@ -54,11 +54,9 @@ struct UploaderStats {
   u64 ring_capacity = 0;
   usize extra_buffers = 0;
   usize inflight_submits = 0;
-  u64 loads_ready = 0;
-  u64 loads_failed = 0;
 };
 
-/// Asynchronous GPU upload, readback and file/decode streaming. Uploads are
+/// Asynchronous GPU upload and readback. Uploads are
 /// batched: a call records a blit and returns a ticket, but nothing is
 /// committed until the batch flushes (once per frame, or on flush()/wait()).
 class MetalUploader {
@@ -67,9 +65,6 @@ public:
 
   MetalUploader(const MetalUploader &) = delete;
   MetalUploader &operator=(const MetalUploader &) = delete;
-
-  static constexpr TextureUsageFlags DEFAULT_LOAD_USAGE =
-      TextureUsage::Sampled | TextureUsage::CopyDst;
 
   [[nodiscard]] UploadTicket
   upload_texture(TextureHandle handle, std::span<const u8> src,
@@ -84,16 +79,6 @@ public:
   [[nodiscard]] UploadTicket
   clear_buffer(BufferHandle handle,
                ResourceState final_state = ResourceState::ShaderReadOnly);
-
-  LoadRequest load_texture(nx::string_view path,
-                           TextureUsageFlags usage = DEFAULT_LOAD_USAGE);
-  LoadRequest
-  load_texture_from_memory(std::span<const u8> bytes,
-                           TextureUsageFlags usage = DEFAULT_LOAD_USAGE);
-
-  [[nodiscard]] LoadStatus load_status(LoadRequest req) const noexcept;
-  [[nodiscard]] TextureHandle loaded_texture(LoadRequest req) const noexcept;
-  void release(LoadRequest req) noexcept;
 
   // Readbacks (render thread). The source must not be in concurrent GPU use.
   // A readback flushes any open upload batch and submits on its own.
@@ -110,11 +95,6 @@ public:
   void flush_batch() noexcept;
 
   [[nodiscard]] UploaderStats stats() const noexcept;
-
-  /// Turns finished decodes into textures and submits their uploads. The
-  /// device calls it once per frame; anything driving the uploader without
-  /// frames must call it, or loads never leave Uploading.
-  void pump();
 
 private:
   friend class MetalDevice;

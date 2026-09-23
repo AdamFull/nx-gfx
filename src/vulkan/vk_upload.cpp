@@ -6,7 +6,6 @@
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
 
-#include <chrono>
 #include <cstring>
 #include <limits>
 
@@ -39,23 +38,6 @@ whole_image_barrier(const VkImage image,
 }
 
 } // namespace
-
-nx::string_view to_string(const LoadStatus status) noexcept {
-  switch (status) {
-  case LoadStatus::Pending:
-    return "pending";
-  case LoadStatus::Decoding:
-    return "decoding";
-  case LoadStatus::Uploading:
-    return "uploading";
-  case LoadStatus::Ready:
-    return "ready";
-  case LoadStatus::Failed:
-    return "failed";
-  default:
-    return "none";
-  }
-}
 
 VulkanUploader::~VulkanUploader() { shutdown(); }
 
@@ -113,22 +95,8 @@ bool VulkanUploader::init(VulkanDevice *device) {
   m_device->set_object_name(vk_handle_value(m_ring), VK_OBJECT_TYPE_BUFFER,
                             "upload ring");
 
-  for (u32 s = 0; s < MAX_LOADS; ++s) {
-    m_load_state[s].store(LoadStatus::None, std::memory_order_relaxed);
-    m_load_gen[s].store(0, std::memory_order_relaxed);
-    m_free_slots.try_push(s);
-  }
-  m_worker_stop.store(false, std::memory_order_relaxed);
-  m_worker = nx::thread([this] { worker_main(); },
-                        nx::thread_options{.name = "nx-loader"});
-  if (!m_worker.joinable()) {
-    nx::loge(log_up, "failed to start the loader thread");
-    return false;
-  }
-
   nx::logd(log_up,
-           "uploader: transfer queue family {} ({}), {} MiB ring, "
-           "loader thread up",
+           "uploader: transfer queue family {} ({}), {} MiB ring",
            m_copy_family,
            needs_ownership_transfer() ? "dedicated" : "shared with graphics",
            RING_CAPACITY / (1024 * 1024));
@@ -138,18 +106,6 @@ bool VulkanUploader::init(VulkanDevice *device) {
 void VulkanUploader::shutdown() noexcept {
   if (m_vk == VK_NULL_HANDLE)
     return;
-
-  m_worker_stop.store(true, std::memory_order_release);
-  m_worker_wake.release();
-  if (m_worker.joinable())
-    m_worker.join();
-
-  LoadCommand cmd;
-  while (m_load_requests.try_pop(cmd))
-    nx::release(cmd.payload);
-  DecodeResult res;
-  while (m_load_results.try_pop(res))
-    nx::release(res.image);
 
   if (m_ring != VK_NULL_HANDLE)
     vmaDestroyBuffer(m_allocator, m_ring, m_ring_alloc);
@@ -812,187 +768,6 @@ UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
   return {m_batch_value};
 }
 
-LoadRequest VulkanUploader::enqueue_load(LoadPayload *payload) {
-  u32 slot = 0;
-  if (!m_free_slots.try_pop(slot)) {
-    nx::loge(log_up, "loader: more than {} loads in flight", MAX_LOADS);
-    nx::release(payload);
-    return {};
-  }
-  const u32 gen = m_load_gen[slot].load(std::memory_order_relaxed);
-  m_load_handle[slot] = {};
-  m_load_ticket[slot] = {};
-  m_load_state[slot].store(LoadStatus::Pending, std::memory_order_release);
-
-  LoadCommand cmd{slot + 1, gen, payload};
-  while (!m_load_requests.try_push(cmd))
-    nx::this_thread::yield();
-  m_worker_wake.release();
-  return {slot + 1, gen};
-}
-
-LoadRequest VulkanUploader::load_texture(const nx::string_view path,
-                                         const TextureUsageFlags usage) {
-  auto *payload = nx::allocate<LoadPayload>();
-  if (payload == nullptr)
-    return {};
-  payload->path = nx::string(path);
-  payload->usage = usage;
-  return enqueue_load(payload);
-}
-
-LoadRequest
-VulkanUploader::load_texture_from_memory(const std::span<const u8> bytes,
-                                         const TextureUsageFlags usage) {
-  auto *payload = nx::allocate<LoadPayload>();
-  if (payload == nullptr)
-    return {};
-  payload->bytes = nx::blob<u8>(bytes);
-  payload->usage = usage;
-  return enqueue_load(payload);
-}
-
-LoadStatus VulkanUploader::load_status(const LoadRequest req) const noexcept {
-  if (!req.valid() || req.id > MAX_LOADS)
-    return LoadStatus::None;
-  const u32 s = req.id - 1;
-  if (m_load_gen[s].load(std::memory_order_acquire) != req.generation)
-    return LoadStatus::None;
-  return m_load_state[s].load(std::memory_order_acquire);
-}
-
-TextureHandle
-VulkanUploader::loaded_texture(const LoadRequest req) const noexcept {
-  if (!req.valid() || req.id > MAX_LOADS)
-    return {};
-  const u32 s = req.id - 1;
-  if (m_load_gen[s].load(std::memory_order_acquire) != req.generation)
-    return {};
-  if (m_load_state[s].load(std::memory_order_acquire) != LoadStatus::Ready)
-    return {};
-  return m_load_handle[s];
-}
-
-void VulkanUploader::release(const LoadRequest req) noexcept {
-  if (!req.valid() || req.id > MAX_LOADS)
-    return;
-  const u32 s = req.id - 1;
-  if (m_load_gen[s].load(std::memory_order_acquire) != req.generation)
-    return;
-  m_load_state[s].store(LoadStatus::None, std::memory_order_release);
-  m_load_handle[s] = {};
-  m_load_gen[s].fetch_add(1, std::memory_order_acq_rel);
-  while (!m_free_slots.try_push(s))
-    nx::this_thread::yield();
-}
-
-void VulkanUploader::worker_main() {
-  while (!m_worker_stop.load(std::memory_order_acquire)) {
-    LoadCommand cmd;
-    if (!m_load_requests.try_pop(cmd)) {
-      (void)m_worker_wake.try_acquire_for(std::chrono::milliseconds(100));
-      continue;
-    }
-
-    const u32 s = cmd.id - 1;
-    LoadPayload *pl = cmd.payload;
-    if (m_load_gen[s].load(std::memory_order_acquire) == cmd.generation)
-      m_load_state[s].store(LoadStatus::Decoding, std::memory_order_release);
-
-    auto decoded = pl->path.empty()
-                       ? load_image_from_memory(std::span<const u8>(
-                             pl->bytes.data(), pl->bytes.size()))
-                       : load_image(pl->path);
-    const TextureUsageFlags usage = pl->usage;
-    nx::release(pl);
-
-    if (!decoded) {
-      nx::loge(log_up, "loader: decode failed: {}", to_string(decoded.error()));
-      if (m_load_gen[s].load(std::memory_order_acquire) == cmd.generation)
-        m_load_state[s].store(LoadStatus::Failed, std::memory_order_release);
-      m_loads_failed.fetch_add(1, std::memory_order_relaxed);
-      continue;
-    }
-
-    ImageData *image = nx::allocate<ImageData>(std::move(*decoded));
-    if (image == nullptr) {
-      if (m_load_gen[s].load(std::memory_order_acquire) == cmd.generation)
-        m_load_state[s].store(LoadStatus::Failed, std::memory_order_release);
-      m_loads_failed.fetch_add(1, std::memory_order_relaxed);
-      continue;
-    }
-
-    DecodeResult res{cmd.id, cmd.generation, image, usage};
-    while (!m_load_results.try_push(res)) {
-      if (m_worker_stop.load(std::memory_order_acquire)) {
-        nx::release(res.image);
-        break;
-      }
-      nx::this_thread::yield();
-    }
-  }
-}
-
-void VulkanUploader::pump() {
-  m_load_results.consume_all([this](DecodeResult res) {
-    const u32 s = res.id - 1;
-    if (m_load_gen[s].load(std::memory_order_acquire) != res.generation) {
-      nx::release(res.image);
-      return;
-    }
-
-    const TextureHandle handle =
-        m_device->create_texture(res.image->texture_desc("loaded", res.usage));
-    if (!handle.valid()) {
-      nx::release(res.image);
-      m_load_state[s].store(LoadStatus::Failed, std::memory_order_release);
-      m_loads_failed.fetch_add(1, std::memory_order_relaxed);
-      return;
-    }
-    const UploadTicket ticket = upload_texture(handle, *res.image);
-    nx::release(res.image);
-
-    // Without this the load reaches Ready and hands out a texture holding
-    // whatever was in that memory, which is worse than reporting the failure.
-    if (!ticket.ok()) {
-      m_device->destroy_texture(handle);
-      m_load_state[s].store(LoadStatus::Failed, std::memory_order_release);
-      m_loads_failed.fetch_add(1, std::memory_order_relaxed);
-      return;
-    }
-
-    m_load_handle[s] = handle;
-    m_load_ticket[s] = ticket;
-    m_load_state[s].store(LoadStatus::Uploading, std::memory_order_release);
-    m_load_uploading.push_back({res.id, res.generation});
-  });
-
-  {
-    const nx::scoped_lock lock(m_command_mutex);
-    for (const LoadRequest &pending : m_load_uploading) {
-      if (m_load_ticket[pending.id - 1].value > m_value) {
-        flush_locked();
-        break;
-      }
-    }
-  }
-
-  for (usize i = m_load_uploading.size(); i > 0; --i) {
-    const LoadRequest u = m_load_uploading[i - 1];
-    const u32 s = u.id - 1;
-    const bool stale =
-        m_load_gen[s].load(std::memory_order_acquire) != u.generation;
-    if (!stale && !is_complete(m_load_ticket[s]))
-      continue;
-
-    if (!stale) {
-      m_load_state[s].store(LoadStatus::Ready, std::memory_order_release);
-      m_loads_ready.fetch_add(1, std::memory_order_relaxed);
-    }
-    m_load_uploading.erase(m_load_uploading.begin() + nx::cast<isize>(i - 1));
-  }
-}
-
 ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
                                            const u64 offset, const u64 size) {
   const nx::scoped_lock lock(m_command_mutex);
@@ -1193,8 +968,6 @@ UploaderStats VulkanUploader::stats() const noexcept {
   s.ring_capacity = m_ring_capacity;
   s.extra_buffers = m_chunks.size();
   s.inflight_submits = m_inflight.size();
-  s.loads_ready = m_loads_ready.load(std::memory_order_relaxed);
-  s.loads_failed = m_loads_failed.load(std::memory_order_relaxed);
   return s;
 }
 

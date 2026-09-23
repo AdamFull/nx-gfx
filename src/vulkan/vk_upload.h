@@ -1,11 +1,8 @@
 #pragma once
 
-#include "core/foundation/containers/concurrent_queue.h"
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/foundation.h"
-#include "core/foundation/strings/utf8_string.h"
 #include "core/foundation/threading/sync.h"
-#include "core/foundation/threading/thread.h"
 #include "rendering/rhi/handles.h"
 #include "rendering/rhi/image/image.h"
 #include "rendering/rhi/types.h"
@@ -13,7 +10,6 @@
 #include "rendering/rhi/vulkan/vk_common.h"
 #include "rendering/rhi/vulkan/vk_mem_alloc_include.h"
 
-#include <atomic>
 #include <span>
 
 namespace nxe::rhi {
@@ -40,8 +36,6 @@ struct UploaderStats {
   u64 ring_capacity = 0;
   usize extra_buffers = 0;
   usize inflight_submits = 0;
-  u64 loads_ready = 0;
-  u64 loads_failed = 0;
 };
 
 class VulkanUploader {
@@ -72,21 +66,6 @@ public:
   clear_buffer(BufferHandle handle,
                ResourceState final_state = ResourceState::ShaderReadOnly);
 
-  static constexpr TextureUsageFlags DEFAULT_LOAD_USAGE =
-      TextureUsage::Sampled | TextureUsage::CopyDst;
-
-  LoadRequest load_texture(nx::string_view path,
-                           TextureUsageFlags usage = DEFAULT_LOAD_USAGE);
-  /// Queues a load from encoded bytes (DDS/KTX/PNG/...); the bytes are copied.
-  LoadRequest
-  load_texture_from_memory(std::span<const u8> bytes,
-                           TextureUsageFlags usage = DEFAULT_LOAD_USAGE);
-
-  [[nodiscard]] LoadStatus load_status(LoadRequest req) const noexcept;
-  /// The texture for a Ready request; a null handle otherwise.
-  [[nodiscard]] TextureHandle loaded_texture(LoadRequest req) const noexcept;
-  void release(LoadRequest req) noexcept;
-
   // The source must not be in concurrent use on the graphics queue - read after
   // wait_idle(), or from a resource only the copy queue touches.
 
@@ -99,7 +78,6 @@ public:
 
   [[nodiscard]] UploaderStats stats() const noexcept;
 
-  void pump();
   void flush_batch() noexcept;
   /// Records queue-ownership acquire barriers for the copies finished since the
   /// last call into @p graphics_cmd, and returns the copy-timeline value the
@@ -178,26 +156,6 @@ private:
     ResourceState new_state = ResourceState::ShaderReadOnly;
   };
 
-  // Loader plumbing. The queue elements carry owning heap pointers so they stay
-  // trivially movable (a requirement of the lock-free queues).
-  struct LoadPayload {
-    nx::string path;
-    nx::blob<u8> bytes;
-    TextureUsageFlags usage = DEFAULT_LOAD_USAGE;
-  };
-  struct LoadCommand {
-    u32 id = 0;
-    u32 generation = 0;
-    LoadPayload *payload = nullptr;
-  };
-  struct DecodeResult {
-    u32 id = 0;
-    u32 generation = 0;
-    ImageData *image = nullptr;
-    TextureUsageFlags usage = DEFAULT_LOAD_USAGE;
-  };
-  static constexpr u32 MAX_LOADS = 1024;
-
   [[nodiscard]] u64 completed_value() const noexcept;
   [[nodiscard]] u64 graphics_completed() const noexcept;
   [[nodiscard]] bool needs_ownership_transfer() const noexcept {
@@ -225,9 +183,6 @@ private:
   void record_releases();
   /// Replays the copies that must run on the graphics queue into @p cmd.
   void replay_graphics_copies(VkCommandBuffer cmd);
-
-  void worker_main();
-  LoadRequest enqueue_load(LoadPayload *payload);
 
   VulkanDevice *m_device = nullptr;
   /// Upload recording is fed by the update thread while frame hand-off and
@@ -276,20 +231,6 @@ private:
   /// going to signal. Every ring marker pushed while copies are pending carries
   /// it, so the tail cannot walk over bytes that frame has yet to read.
   u64 m_graphics_hold = 0;
-
-  nx::thread m_worker;
-  std::atomic<bool> m_worker_stop{false};
-  nx::semaphore m_worker_wake{0};
-  nx::mpsc::Queue<LoadCommand, MAX_LOADS> m_load_requests;
-  nx::mpsc::Queue<DecodeResult, MAX_LOADS> m_load_results;
-  nx::mpmc::Queue<u32, MAX_LOADS> m_free_slots;
-  std::atomic<LoadStatus> m_load_state[MAX_LOADS];
-  std::atomic<u32> m_load_gen[MAX_LOADS];
-  TextureHandle m_load_handle[MAX_LOADS];
-  UploadTicket m_load_ticket[MAX_LOADS];
-  nx::small_vector<LoadRequest, 64> m_load_uploading;
-  std::atomic<u64> m_loads_ready{0};
-  std::atomic<u64> m_loads_failed{0};
 };
 
 } // namespace nxe::rhi

@@ -3,7 +3,6 @@
 #include "rendering/rhi/metal/mtl_gpu_crash.h"
 
 #include "core/foundation/core/scope_guard.h"
-#include "core/foundation/vfs/vfs.h"
 
 #include <limits>
 
@@ -11,9 +10,6 @@ namespace nxe::rhi {
 namespace {
 
 using Staging = MetalUploadState::Staging;
-using LoadJob = MetalUploadState::LoadJob;
-using LoadSlot = MetalUploadState::LoadSlot;
-using Source = MetalUploadState::Source;
 
 u64 round_staging_size(const u64 bytes) noexcept {
   constexpr u64 MIN = 64u * 1024u;
@@ -190,106 +186,10 @@ bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
   return true;
 }
 
-LoadSlot *acquire_load_slot(MetalUploadState &up, u32 &out_id,
-                            u32 &out_generation) {
-  nx::scoped_lock lock(up.load_mutex);
-  for (usize i = 1; i < MetalUploadState::MAX_LOADS; ++i) {
-    LoadSlot &slot = up.loads[i];
-    if (slot.in_use)
-      continue;
-    slot.in_use = true;
-    ++slot.generation;
-    slot.texture = {};
-    slot.decoded = {};
-    slot.status.store(LoadStatus::Pending, std::memory_order_release);
-    out_id = nx::cast<u32>(i);
-    out_generation = slot.generation;
-    return &slot;
-  }
-  return nullptr;
-}
-
-LoadSlot *resolve_load(MetalUploadState &up, const LoadRequest req) noexcept {
-  if (req.id == 0 || req.id >= MetalUploadState::MAX_LOADS)
-    return nullptr;
-  LoadSlot &slot = up.loads[req.id];
-  return slot.generation == req.generation ? &slot : nullptr;
-}
-
-void worker_main(MetalDeviceState *state) {
-  MetalUploadState &up = state->upload;
-
-  while (up.worker_running.load(std::memory_order_acquire)) {
-    LoadJob job;
-    if (!up.job_queue.try_pop(job)) {
-      up.job_signal.wait();
-      continue;
-    }
-
-    LoadSlot &slot = up.loads[job.id];
-    if (slot.generation != job.generation)
-      continue;
-
-    slot.status.store(LoadStatus::Decoding, std::memory_order_release);
-
-    nx::result<ImageData, ImageError> decoded =
-        nx::result<ImageData, ImageError>(nx::err(ImageError::Unknown));
-
-    if (job.source == Source::Path) {
-      if (auto bytes = nx::vfs::read(slot.path.view())) {
-        decoded = load_image_from_memory(
-            std::span<const u8>(bytes->data(), bytes->size()));
-      } else {
-        decoded = nx::result<ImageData, ImageError>(nx::err(ImageError::Io));
-      }
-    } else {
-      decoded = load_image_from_memory(
-          std::span<const u8>(slot.encoded.data(), slot.encoded.size()));
-    }
-
-    if (!decoded) {
-      nx::logw(log_rhi, "uploader: decode failed for request {}: {}", job.id,
-               to_string(decoded.error()));
-      slot.status.store(LoadStatus::Failed, std::memory_order_release);
-      continue;
-    }
-
-    slot.decoded = std::move(*decoded);
-    // The encoded bytes are dead once decoded; drop them before the render
-    // thread picks the job up so the peak footprint is one copy, not two.
-    slot.encoded = {};
-    slot.status.store(LoadStatus::Uploading, std::memory_order_release);
-    (void)up.done_queue.try_push(job);
-  }
-}
-
-}
-
-bool uploader_init(MetalDeviceState &state) {
-  MetalUploadState &up = state.upload;
-
-  up.worker_running.store(true, std::memory_order_release);
-  up.worker = nx::thread(
-      [&state] { worker_main(&state); },
-      nx::thread_options{.name = "nx-upload",
-                         .priority = nx::thread_priority::BelowNormal});
-
-  if (!up.worker.joinable()) {
-    nx::loge(log_rhi, "uploader: could not start the decode worker");
-    up.worker_running.store(false, std::memory_order_release);
-    return false;
-  }
-  return true;
 }
 
 void uploader_shutdown(MetalDeviceState &state) noexcept {
   MetalUploadState &up = state.upload;
-
-  if (up.worker.joinable()) {
-    up.worker_running.store(false, std::memory_order_release);
-    up.job_signal.set();
-    up.worker.join();
-  }
 
   if (up.blit != nil)
     (void)submit_batch(state);
@@ -302,14 +202,6 @@ void uploader_shutdown(MetalDeviceState &state) noexcept {
     up.free_staging.clear();
     up.blit = nil;
     up.batch = nil;
-  }
-
-  for (LoadSlot &slot : up.loads) {
-    slot.status.store(LoadStatus::None, std::memory_order_release);
-    slot.in_use = false;
-    slot.decoded = {};
-    slot.encoded = {};
-    slot.path.clear();
   }
 }
 
@@ -330,54 +222,6 @@ void uploader_reclaim(MetalDeviceState &state) noexcept {
   }
   while (up.in_flight.size() > kept)
     up.in_flight.pop_back();
-}
-
-void uploader_pump(MetalDeviceState &state) {
-  MetalUploadState &up = state.upload;
-  MetalDevice *device = state.owner;
-  if (device == nullptr)
-    return;
-
-  LoadJob job;
-  while (up.done_queue.try_pop(job)) {
-    LoadSlot &slot = up.loads[job.id];
-    if (slot.generation != job.generation)
-      continue;
-
-    if (!slot.decoded.valid()) {
-      slot.status.store(LoadStatus::Failed, std::memory_order_release);
-      ++up.loads_failed;
-      continue;
-    }
-
-    const TextureHandle handle =
-        device->create_texture(slot.decoded.texture_desc("loaded", job.usage));
-    if (!handle.valid()) {
-      slot.status.store(LoadStatus::Failed, std::memory_order_release);
-      slot.decoded = {};
-      ++up.loads_failed;
-      continue;
-    }
-
-    const bool uploaded =
-        device->uploader().upload_texture(handle, slot.decoded).ok();
-    slot.decoded = {};
-    // Without this the load reaches Ready and hands out a texture holding
-    // whatever was in that memory, which is worse than reporting the failure.
-    if (!uploaded) {
-      device->destroy_texture(handle);
-      slot.status.store(LoadStatus::Failed, std::memory_order_release);
-      ++up.loads_failed;
-      continue;
-    }
-
-    slot.texture = handle;
-    slot.status.store(LoadStatus::Ready, std::memory_order_release);
-    ++up.loads_ready;
-  }
-
-  if (up.blit != nil)
-    (void)submit_batch(state);
 }
 
 UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
@@ -486,112 +330,6 @@ UploadTicket MetalUploader::clear_buffer(const BufferHandle handle,
                 range:NSMakeRange(0, nx::cast<NSUInteger>(buffer->size))
                 value:0];
   return UploadTicket{up.submitted + 1};
-}
-
-LoadRequest MetalUploader::load_texture(const nx::string_view path,
-                                        const TextureUsageFlags usage) {
-  if (m_state == nullptr)
-    return {};
-
-  MetalUploadState &up = m_state->upload;
-  u32 id = 0, generation = 0;
-  LoadSlot *slot = acquire_load_slot(up, id, generation);
-  if (slot == nullptr) {
-    nx::logw(log_rhi, "uploader: the load table is full ({} slots)",
-             MetalUploadState::MAX_LOADS);
-    return {};
-  }
-
-  slot->path = nx::string(path);
-  slot->usage = usage;
-
-  const LoadJob job{id, generation, Source::Path, usage};
-  if (!up.job_queue.try_push(job)) {
-    slot->status.store(LoadStatus::Failed, std::memory_order_release);
-    return {};
-  }
-  up.job_signal.set();
-  return LoadRequest{id, generation};
-}
-
-LoadRequest
-MetalUploader::load_texture_from_memory(const std::span<const u8> bytes,
-                                        const TextureUsageFlags usage) {
-  if (m_state == nullptr || bytes.empty())
-    return {};
-
-  MetalUploadState &up = m_state->upload;
-  u32 id = 0, generation = 0;
-  LoadSlot *slot = acquire_load_slot(up, id, generation);
-  if (slot == nullptr) {
-    nx::logw(log_rhi, "uploader: the load table is full ({} slots)",
-             MetalUploadState::MAX_LOADS);
-    return {};
-  }
-
-  slot->encoded = nx::blob<u8>(bytes.size());
-  std::memcpy(slot->encoded.data(), bytes.data(), bytes.size());
-  slot->usage = usage;
-
-  const LoadJob job{id, generation, Source::Memory, usage};
-  if (!up.job_queue.try_push(job)) {
-    slot->status.store(LoadStatus::Failed, std::memory_order_release);
-    return {};
-  }
-  up.job_signal.set();
-  return LoadRequest{id, generation};
-}
-
-LoadStatus MetalUploader::load_status(const LoadRequest req) const noexcept {
-  if (m_state == nullptr)
-    return LoadStatus::None;
-  LoadSlot *slot = resolve_load(m_state->upload, req);
-  if (slot == nullptr)
-    return LoadStatus::None;
-  return slot->status.load(std::memory_order_acquire);
-}
-
-TextureHandle MetalUploader::loaded_texture(const LoadRequest req) const noexcept {
-  if (m_state == nullptr)
-    return {};
-  LoadSlot *slot = resolve_load(m_state->upload, req);
-  if (slot == nullptr ||
-      slot->status.load(std::memory_order_acquire) != LoadStatus::Ready)
-    return {};
-  return slot->texture;
-}
-
-void MetalUploader::release(const LoadRequest req) noexcept {
-  if (m_state == nullptr)
-    return;
-
-  MetalUploadState &up = m_state->upload;
-  nx::scoped_lock lock(up.load_mutex);
-  LoadSlot *slot = resolve_load(up, req);
-  if (slot == nullptr)
-    return;
-
-  // The contract is to release only once the status has settled, so refuse rather than corrupt: the
-  // slot stays claimed and the caller can release it again after polling.
-  switch (slot->status.load(std::memory_order_acquire)) {
-  case LoadStatus::Pending:
-  case LoadStatus::Decoding:
-  case LoadStatus::Uploading:
-    nx::loge(log_rhi, "uploader: release() on request {} while it is still in "
-                      "flight; release only once it is Ready or Failed",
-             req.id);
-    return;
-  default:
-    break;
-  }
-
-  ++slot->generation;
-  slot->in_use = false;
-  slot->status.store(LoadStatus::None, std::memory_order_release);
-  slot->texture = {};
-  slot->decoded = {};
-  slot->encoded = {};
-  slot->path.clear();
 }
 
 bool MetalUploader::is_complete(const UploadTicket ticket) const noexcept {
@@ -706,11 +444,6 @@ ReadbackResult MetalUploader::read_texture(const TextureHandle handle,
   return result;
 }
 
-void MetalUploader::pump() {
-  if (m_state != nullptr)
-    uploader_pump(*m_state);
-}
-
 UploaderStats MetalUploader::stats() const noexcept {
   if (m_state == nullptr)
     return {};
@@ -726,8 +459,6 @@ UploaderStats MetalUploader::stats() const noexcept {
     out.ring_capacity += staging.capacity;
   out.extra_buffers = up.free_staging.size();
   out.inflight_submits = up.in_flight.size();
-  out.loads_ready = up.loads_ready;
-  out.loads_failed = up.loads_failed;
   return out;
 }
 

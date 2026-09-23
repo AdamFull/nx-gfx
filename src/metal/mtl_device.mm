@@ -266,16 +266,6 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     m_state = state;
     m_uploader.m_state = state;
 
-    if (!uploader_init(*state)) {
-      m_init_error = "The Metal upload service could not be initialized.";
-      m_uploader.m_state = nullptr;
-      m_state = nullptr;
-      delete state;
-      m_caps = {};
-      m_device_name.clear();
-      return false;
-    }
-
     if (desc.enable_validation)
       nx::logi(log_rhi, "metal api validation requested");
   }
@@ -327,7 +317,6 @@ GpuDeviceStatus MetalDevice::device_status() const noexcept {
 void MetalDevice::flush_uploads() noexcept {
   if (m_state == nullptr || m_state->frame_active)
     return;
-  m_uploader.pump();
   m_uploader.flush_batch();
 }
 
@@ -351,7 +340,7 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
                           ? s->frames_submitted - s->frames_in_flight
                           : 0);
   uploader_reclaim(*s);
-  uploader_pump(*s);
+  m_uploader.flush_batch();
 
   @autoreleasepool {
     // Offscreen: no layer to take a drawable from, and the backbuffer texture
@@ -498,7 +487,7 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
                           ? s->frames_submitted - s->frames_in_flight
                           : 0);
   uploader_reclaim(*s);
-  uploader_pump(*s);
+  m_uploader.flush_batch();
 
   @autoreleasepool {
     s->contexts.resize(MetalDeviceState::MAX_CONTEXTS);
