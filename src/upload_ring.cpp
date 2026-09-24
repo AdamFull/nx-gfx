@@ -95,7 +95,9 @@ GrowableBuffer *UploadRing::acquire(const u32 array, const u64 bytes) {
           *m_device, bytes,
           {
               .name = m_names[slot].view(),
-              .usage = BufferUsage::Storage | BufferUsage::DeviceAddress,
+              // Indirect so an array of draw commands can be read as one.
+              .usage = BufferUsage::Storage | BufferUsage::DeviceAddress |
+                       BufferUsage::Indirect,
               .memory = MemoryUsage::Upload,
               .persistently_mapped = true,
           }))
