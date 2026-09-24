@@ -41,6 +41,47 @@ namespace {
   return false;
 }
 
+// Tracy retries a calibration until the driver reports no more error than 1.5x
+// the best of its startup probes, with no limit, and a driver that never does
+// again holds the render job there for good. This keeps the best of a few
+// readings and calls it exact, which also makes Tracy's threshold zero.
+template <auto &Real>
+VKAPI_ATTR VkResult VKAPI_CALL
+bounded_calibration(const VkDevice device, const uint32_t count,
+                    const VkCalibratedTimestampInfoEXT *const infos,
+                    uint64_t *const timestamps, uint64_t *const max_deviation) {
+  constexpr u32 READINGS = 4;
+  constexpr u32 MAX_DOMAINS = 4;
+  if (count > MAX_DOMAINS)
+    return Real(device, count, infos, timestamps, max_deviation);
+  u64 best = ~u64{0};
+  for (u32 i = 0; i < READINGS; ++i) {
+    u64 reading[MAX_DOMAINS] = {};
+    u64 deviation = 0;
+    const VkResult result = Real(device, count, infos, reading, &deviation);
+    if (result != VK_SUCCESS) {
+      if (best == ~u64{0})
+        return result;
+      break;
+    }
+    if (deviation < best) {
+      best = deviation;
+      std::memcpy(timestamps, reading, count * sizeof(u64));
+    }
+  }
+  *max_deviation = 0;
+  return VK_SUCCESS;
+}
+
+[[nodiscard]] PFN_vkGetCalibratedTimestampsEXT
+bounded(const PFN_vkGetCalibratedTimestampsEXT calibrated) noexcept {
+  if (calibrated != nullptr && calibrated == vkGetCalibratedTimestampsKHR)
+    return &bounded_calibration<vkGetCalibratedTimestampsKHR>;
+  if (calibrated != nullptr && calibrated == vkGetCalibratedTimestampsEXT)
+    return &bounded_calibration<vkGetCalibratedTimestampsEXT>;
+  return calibrated;
+}
+
 } // namespace
 
 void VulkanGpuProfiler::init(
@@ -68,7 +109,7 @@ void VulkanGpuProfiler::init(
   VkCommandBuffer cmd = VK_NULL_HANDLE;
   if (vkAllocateCommandBuffers(device, &alloc, &cmd) == VK_SUCCESS) {
     m_context = tracy::CreateVkContext(physical, device, queue, cmd, domains,
-                                       calibrated);
+                                       bounded(calibrated));
     set_label(label);
   }
   vkDestroyCommandPool(device, pool, nullptr);
@@ -84,7 +125,7 @@ void VulkanGpuProfiler::init_host_reset(
       !has_host_clock(physical, domains))
     return;
   m_context = tracy::CreateVkContext(physical, device, vkResetQueryPool,
-                                     domains, calibrated);
+                                     domains, bounded(calibrated));
   set_label(label);
 }
 
