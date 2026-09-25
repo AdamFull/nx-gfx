@@ -1365,6 +1365,7 @@ void VulkanDevice::destroy_texture_now(VulkanTexture &texture) noexcept {
 
 void VulkanDevice::collect_garbage(
     const u64 completed_timeline_value) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   for (usize i = 0; i < m_pending_texture_views.size();) {
     const PendingTextureView pending = m_pending_texture_views[i];
     if (pending.publish_after > completed_timeline_value) {

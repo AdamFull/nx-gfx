@@ -603,8 +603,15 @@ private:
     SamplerHandle sampler;
     PipelineHandle pipeline;
   };
+  // The render job collects garbage while the owner creates and destroys
+  // resources: this guards the deferred lists, the handle tables collection
+  // erases from, and the texture views it publishes.
+  nx::mutex m_garbage_lock;
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
   nx::small_vector<PendingTextureView, 16> m_pending_texture_views;
+  // Taken after m_garbage_lock, never before: writes to the one bindless set
+  // must be host-synchronized, and both sides make them.
+  nx::mutex m_bindless_lock;
 };
 
 } // namespace nxe::rhi

@@ -661,7 +661,11 @@ PipelineHandle VulkanDevice::publish_pipeline(CompiledPipeline &&opaque) {
   const nx::string name = std::move(compiled.m_name);
   compiled.m_device = VK_NULL_HANDLE;
   compiled.m_pipeline = VK_NULL_HANDLE;
-  const PipelineHandle handle = m_pipelines.insert(pipeline);
+  PipelineHandle handle;
+  {
+    const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
+    handle = m_pipelines.insert(pipeline);
+  }
   if (!handle.valid()) {
     vkDestroyPipeline(m_device, pipeline.pipeline, nullptr);
     return {};
@@ -672,6 +676,7 @@ PipelineHandle VulkanDevice::publish_pipeline(CompiledPipeline &&opaque) {
 }
 
 void VulkanDevice::destroy_pipeline(const PipelineHandle handle) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_pipelines.contains(handle))
     return;
   m_pending_deletes.push_back({m_timeline_value, {}, {}, {}, handle});

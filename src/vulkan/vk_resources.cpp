@@ -343,6 +343,7 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
 }
 
 void VulkanDevice::destroy_texture(const TextureHandle handle) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_textures.contains(handle))
     return;
   m_pending_deletes.push_back({m_timeline_value, handle, {}, {}});
@@ -363,6 +364,7 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
   wait_idle();
   if (device_status() == GpuDeviceStatus::Lost)
     return false;
+  const nx::scoped_lock<nx::mutex> collecting(m_garbage_lock);
   std::swap(*held, *fresh);
   if (held->srv != VK_NULL_HANDLE)
     write_texture_descriptor(nx::cast<u32>(target.index()), held->srv);
@@ -375,6 +377,7 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
 
 bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,
                                              u32 base_mip) {
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   VulkanTexture *const tex = m_textures.try_get(handle);
   if (tex == nullptr || !(tex->usage & TextureUsage::Sampled) ||
       tex->image == VK_NULL_HANDLE)
@@ -495,13 +498,18 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
         vkGetBufferDeviceAddressKHR(m_device, &address_info);
   }
 
-  const BufferHandle handle = m_buffers.insert(buffer);
-  set_object_name(vk_handle_value(m_buffers.try_get(handle)->buffer),
-                  VK_OBJECT_TYPE_BUFFER, desc.name);
+  BufferHandle handle;
+  {
+    const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
+    handle = m_buffers.insert(buffer);
+  }
+  set_object_name(vk_handle_value(buffer.buffer), VK_OBJECT_TYPE_BUFFER,
+                  desc.name);
   return handle;
 }
 
 void VulkanDevice::destroy_buffer(const BufferHandle handle) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_buffers.contains(handle))
     return;
   m_pending_deletes.push_back({m_timeline_value, {}, handle, {}});
@@ -537,7 +545,11 @@ SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
     return {};
   }
 
-  const SamplerHandle handle = m_samplers.insert(sampler);
+  SamplerHandle handle;
+  {
+    const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
+    handle = m_samplers.insert(sampler);
+  }
   set_object_name(vk_handle_value(sampler.sampler), VK_OBJECT_TYPE_SAMPLER,
                   desc.name);
   write_sampler_descriptor(nx::cast<u32>(handle.index()), sampler.sampler);
@@ -545,6 +557,7 @@ SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
 }
 
 void VulkanDevice::destroy_sampler(const SamplerHandle handle) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_samplers.contains(handle))
     return;
   m_pending_deletes.push_back({m_timeline_value, {}, {}, handle});

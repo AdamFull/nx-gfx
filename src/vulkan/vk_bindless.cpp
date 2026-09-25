@@ -123,6 +123,7 @@ void VulkanDevice::write_texture_descriptor(const u32 index,
   write.descriptorCount = 1;
   write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   write.pImageInfo = &image;
+  const nx::scoped_lock<nx::mutex> held(m_bindless_lock);
   vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
 }
 
@@ -141,6 +142,7 @@ void VulkanDevice::write_rw_texture_descriptor(
   write.descriptorCount = 1;
   write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
   write.pImageInfo = &image;
+  const nx::scoped_lock<nx::mutex> held(m_bindless_lock);
   vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
 }
 
@@ -161,10 +163,12 @@ void VulkanDevice::write_sampler_descriptor(const u32 index,
   write.descriptorCount = 1;
   write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   write.pImageInfo = &image;
+  const nx::scoped_lock<nx::mutex> held(m_bindless_lock);
   vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
 }
 
 u32 VulkanDevice::alloc_rw_slot() noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_bindless_lock);
   if (!m_bindless.free_rw_slots.empty()) {
     const u32 slot = m_bindless.free_rw_slots.back();
     m_bindless.free_rw_slots.pop_back();
@@ -179,6 +183,7 @@ u32 VulkanDevice::alloc_rw_slot() noexcept {
 }
 
 void VulkanDevice::free_rw_slot(const u32 slot) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_bindless_lock);
   if (slot != BINDLESS_INVALID_INDEX)
     m_bindless.free_rw_slots.push_back(slot);
 }
