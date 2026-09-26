@@ -144,6 +144,10 @@ void collect_garbage(MetalDeviceState &state, const u64 completed_frame) {
 
     state.pipelines.erase(pending.pipeline);
     state.shaders.erase(pending.shader);
+    if (MetalHeap *heap = state.heaps.try_get(pending.heap)) {
+      heap->heap = nil;
+      state.heaps.erase(pending.heap);
+    }
   }
 
   while (state.pending_deletes.size() > kept)
@@ -822,10 +826,8 @@ HeapHandle MetalDevice::create_heap(const HeapDesc &desc) {
 void MetalDevice::destroy_heap(const HeapHandle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
-  if (MetalHeap *heap = m_state->heaps.try_get(handle)) {
-    heap->heap = nil;
-    m_state->heaps.erase(handle);
-  }
+  if (m_state->heaps.contains(handle))
+    retire(*m_state, {.heap = handle});
 }
 
 TextureHandle MetalDevice::create_texture_in_heap(const TextureDesc &desc,

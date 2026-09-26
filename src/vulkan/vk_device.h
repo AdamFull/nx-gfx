@@ -611,6 +611,7 @@ private:
     BufferHandle buffer;
     SamplerHandle sampler;
     PipelineHandle pipeline;
+    HeapHandle heap;
     /// The held frame work it waits on first; 0 once only the timeline is left.
     u64 hold = 0;
   };

@@ -1434,6 +1434,11 @@ void VulkanDevice::collect_garbage(
       vkDestroyPipeline(m_device, pipeline->pipeline, nullptr);
       m_pipelines.erase(pending.pipeline);
     }
+    if (VulkanHeap *heap = m_heaps.try_get(pending.heap)) {
+      if (heap->allocation != VK_NULL_HANDLE)
+        vmaFreeMemory(m_allocator, heap->allocation);
+      m_heaps.erase(pending.heap);
+    }
 
     m_pending_deletes.erase(m_pending_deletes.begin() + nx::cast<isize>(i - 1));
   }

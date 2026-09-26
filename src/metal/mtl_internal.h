@@ -256,6 +256,7 @@ struct MetalDeviceState {
     SamplerHandle sampler;
     PipelineHandle pipeline;
     ShaderHandle shader;
+    HeapHandle heap;
     /// The held frame work it waits on first; 0 once only frames are left.
     u64 hold = 0;
   };

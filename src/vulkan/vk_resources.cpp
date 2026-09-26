@@ -256,18 +256,15 @@ HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
     const nx::string allocation_name(desc.name);
     vmaSetAllocationName(m_allocator, heap.allocation, allocation_name.c_str());
   }
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   return m_heaps.insert(heap);
 }
 
 void VulkanDevice::destroy_heap(const HeapHandle handle) noexcept {
-  VulkanHeap *heap = m_heaps.try_get(handle);
-  if (heap == nullptr)
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
+  if (!m_heaps.contains(handle))
     return;
-  // Every image placed here must already be gone; the graph tears them down
-  // together.
-  if (heap->allocation != VK_NULL_HANDLE)
-    vmaFreeMemory(m_allocator, heap->allocation);
-  m_heaps.erase(handle);
+  retire({.heap = handle});
 }
 
 TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
