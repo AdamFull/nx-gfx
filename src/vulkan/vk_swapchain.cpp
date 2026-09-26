@@ -5,6 +5,8 @@
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/fibers/scheduler.h"
 
+#include <span>
+
 namespace nxe::rhi {
 namespace {
 
@@ -22,20 +24,46 @@ namespace {
 }
 
 [[nodiscard]] VkCompositeAlphaFlagBitsKHR
-pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported) noexcept {
-  constexpr VkCompositeAlphaFlagBitsKHR order[] = {
+pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported,
+                     const SurfaceAlpha requested) noexcept {
+  constexpr VkCompositeAlphaFlagBitsKHR opaque_order[] = {
       VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
       VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
       VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
       VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
   };
+  // Post-multiplied would multiply premultiplied colour by alpha twice.
+  // Inherit promises nothing: Intel's Win32 driver offers it and then drops
+  // alpha even under DWM per-pixel composition, so it counts as opaque here.
+  constexpr VkCompositeAlphaFlagBitsKHR transparent_order[] = {
+      VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+      VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+  };
+  const std::span<const VkCompositeAlphaFlagBitsKHR> order =
+      requested == SurfaceAlpha::Opaque
+          ? std::span<const VkCompositeAlphaFlagBitsKHR>(opaque_order)
+          : std::span<const VkCompositeAlphaFlagBitsKHR>(transparent_order);
   for (const VkCompositeAlphaFlagBitsKHR bit : order) {
     if ((supported & nx::cast<VkCompositeAlphaFlagsKHR>(bit)) != 0)
       return bit;
   }
   nx::logw(nx::log::rhi,
-           "surface reports no composite alpha mode; asking for opaque");
+           "surface reports no usable composite alpha mode; asking for opaque");
   return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+}
+
+[[nodiscard]] SurfaceAlpha
+from_vk_composite_alpha(const VkCompositeAlphaFlagBitsKHR bit) noexcept {
+  switch (bit) {
+  case VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR:
+    return SurfaceAlpha::Premultiplied;
+  case VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR:
+    return SurfaceAlpha::Unmultiplied;
+  case VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR:
+    return SurfaceAlpha::WindowSystem;
+  default:
+    return SurfaceAlpha::Opaque;
+  }
 }
 
 VkSurfaceKHR create_surface(VkInstance instance,
@@ -179,6 +207,7 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
              nx::cast<i32>(chosen.format));
   }
 
+  m_requested_alpha = desc.alpha;
   return build_swapchain(desc.width, desc.height);
 }
 
@@ -276,7 +305,8 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
       (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
           ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
           : caps.currentTransform;
-  info.compositeAlpha = pick_composite_alpha(caps.supportedCompositeAlpha);
+  info.compositeAlpha =
+      pick_composite_alpha(caps.supportedCompositeAlpha, m_requested_alpha);
   info.presentMode = m_present_mode;
   info.clipped = VK_TRUE;
   info.oldSwapchain = m_swapchain;
@@ -290,6 +320,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
   m_swapchain = new_swapchain;
   m_swapchain_extent = extent;
+  m_swapchain_alpha = from_vk_composite_alpha(info.compositeAlpha);
   set_object_name(vk_handle_value(m_swapchain), VK_OBJECT_TYPE_SWAPCHAIN_KHR,
                   "main swapchain");
 
@@ -375,6 +406,7 @@ void VulkanDevice::destroy_backbuffer_views() noexcept {
 void VulkanDevice::destroy_swapchain() noexcept {
   if (m_device == VK_NULL_HANDLE)
     return;
+  m_swapchain_alpha = SurfaceAlpha::Opaque;
 
   if (m_offscreen) {
     // These images are this device's own, so they go back the way any texture

@@ -216,6 +216,7 @@ public:
 
   [[nodiscard]] Format swapchain_format() const noexcept;
   [[nodiscard]] Extent2D swapchain_extent() const noexcept;
+  [[nodiscard]] SurfaceAlpha swapchain_alpha() const noexcept;
 
   [[nodiscard]] AcquireResult begin_frame(MetalCommandContext &out_context);
   [[nodiscard]] bool end_frame();

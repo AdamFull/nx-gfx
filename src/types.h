@@ -245,6 +245,19 @@ enum class PresentMode : u8 {
   Count
 };
 
+/// How the window system combines the backbuffer with what is behind the
+/// window. Blending writes premultiplied colour, so a see-through window asks
+/// for Premultiplied.
+enum class SurfaceAlpha : u8 {
+  Opaque,
+  Premultiplied,
+  /// The compositor multiplies colour by alpha itself.
+  Unmultiplied,
+  /// The surface follows the window's own composition setting.
+  WindowSystem,
+  Count
+};
+
 enum class AcquireResult : u8 {
   Success,
   Suboptimal,
@@ -259,6 +272,7 @@ enum class AcquireResult : u8 {
 [[nodiscard]] BufferUsage buffer_usage_from_string(nx::string_view name) noexcept;
 [[nodiscard]] nx::string_view to_string(ResourceState state) noexcept;
 [[nodiscard]] nx::string_view to_string(QueueType queue) noexcept;
+[[nodiscard]] nx::string_view to_string(SurfaceAlpha alpha) noexcept;
 
 /// Bytes per pixel for uncompressed formats, or bytes per block for compressed
 /// ones. Returns 0 for Format::Unknown.

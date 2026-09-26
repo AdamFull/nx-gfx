@@ -54,6 +54,8 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
 
   MetalDeviceState *s = m_state;
   const MTLPixelFormat pixel_format = pick_layer_format(desc.preferred_format);
+  // Core Animation composites a non-opaque layer as premultiplied.
+  const bool opaque = desc.alpha == SurfaceAlpha::Opaque;
 
   __block CAMetalLayer *layer = nil;
   __block id layer_host = nil;
@@ -82,6 +84,7 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
         // presented. framebufferOnly drawables cannot participate in that
         // copy on Metal.
         layer.framebufferOnly = NO;
+        layer.opaque = opaque;
         layer.contentsScale = window.backingScaleFactor;
 
         view.wantsLayer = YES;
@@ -101,6 +104,7 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
       layer.device = s->device;
       layer.pixelFormat = pixel_format;
       layer.framebufferOnly = NO;
+      layer.opaque = opaque;
       ok = true;
       break;
     }
@@ -133,6 +137,7 @@ bool MetalDevice::create_swapchain(const SwapchainDesc &desc) {
   s->swapchain_format = from_mtl_format(pixel_format);
   s->extent = {desc.width, desc.height};
   s->present_mode = desc.present_mode;
+  s->alpha = opaque ? SurfaceAlpha::Opaque : SurfaceAlpha::Premultiplied;
 
   // One handle for the backbuffer, valid for the swapchain's lifetime. Its
   // MTLTexture is filled in per frame from the drawable.
@@ -291,6 +296,7 @@ void MetalDevice::destroy_swapchain() noexcept {
   // after the next create_swapchain(), which never recreated it.
   s->swapchain_format = Format::Unknown;
   s->extent = {};
+  s->alpha = SurfaceAlpha::Opaque;
 }
 
 u32 MetalDevice::frames_in_flight() const noexcept {
@@ -303,6 +309,10 @@ Format MetalDevice::swapchain_format() const noexcept {
 
 Extent2D MetalDevice::swapchain_extent() const noexcept {
   return m_state != nullptr ? m_state->extent : Extent2D{};
+}
+
+SurfaceAlpha MetalDevice::swapchain_alpha() const noexcept {
+  return m_state != nullptr ? m_state->alpha : SurfaceAlpha::Opaque;
 }
 
 }

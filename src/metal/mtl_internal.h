@@ -214,6 +214,7 @@ struct MetalDeviceState {
   Format swapchain_format = Format::Unknown;
   Extent2D extent = {};
   PresentMode present_mode = PresentMode::Fifo;
+  SurfaceAlpha alpha = SurfaceAlpha::Opaque;
   TextureHandle backbuffer;
 
   dispatch_semaphore_t frame_semaphore = nil;

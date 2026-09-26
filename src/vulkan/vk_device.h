@@ -315,6 +315,9 @@ public:
   [[nodiscard]] Extent2D swapchain_extent() const noexcept {
     return {m_swapchain_extent.width, m_swapchain_extent.height};
   }
+  [[nodiscard]] SurfaceAlpha swapchain_alpha() const noexcept {
+    return m_swapchain_alpha;
+  }
 
   [[nodiscard]] AcquireResult begin_frame(VulkanCommandContext &out_context);
   [[nodiscard]] bool end_frame();
@@ -584,6 +587,8 @@ private:
   VkExtent2D m_swapchain_extent = {};
   Format m_swapchain_format = Format::Unknown;
   VkPresentModeKHR m_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+  SurfaceAlpha m_requested_alpha = SurfaceAlpha::Opaque;
+  SurfaceAlpha m_swapchain_alpha = SurfaceAlpha::Opaque;
   nx::small_vector<TextureHandle, 4> m_backbuffers;
   nx::small_vector<VkSemaphore, 4> m_release_semaphores;
   u32 m_image_index = 0;

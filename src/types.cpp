@@ -107,6 +107,12 @@ constexpr nx::string_view QUEUE_NAMES[] = {"Graphics", "Compute", "Copy"};
 static_assert(std::size(QUEUE_NAMES) == nx::cast<usize>(QueueType::Count),
               "QUEUE_NAMES is out of sync with QueueType");
 
+constexpr nx::string_view SURFACE_ALPHA_NAMES[] = {
+    "Opaque", "Premultiplied", "Unmultiplied", "WindowSystem"};
+static_assert(std::size(SURFACE_ALPHA_NAMES) ==
+                  nx::cast<usize>(SurfaceAlpha::Count),
+              "SURFACE_ALPHA_NAMES is out of sync with SurfaceAlpha");
+
 const FormatInfo &info_of(const Format format) noexcept {
   const auto i = nx::cast<usize>(format);
   return FORMAT_TABLE[i < nx::cast<usize>(Format::Count) ? i : 0];
@@ -206,6 +212,12 @@ nx::string_view to_string(const ResourceState state) noexcept {
 nx::string_view to_string(const QueueType queue) noexcept {
   const auto i = nx::cast<usize>(queue);
   return i < nx::cast<usize>(QueueType::Count) ? QUEUE_NAMES[i] : "Invalid";
+}
+
+nx::string_view to_string(const SurfaceAlpha alpha) noexcept {
+  const auto i = nx::cast<usize>(alpha);
+  return i < nx::cast<usize>(SurfaceAlpha::Count) ? SURFACE_ALPHA_NAMES[i]
+                                                  : "Invalid";
 }
 
 u32 format_texel_size(const Format format) noexcept {

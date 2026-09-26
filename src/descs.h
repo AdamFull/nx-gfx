@@ -149,6 +149,9 @@ struct SwapchainDesc {
   u32 height = 0;
   PresentMode present_mode = PresentMode::Fifo;
   Format preferred_format = Format::BGRA8_UNORM;
+  /// Opaque, or Premultiplied for a see-through window. The surface may not
+  /// offer it; swapchain_alpha() reports what was granted.
+  SurfaceAlpha alpha = SurfaceAlpha::Opaque;
 };
 
 #if defined(NX_RHI_METAL)
