@@ -239,6 +239,10 @@ public:
 
   void wait_idle() noexcept;
 
+  /// See VulkanDevice::hold_retirements.
+  void hold_retirements(u64 serial) noexcept;
+  void release_retirements(u64 serial) noexcept;
+
   [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
   void destroy_texture(TextureHandle handle) noexcept;
   [[nodiscard]] bool replace_texture(TextureHandle target,

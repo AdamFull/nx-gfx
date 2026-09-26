@@ -679,7 +679,7 @@ void VulkanDevice::destroy_pipeline(const PipelineHandle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_pipelines.contains(handle))
     return;
-  m_pending_deletes.push_back({m_timeline_value, {}, {}, {}, handle});
+  retire({.pipeline = handle});
 }
 
 const VulkanPipeline *

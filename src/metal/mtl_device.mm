@@ -97,18 +97,22 @@ u32 max_texture_dimension(id<MTLDevice> device) noexcept {
 void retire(MetalDeviceState &state,
             const MetalDeviceState::PendingDelete &pending) {
   MetalDeviceState::PendingDelete entry = pending;
+  const nx::scoped_lock<nx::mutex> held(state.retire_lock);
   entry.frame = state.frames_submitted;
+  if (state.retire_hold > state.retire_released)
+    entry.hold = state.retire_hold;
   state.pending_deletes.push_back(entry);
 }
 
 void collect_garbage(MetalDeviceState &state, const u64 completed_frame) {
+  const nx::scoped_lock<nx::mutex> held(state.retire_lock);
   if (state.pending_deletes.empty())
     return;
 
   usize kept = 0;
   for (usize i = 0; i < state.pending_deletes.size(); ++i) {
     const MetalDeviceState::PendingDelete &pending = state.pending_deletes[i];
-    if (pending.frame > completed_frame) {
+    if (pending.hold != 0 || pending.frame > completed_frame) {
       if (kept != i)
         state.pending_deletes[kept] = pending;
       ++kept;
@@ -309,6 +313,7 @@ void MetalDevice::shutdown() noexcept {
 
   wait_idle();
   destroy_swapchain();
+  release_retirements(~0ull);
   collect_garbage(*m_state, ~0ull);
 
   @autoreleasepool {
@@ -319,6 +324,27 @@ void MetalDevice::shutdown() noexcept {
 
   m_caps = {};
   m_device_name.clear();
+}
+
+void MetalDevice::hold_retirements(const u64 serial) noexcept {
+  if (m_state == nullptr)
+    return;
+  const nx::scoped_lock<nx::mutex> held(m_state->retire_lock);
+  m_state->retire_hold = nx::max(m_state->retire_hold, serial);
+}
+
+// Called once the frame work is submitted, so the frame count taken here
+// covers it.
+void MetalDevice::release_retirements(const u64 serial) noexcept {
+  if (m_state == nullptr)
+    return;
+  const nx::scoped_lock<nx::mutex> held(m_state->retire_lock);
+  m_state->retire_released = nx::max(m_state->retire_released, serial);
+  for (MetalDeviceState::PendingDelete &pending : m_state->pending_deletes)
+    if (pending.hold != 0 && pending.hold <= m_state->retire_released) {
+      pending.hold = 0;
+      pending.frame = m_state->frames_submitted;
+    }
 }
 
 void MetalDevice::wait_idle() noexcept {

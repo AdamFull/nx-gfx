@@ -256,8 +256,15 @@ struct MetalDeviceState {
     SamplerHandle sampler;
     PipelineHandle pipeline;
     ShaderHandle shader;
+    /// The held frame work it waits on first; 0 once only frames are left.
+    u64 hold = 0;
   };
+  /// The producer holds and the render job releases, so the list and the hold
+  /// are shared between them.
+  nx::mutex retire_lock;
   nx::vector<PendingDelete> pending_deletes;
+  u64 retire_hold = 0;
+  u64 retire_released = 0;
 
   MetalUploadState upload;
   /// The device owns the uploader's lifetime but not its code; these live in

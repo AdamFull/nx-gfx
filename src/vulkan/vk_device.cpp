@@ -1146,6 +1146,7 @@ void VulkanDevice::shutdown() noexcept {
 
   destroy_swapchain();
 
+  release_retirements(~0ull);
   collect_garbage(~0ull);
 
   m_textures.for_each(
@@ -1363,6 +1364,30 @@ void VulkanDevice::destroy_texture_now(VulkanTexture &texture) noexcept {
     vmaDestroyImage(m_allocator, texture.image, texture.allocation);
 }
 
+void VulkanDevice::retire(PendingDelete pending) noexcept {
+  pending.timeline_value = m_timeline_value;
+  if (m_retire_hold > m_retire_released)
+    pending.hold = m_retire_hold;
+  m_pending_deletes.push_back(pending);
+}
+
+void VulkanDevice::hold_retirements(const u64 serial) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
+  m_retire_hold = nx::max(m_retire_hold, serial);
+}
+
+// Called once the frame work is submitted, so the timeline value taken here
+// covers it.
+void VulkanDevice::release_retirements(const u64 serial) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
+  m_retire_released = nx::max(m_retire_released, serial);
+  for (PendingDelete &pending : m_pending_deletes)
+    if (pending.hold != 0 && pending.hold <= m_retire_released) {
+      pending.hold = 0;
+      pending.timeline_value = m_timeline_value;
+    }
+}
+
 void VulkanDevice::collect_garbage(
     const u64 completed_timeline_value) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
@@ -1390,7 +1415,7 @@ void VulkanDevice::collect_garbage(
 
   for (usize i = m_pending_deletes.size(); i > 0; --i) {
     PendingDelete &pending = m_pending_deletes[i - 1];
-    if (pending.timeline_value > completed_timeline_value)
+    if (pending.hold != 0 || pending.timeline_value > completed_timeline_value)
       continue;
 
     if (VulkanTexture *texture = m_textures.try_get(pending.texture)) {

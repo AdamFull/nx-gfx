@@ -348,6 +348,15 @@ public:
 
   void wait_idle() noexcept;
 
+  /// Frame work up to @p serial may name resources and has not reached this
+  /// device: whatever is destroyed from now on outlives it, however idle the
+  /// GPU is, until release_retirements() reaches @p serial. For a producer
+  /// that runs ahead of rendering; without one, a deletion waits only for the
+  /// work already submitted.
+  void hold_retirements(u64 serial) noexcept;
+  /// Frame work up to @p serial has been submitted, or dropped.
+  void release_retirements(u64 serial) noexcept;
+
   [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
   void destroy_texture(TextureHandle handle) noexcept;
   [[nodiscard]] bool replace_texture(TextureHandle target,
@@ -602,12 +611,18 @@ private:
     BufferHandle buffer;
     SamplerHandle sampler;
     PipelineHandle pipeline;
+    /// The held frame work it waits on first; 0 once only the timeline is left.
+    u64 hold = 0;
   };
+  // m_garbage_lock held.
+  void retire(PendingDelete pending) noexcept;
   // The render job collects garbage while the owner creates and destroys
   // resources: this guards the deferred lists, the handle tables collection
   // erases from, and the texture views it publishes.
   nx::mutex m_garbage_lock;
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
+  u64 m_retire_hold = 0;
+  u64 m_retire_released = 0;
   nx::small_vector<PendingTextureView, 16> m_pending_texture_views;
   // Taken after m_garbage_lock, never before: writes to the one bindless set
   // must be host-synchronized, and both sides make them.

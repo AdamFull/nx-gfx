@@ -346,7 +346,7 @@ void VulkanDevice::destroy_texture(const TextureHandle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_textures.contains(handle))
     return;
-  m_pending_deletes.push_back({m_timeline_value, handle, {}, {}});
+  retire({.texture = handle});
 }
 
 bool VulkanDevice::replace_texture(const TextureHandle target,
@@ -371,7 +371,7 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
 
   // replacement now owns the old target allocation. Its handle was never
   // published, so it is safe to consume through the normal deferred path.
-  m_pending_deletes.push_back({m_timeline_value, replacement, {}, {}});
+  retire({.texture = replacement});
   return true;
 }
 
@@ -512,7 +512,7 @@ void VulkanDevice::destroy_buffer(const BufferHandle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_buffers.contains(handle))
     return;
-  m_pending_deletes.push_back({m_timeline_value, {}, handle, {}});
+  retire({.buffer = handle});
 }
 
 const VulkanBuffer *
@@ -560,7 +560,7 @@ void VulkanDevice::destroy_sampler(const SamplerHandle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_samplers.contains(handle))
     return;
-  m_pending_deletes.push_back({m_timeline_value, {}, {}, handle});
+  retire({.sampler = handle});
 }
 
 QueryPoolHandle VulkanDevice::create_timestamp_pool(const u32 count) {
