@@ -93,6 +93,10 @@ else ()
             vulkan/vk_video.cpp
             vulkan/vk_vp9.cpp
             vulkan/vk_vma.cpp)
+    if (WIN32)
+        list(APPEND NX_RHI_HEADERS vulkan/vk_composition_win32.h)
+        list(APPEND NX_RHI_SOURCES vulkan/vk_composition_win32.cpp)
+    endif ()
 endif ()
 
 set(NX_RHI_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
@@ -157,6 +161,9 @@ else ()
             VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
 
     target_link_libraries(nx_rhi PUBLIC nx::volk nx::vma nx::vulkan_headers)
+    if (WIN32)
+        target_link_libraries(nx_rhi PRIVATE d3d11 dxgi dcomp)
+    endif ()
 
     if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         set_source_files_properties(vulkan/vk_vma.cpp PROPERTIES

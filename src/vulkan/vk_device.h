@@ -20,6 +20,9 @@
 #include "rendering/rhi/vulkan/vk_gpu_profiler.h"
 #include "rendering/rhi/vulkan/vk_mem_alloc_include.h"
 #include "rendering/rhi/vulkan/vk_upload.h"
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+#include "rendering/rhi/vulkan/vk_composition_win32.h"
+#endif
 
 #include <span>
 
@@ -149,6 +152,9 @@ struct DeviceRoutes {
   /// and resets the copy queue's queries from the host.
   VulkanCalibrationRoute calibrated_timestamps = VulkanCalibrationRoute::None;
   bool host_query_reset = false;
+  /// Win32 memory and semaphore import, for presenting through
+  /// DirectComposition when the surface cannot composite alpha.
+  bool win32_interop = false;
   /// Empty when the device can do everything the engine needs.
   nx::small_vector<nx::string_view, 16> missing;
 };
@@ -521,6 +527,21 @@ private:
 
   bool m_headless_frame = false;
   bool build_swapchain(u32 width, u32 height);
+  [[nodiscard]] bool composed() const noexcept {
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+    return m_composition != nullptr;
+#else
+    return false;
+#endif
+  }
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  [[nodiscard]] bool create_composed_swapchain(const SwapchainDesc &desc);
+  [[nodiscard]] bool import_composed_images(u32 width, u32 height);
+  void release_composed_images() noexcept;
+  void destroy_composed_swapchain() noexcept;
+  void acquire_composed_image(VkCommandBuffer cmd) noexcept;
+  [[nodiscard]] bool end_composed_frame();
+#endif
   bool create_texture_views(VulkanTexture &texture, nx::string_view name);
   void destroy_backbuffer_views() noexcept;
   void set_object_name(u64 object, VkObjectType type, nx::string_view name);
@@ -589,6 +610,17 @@ private:
   VkPresentModeKHR m_present_mode = VK_PRESENT_MODE_FIFO_KHR;
   SurfaceAlpha m_requested_alpha = SurfaceAlpha::Opaque;
   SurfaceAlpha m_swapchain_alpha = SurfaceAlpha::Opaque;
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  // Set instead of m_swapchain when frames reach the screen through
+  // DirectComposition. The backbuffers are imported images of its own.
+  nx::unique_ptr<CompositionPresenter> m_composition;
+  VkSemaphore m_composed_rendered = VK_NULL_HANDLE;
+  VkSemaphore m_composed_copied = VK_NULL_HANDLE;
+  nx::small_vector<VkDeviceMemory, 4> m_composed_memory;
+  /// The frame that last rendered each image; its copy must finish before the
+  /// image is written again.
+  nx::small_vector<u64, 4> m_composed_serials;
+#endif
   nx::small_vector<TextureHandle, 4> m_backbuffers;
   nx::small_vector<VkSemaphore, 4> m_release_semaphores;
   u32 m_image_index = 0;

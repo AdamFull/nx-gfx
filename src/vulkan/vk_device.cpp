@@ -279,6 +279,11 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
                               : ext_calibrated_ext
                                   ? VulkanCalibrationRoute::Ext
                                   : VulkanCalibrationRoute::None;
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  out.win32_interop =
+      listed(available, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) &&
+      listed(available, VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+#endif
   return out;
 }
 
@@ -827,6 +832,12 @@ bool VulkanDevice::create_logical_device() {
     device_extensions.push_back(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
   else if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext)
     device_extensions.push_back(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+#endif
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (m_routes.win32_interop) {
+    device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+  }
 #endif
 
   features.features.samplerAnisotropy = VK_TRUE;

@@ -208,6 +208,17 @@ bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
   }
 
   m_requested_alpha = desc.alpha;
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (desc.alpha == SurfaceAlpha::Premultiplied) {
+    VkSurfaceCapabilitiesKHR caps{};
+    NX_VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device,
+                                                        m_surface, &caps));
+    if ((caps.supportedCompositeAlpha &
+         VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) == 0 &&
+        create_composed_swapchain(desc))
+      return true;
+  }
+#endif
   return build_swapchain(desc.width, desc.height);
 }
 
@@ -379,6 +390,19 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
 bool VulkanDevice::resize_swapchain(const u32 width, const u32 height) {
   if (m_offscreen)
     return create_offscreen_swapchain(width, height, m_swapchain_format);
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (composed()) {
+    wait_idle();
+    if (device_status() == GpuDeviceStatus::Lost)
+      return false;
+    release_composed_images();
+    if (!m_composition->resize(width, height) ||
+        !import_composed_images(width, height))
+      return false;
+    m_swapchain_extent = {width, height};
+    return true;
+  }
+#endif
   if (m_surface == VK_NULL_HANDLE || device_status() == GpuDeviceStatus::Lost)
     return false;
   wait_idle();
@@ -407,6 +431,13 @@ void VulkanDevice::destroy_swapchain() noexcept {
   if (m_device == VK_NULL_HANDLE)
     return;
   m_swapchain_alpha = SurfaceAlpha::Opaque;
+
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (composed()) {
+    destroy_composed_swapchain();
+    return;
+  }
+#endif
 
   if (m_offscreen) {
     // These images are this device's own, so they go back the way any texture
@@ -626,7 +657,7 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   NX_PROFILE_ZONE("vk::begin_frame");
   if (device_status() == GpuDeviceStatus::Lost ||
       m_swapchain_extent.width == 0 ||
-      (m_swapchain == VK_NULL_HANDLE && !m_offscreen))
+      (m_swapchain == VK_NULL_HANDLE && !m_offscreen && !composed()))
     return AcquireResult::SurfaceLost;
 
   FrameContext &frame = m_frames[m_frame_index];
@@ -647,7 +678,7 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   m_uploader.reclaim();
 
   VkResult acquired = VK_SUCCESS;
-  if (m_offscreen) {
+  if (m_offscreen || composed()) {
     // Nothing to acquire from, and so no acquire semaphore for end_frame to
     // wait on: the image for this frame is the one that belongs to its slot.
     m_image_index = m_frame_index;
@@ -676,6 +707,10 @@ AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   if (cmd == VK_NULL_HANDLE)
     return AcquireResult::SurfaceLost;
   m_gpu_profiler.collect(cmd);
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (composed())
+    acquire_composed_image(cmd);
+#endif
 
   // Submit the batch of uploads accumulated since the last frame, then take
   // ownership of everything it produced and note the copy-timeline value this
@@ -810,6 +845,10 @@ bool VulkanDevice::end_frame() {
   // whatever state the last pass left it in, which is what a reader wants.
   if (m_offscreen)
     return submit_without_present();
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (composed())
+    return end_composed_frame();
+#endif
 
   FrameContext &frame = m_frames[m_frame_index];
   const VkCommandBuffer cmd = frame.order.back();
@@ -916,5 +955,342 @@ bool VulkanDevice::end_frame() {
   }
   return true;
 }
+
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+
+bool VulkanDevice::create_composed_swapchain(const SwapchainDesc &desc) {
+  if (!m_routes.win32_interop || (m_swapchain_format != Format::BGRA8_UNORM &&
+                                  m_swapchain_format != Format::RGBA8_UNORM))
+    return false;
+
+  VkPhysicalDeviceIDProperties id{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+  VkPhysicalDeviceProperties2 props{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+  props.pNext = &id;
+  vkGetPhysicalDeviceProperties2(m_physical_device, &props);
+  if (id.deviceLUIDValid != VK_TRUE)
+    return false;
+
+  auto presenter = nx::make_unique<CompositionPresenter>();
+  if (!presenter->create(desc.window.window, id.deviceLUID, desc.width,
+                         desc.height, m_frames_in_flight,
+                         m_swapchain_format == Format::RGBA8_UNORM))
+    return false;
+  m_composition = std::move(presenter);
+
+  const auto import_fence = [&](VkSemaphore &out, void *const handle,
+                                const nx::string_view name) {
+    if (handle == nullptr)
+      return false;
+    VkSemaphoreTypeCreateInfo type{
+        VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+    type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    info.pNext = &type;
+    bool ok = vkCreateSemaphore(m_device, &info, nullptr, &out) == VK_SUCCESS;
+    if (ok) {
+      VkImportSemaphoreWin32HandleInfoKHR import{
+          VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR};
+      import.semaphore = out;
+      import.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
+      import.handle = handle;
+      ok = vkImportSemaphoreWin32HandleKHR(m_device, &import) == VK_SUCCESS;
+    }
+    CloseHandle(handle);
+    if (ok)
+      set_object_name(vk_handle_value(out), VK_OBJECT_TYPE_SEMAPHORE, name);
+    return ok;
+  };
+  if (!import_fence(m_composed_rendered, m_composition->rendered_fence_handle(),
+                    "composition rendered") ||
+      !import_fence(m_composed_copied, m_composition->copied_fence_handle(),
+                    "composition copied") ||
+      !import_composed_images(desc.width, desc.height)) {
+    destroy_composed_swapchain();
+    return false;
+  }
+
+  // The surface was only asked what it could composite; DirectComposition
+  // owns the window's content from here.
+  vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+  m_surface = VK_NULL_HANDLE;
+  m_swapchain_extent = {desc.width, desc.height};
+  m_swapchain_alpha = SurfaceAlpha::Premultiplied;
+  m_image_index = 0;
+  nx::logd(nx::log::rhi,
+           "swapchain: {}x{} through DirectComposition, {} images, {}",
+           desc.width, desc.height, m_composition->image_count(),
+           to_string(m_swapchain_format));
+  return true;
+}
+
+bool VulkanDevice::import_composed_images(const u32 width, const u32 height) {
+  constexpr VkExternalMemoryHandleTypeFlagBits handle_type =
+      VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+  const VkFormat format = to_vk_format(m_swapchain_format);
+  const u32 count = m_composition->image_count();
+  m_composed_serials.clear();
+  for (u32 i = 0; i < count; ++i)
+    m_composed_serials.push_back(0);
+
+  for (u32 i = 0; i < count; ++i) {
+    void *const handle = m_composition->image_handle(i);
+    if (handle == nullptr)
+      return false;
+
+    VkExternalMemoryImageCreateInfo external{
+        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
+    external.handleTypes = handle_type;
+    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    info.pNext = &external;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = format;
+    info.extent = {width, height, 1};
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    const auto give_up = [&] {
+      CloseHandle(handle);
+      if (view != VK_NULL_HANDLE)
+        vkDestroyImageView(m_device, view, nullptr);
+      if (image != VK_NULL_HANDLE)
+        vkDestroyImage(m_device, image, nullptr);
+      if (memory != VK_NULL_HANDLE)
+        vkFreeMemory(m_device, memory, nullptr);
+      return false;
+    };
+    if (vkCreateImage(m_device, &info, nullptr, &image) != VK_SUCCESS)
+      return give_up();
+
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(m_device, image, &requirements);
+    VkMemoryWin32HandlePropertiesKHR handle_props{
+        VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR};
+    if (vkGetMemoryWin32HandlePropertiesKHR(m_device, handle_type, handle,
+                                            &handle_props) != VK_SUCCESS)
+      return give_up();
+    const u32 types = requirements.memoryTypeBits & handle_props.memoryTypeBits;
+    if (types == 0)
+      return give_up();
+    u32 type_index = 0;
+    while ((types & (1u << type_index)) == 0)
+      ++type_index;
+
+    VkMemoryDedicatedAllocateInfo dedicated{
+        VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+    dedicated.image = image;
+    VkImportMemoryWin32HandleInfoKHR import{
+        VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
+    import.pNext = &dedicated;
+    import.handleType = handle_type;
+    import.handle = handle;
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.pNext = &import;
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = type_index;
+    if (vkAllocateMemory(m_device, &allocate, nullptr, &memory) != VK_SUCCESS ||
+        vkBindImageMemory(m_device, image, memory, 0) != VK_SUCCESS)
+      return give_up();
+
+    VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view_info.image = image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format;
+    view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(m_device, &view_info, nullptr, &view) != VK_SUCCESS)
+      return give_up();
+    // Importing an NT handle leaves it open; the allocation keeps its own
+    // reference.
+    CloseHandle(handle);
+
+    set_object_name(vk_handle_value(image), VK_OBJECT_TYPE_IMAGE,
+                    nx::format("composition image {}", i));
+    VulkanTexture texture;
+    texture.image = image;
+    texture.rtv = view;
+    texture.format = m_swapchain_format;
+    texture.width = width;
+    texture.height = height;
+    texture.usage = TextureUsage::RenderTarget | TextureUsage::CopySrc;
+    texture.state = ResourceState::Undefined;
+    texture.owns_image = false;
+    m_backbuffers.push_back(m_textures.insert(std::move(texture)));
+    m_composed_memory.push_back(memory);
+  }
+  return true;
+}
+
+void VulkanDevice::release_composed_images() noexcept {
+  for (const TextureHandle handle : m_backbuffers) {
+    if (const VulkanTexture *texture = m_textures.try_get(handle)) {
+      vkDestroyImageView(m_device, texture->rtv, nullptr);
+      vkDestroyImage(m_device, texture->image, nullptr);
+    }
+    m_textures.erase(handle);
+  }
+  m_backbuffers.clear();
+  for (const VkDeviceMemory memory : m_composed_memory)
+    vkFreeMemory(m_device, memory, nullptr);
+  m_composed_memory.clear();
+  m_composed_serials.clear();
+}
+
+void VulkanDevice::destroy_composed_swapchain() noexcept {
+  wait_idle();
+  release_composed_images();
+  for (VkSemaphore *const semaphore :
+       {&m_composed_rendered, &m_composed_copied}) {
+    if (*semaphore != VK_NULL_HANDLE)
+      vkDestroySemaphore(m_device, *semaphore, nullptr);
+    *semaphore = VK_NULL_HANDLE;
+  }
+  m_composition.reset();
+  if (m_surface != VK_NULL_HANDLE) {
+    vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+    m_surface = VK_NULL_HANDLE;
+  }
+  m_swapchain_extent = {0, 0};
+  m_image_index = 0;
+}
+
+void VulkanDevice::acquire_composed_image(const VkCommandBuffer cmd) noexcept {
+  // An image D3D11 has not copied from yet was never released to it.
+  if (m_composed_serials[m_image_index] == 0)
+    return;
+  VulkanTexture *const image = m_textures.try_get(m_backbuffers[m_image_index]);
+  if (image == nullptr)
+    return;
+
+  VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+  barrier.dstQueueFamilyIndex =
+      m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+  barrier.image = image->image;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dependency.imageMemoryBarrierCount = 1;
+  dependency.pImageMemoryBarriers = &barrier;
+  vkCmdPipelineBarrier2KHR(cmd, &dependency);
+  // The frame redraws the whole image, so its old contents may go.
+  image->state = ResourceState::Undefined;
+}
+
+bool VulkanDevice::end_composed_frame() {
+  FrameContext &frame = m_frames[m_frame_index];
+  const VkCommandBuffer cmd = frame.order.back();
+
+  // General first, then handed to D3D11: a release and the acquire that
+  // matches it must describe the same layout transition, and this way both
+  // describe none.
+  if (VulkanTexture *const image =
+          m_textures.try_get(m_backbuffers[m_image_index])) {
+    const VkStateInfo from = to_vk_state(image->state);
+    VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = from.stage;
+    barrier.srcAccessMask = from.access;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
+    barrier.oldLayout = from.layout;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image->image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2KHR(cmd, &dependency);
+
+    VkImageMemoryBarrier2 release = barrier;
+    release.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    release.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    release.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+    release.dstAccessMask = 0;
+    release.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    release.srcQueueFamilyIndex =
+        m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+    release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    dependency.pImageMemoryBarriers = &release;
+    vkCmdPipelineBarrier2KHR(cmd, &dependency);
+    image->state = ResourceState::General;
+  }
+
+  nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
+  if (!close_frame(frame, cmd_infos))
+    return false;
+
+  ++m_timeline_value;
+  m_report_frame.store(m_timeline_value, std::memory_order_release);
+  frame.timeline_value = m_timeline_value;
+
+  // The image's previous copy into the swap chain must be done before this
+  // frame writes it again.
+  nx::small_vector<VkSemaphoreSubmitInfo, 2> waits;
+  if (m_frame_upload_wait > 0) {
+    VkSemaphoreSubmitInfo &wait = waits.emplace_back();
+    wait = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    wait.semaphore = m_uploader.timeline();
+    wait.value = m_frame_upload_wait;
+    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  }
+  if (const u64 copied = m_composed_serials[m_image_index]; copied > 0) {
+    VkSemaphoreSubmitInfo &wait = waits.emplace_back();
+    wait = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    wait.semaphore = m_composed_copied;
+    wait.value = copied;
+    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  }
+
+  VkSemaphoreSubmitInfo signals[2] = {};
+  signals[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+  signals[0].semaphore = m_timeline;
+  signals[0].value = m_timeline_value;
+  signals[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  signals[1] = signals[0];
+  signals[1].semaphore = m_composed_rendered;
+
+  VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  submit.waitSemaphoreInfoCount = nx::cast<u32>(waits.size());
+  submit.pWaitSemaphoreInfos = waits.data();
+  submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
+  submit.pCommandBufferInfos = cmd_infos.data();
+  submit.signalSemaphoreInfoCount = 2;
+  submit.pSignalSemaphoreInfos = signals;
+  if (NX_VK_DEVICE_CHECK(
+          *this,
+          vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
+                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
+    return false;
+  m_composed_serials[m_image_index] = m_timeline_value;
+
+  bool presented = false;
+  {
+    NX_PROFILE_ZONE("vk::present_composed");
+    const bool vsync = m_present_mode == VK_PRESENT_MODE_FIFO_KHR ||
+                       m_present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    nx::fiber::run_blocking([&] {
+      presented =
+          m_composition->present(m_image_index, m_timeline_value, vsync);
+    });
+  }
+  m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
+  return presented;
+}
+
+#endif
 
 } // namespace nxe::rhi
