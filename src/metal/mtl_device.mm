@@ -316,7 +316,11 @@ void MetalDevice::shutdown() noexcept {
   uploader_shutdown(*m_state);
 
   wait_idle();
-  destroy_swapchain();
+  for (MetalSwapchain &sc : m_state->swapchains)
+    sc.acquired = false;
+  m_state->acquired.clear();
+  while (!m_state->swapchains.empty())
+    destroy_swapchain(m_state->swapchains.handle_at(0));
   release_retirements(~0ull);
   collect_garbage(*m_state, ~0ull);
 
@@ -375,37 +379,25 @@ void MetalDevice::flush_uploads() noexcept {
   m_uploader.flush_batch();
 }
 
-AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
+bool MetalDevice::begin_frame(MetalCommandContext &out_context) {
   if (m_state == nullptr || device_status() == GpuDeviceStatus::Lost)
-    return AcquireResult::SurfaceLost;
-  if (m_state->layer == nil && !m_state->offscreen)
-    return AcquireResult::SurfaceLost;
+    return false;
 
   MetalDeviceState *s = m_state;
   if (s->frame_active) {
     nx::loge(log_rhi, "begin_frame called twice without an end_frame");
-    return AcquireResult::SurfaceLost;
+    return false;
   }
 
   wait_frame_slot(s->frame_semaphore);
   if (device_status() == GpuDeviceStatus::Lost)
-    return AcquireResult::SurfaceLost;
+    return false;
 
   collect_garbage(*s, s->frames_submitted >= s->frames_in_flight
                           ? s->frames_submitted - s->frames_in_flight
                           : 0);
   uploader_reclaim(*s);
   m_uploader.flush_batch();
-
-  // Offscreen: no layer to take a drawable from, and the backbuffer texture is
-  // already the one this frame draws into.
-  if (!s->offscreen) {
-    s->drawable = next_drawable(s->layer);
-    if (s->drawable == nil) {
-      dispatch_semaphore_signal(s->frame_semaphore);
-      return AcquireResult::OutOfDate;
-    }
-  }
 
   @autoreleasepool {
     s->contexts.resize(MetalDeviceState::MAX_CONTEXTS);
@@ -417,9 +409,8 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     slot = MetalContextSlot{};
     slot.cmd = make_command_buffer(*s, "nx2d frame", s->frames_submitted);
     if (slot.cmd == nil) {
-      s->drawable = nil;
       dispatch_semaphore_signal(s->frame_semaphore);
-      return AcquireResult::SurfaceLost;
+      return false;
     }
     slot.in_use = true;
 
@@ -429,30 +420,53 @@ AcquireResult MetalDevice::begin_frame(MetalCommandContext &out_context) {
     }
   }
 
-  // Re-point the backbuffer handle at this frame's drawable. The handle is
-  // stable across frames; the MTLTexture behind it is not. Offscreen there is
-  // no drawable and the texture is the handle's own, so it is left alone.
-  if (MetalTexture *backbuffer =
-          s->offscreen ? nullptr : s->textures.try_get(s->backbuffer)) {
-    backbuffer->texture = s->drawable.texture;
-    backbuffer->width = s->extent.width;
-    backbuffer->height = s->extent.height;
-    backbuffer->state = ResourceState::Undefined;
-  }
-
+  s->acquired.clear();
   s->frame_active = true;
   out_context.m_state = s;
   out_context.m_slot = 0;
   out_context.m_in_render_pass = false;
+  return true;
+}
 
-  if (s->offscreen)
+AcquireResult MetalDevice::acquire(const SwapchainHandle handle) {
+  MetalDeviceState *const s = m_state;
+  if (s == nullptr || !s->frame_active || s->headless_frame ||
+      device_status() == GpuDeviceStatus::Lost)
+    return AcquireResult::SurfaceLost;
+  MetalSwapchain *const sc = s->swapchains.try_get(handle);
+  if (sc == nullptr)
+    return AcquireResult::SurfaceLost;
+  if (sc->acquired) {
+    nx::loge(log_rhi, "a swapchain was acquired twice in one frame");
+    return AcquireResult::SurfaceLost;
+  }
+
+  // Offscreen: no layer to take a drawable from, and the backbuffer texture is
+  // already the one this frame draws into.
+  if (!sc->offscreen) {
+    if (sc->layer == nil)
+      return AcquireResult::SurfaceLost;
+    sc->drawable = next_drawable(sc->layer);
+    if (sc->drawable == nil)
+      return AcquireResult::OutOfDate;
+    // Re-point the backbuffer handle at this frame's drawable. The handle is
+    // stable across frames; the MTLTexture behind it is not.
+    if (MetalTexture *backbuffer = s->textures.try_get(sc->backbuffer)) {
+      backbuffer->texture = sc->drawable.texture;
+      backbuffer->width = sc->extent.width;
+      backbuffer->height = sc->extent.height;
+      backbuffer->state = ResourceState::Undefined;
+    }
+  }
+  sc->acquired = true;
+  s->acquired.push_back(handle);
+  if (sc->offscreen)
     return AcquireResult::Success;
 
-  const CGSize drawable_size = s->layer.drawableSize;
-  if (nx::cast<u32>(drawable_size.width) != s->extent.width ||
-      nx::cast<u32>(drawable_size.height) != s->extent.height)
+  const CGSize drawable_size = sc->layer.drawableSize;
+  if (nx::cast<u32>(drawable_size.width) != sc->extent.width ||
+      nx::cast<u32>(drawable_size.height) != sc->extent.height)
     return AcquireResult::Suboptimal;
-
   return AcquireResult::Success;
 }
 
@@ -496,8 +510,10 @@ bool MetalDevice::end_frame() {
         [slot.cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
           dispatch_semaphore_signal(semaphore);
         }];
-        if (s->drawable != nil)
-          [slot.cmd presentDrawable:s->drawable];
+        for (const SwapchainHandle handle : s->acquired)
+          if (const MetalSwapchain *sc = s->swapchains.try_get(handle);
+              sc != nullptr && sc->drawable != nil)
+            [slot.cmd presentDrawable:sc->drawable];
       }
       [slot.cmd commit];
       slot.cmd = nil;
@@ -506,16 +522,23 @@ bool MetalDevice::end_frame() {
   }
 
   s->used_contexts = 0;
-  s->drawable = nil;
   s->frame_active = false;
   ++s->frames_submitted;
 
   // The drawable's texture belongs to the layer and must not outlive the
   // frame. An offscreen backbuffer is this device's own, and clearing it would
   // leave the next frame with nothing to draw into.
-  if (MetalTexture *backbuffer =
-          s->offscreen ? nullptr : s->textures.try_get(s->backbuffer))
-    backbuffer->texture = nil;
+  for (const SwapchainHandle handle : s->acquired) {
+    MetalSwapchain *const sc = s->swapchains.try_get(handle);
+    if (sc == nullptr)
+      continue;
+    sc->acquired = false;
+    sc->drawable = nil;
+    if (MetalTexture *backbuffer =
+            sc->offscreen ? nullptr : s->textures.try_get(sc->backbuffer))
+      backbuffer->texture = nil;
+  }
+  s->acquired.clear();
 
   return true;
 }
@@ -628,8 +651,11 @@ bool MetalDevice::end_headless_frame() {
   return true;
 }
 
-TextureHandle MetalDevice::current_backbuffer() const noexcept {
-  return m_state != nullptr ? m_state->backbuffer : TextureHandle{};
+TextureHandle
+MetalDevice::current_backbuffer(const SwapchainHandle handle) const noexcept {
+  const MetalSwapchain *const sc =
+      m_state != nullptr ? m_state->swapchains.try_get(handle) : nullptr;
+  return sc != nullptr ? sc->backbuffer : TextureHandle{};
 }
 
 TextureUsageFlags

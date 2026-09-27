@@ -131,145 +131,176 @@ VkSurfaceKHR create_surface(VkInstance instance,
 
 } // namespace
 
-bool VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
+SwapchainHandle VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
   if (device_status() == GpuDeviceStatus::Lost ||
       desc.window.kind == nx::NativeWindowKind::None ||
       desc.window.window == nullptr) {
-    return false;
+    return {};
   }
 
-  // Full (re)creation. On mobile the native window is a different object after
-  // every suspend/resume, so the old surface must go rather than be reused.
-  if (m_surface != VK_NULL_HANDLE) {
-    wait_idle();
-    if (device_status() == GpuDeviceStatus::Lost)
+  VulkanSwapchain sc;
+  const auto make = [&]() -> bool {
+    sc.surface = create_surface(m_instance, desc.window);
+    if (sc.surface == VK_NULL_HANDLE)
       return false;
-    destroy_swapchain();
-  }
 
-  m_surface = create_surface(m_instance, desc.window);
-  if (m_surface == VK_NULL_HANDLE)
-    return false;
-
-  VkBool32 present_supported = VK_FALSE;
-  NX_VK_TRY(vkGetPhysicalDeviceSurfaceSupportKHR(
-      m_physical_device, m_queue_families[nx::cast<usize>(QueueType::Graphics)],
-      m_surface, &present_supported));
-  if (present_supported != VK_TRUE) {
-    nx::logc(nx::log::rhi, "graphics queue cannot present to this surface");
-    return false;
-  }
-
-  // Pick the present mode once; it cannot change without a rebuild anyway.
-  u32 mode_count = 0;
-  NX_VK_TRY(vkGetPhysicalDeviceSurfacePresentModesKHR(
-      m_physical_device, m_surface, &mode_count, nullptr));
-  nx::small_vector<VkPresentModeKHR, 8> modes(mode_count);
-  NX_VK_TRY(vkGetPhysicalDeviceSurfacePresentModesKHR(
-      m_physical_device, m_surface, &mode_count, modes.data()));
-
-  const VkPresentModeKHR wanted = to_vk_present_mode(desc.present_mode);
-  m_present_mode = VK_PRESENT_MODE_FIFO_KHR;
-  for (const VkPresentModeKHR mode : modes) {
-    if (mode == wanted) {
-      m_present_mode = wanted;
-      break;
+    VkBool32 present_supported = VK_FALSE;
+    NX_VK_TRY(vkGetPhysicalDeviceSurfaceSupportKHR(
+        m_physical_device,
+        m_queue_families[nx::cast<usize>(QueueType::Graphics)], sc.surface,
+        &present_supported));
+    if (present_supported != VK_TRUE) {
+      nx::logc(nx::log::rhi, "graphics queue cannot present to this surface");
+      return false;
     }
-  }
-  if (m_present_mode != wanted)
-    nx::logw(nx::log::rhi, "present mode unsupported, falling back to FIFO");
 
-  // Surface format: prefer the requested one, else the first sRGB-capable
-  // 8-bit format, else whatever comes first.
-  u32 format_count = 0;
-  NX_VK_TRY(vkGetPhysicalDeviceSurfaceFormatsKHR(m_physical_device, m_surface,
-                                                 &format_count, nullptr));
-  if (format_count == 0) {
-    nx::logc(nx::log::rhi, "surface reports no formats");
-    return false;
-  }
-  nx::small_vector<VkSurfaceFormatKHR, 32> formats(format_count);
-  NX_VK_TRY(vkGetPhysicalDeviceSurfaceFormatsKHR(
-      m_physical_device, m_surface, &format_count, formats.data()));
+    // Pick the present mode once; it cannot change without a rebuild anyway.
+    u32 mode_count = 0;
+    NX_VK_TRY(vkGetPhysicalDeviceSurfacePresentModesKHR(
+        m_physical_device, sc.surface, &mode_count, nullptr));
+    nx::small_vector<VkPresentModeKHR, 8> modes(mode_count);
+    NX_VK_TRY(vkGetPhysicalDeviceSurfacePresentModesKHR(
+        m_physical_device, sc.surface, &mode_count, modes.data()));
 
-  const VkFormat preferred = to_vk_format(desc.preferred_format);
-  VkSurfaceFormatKHR chosen = formats[0];
-  for (const auto &format : formats) {
-    if (format.format == preferred &&
-        format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-      chosen = format;
-      break;
+    const VkPresentModeKHR wanted = to_vk_present_mode(desc.present_mode);
+    sc.present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    for (const VkPresentModeKHR mode : modes) {
+      if (mode == wanted) {
+        sc.present_mode = wanted;
+        break;
+      }
     }
-  }
-  m_swapchain_format = from_vk_format(chosen.format);
-  if (m_swapchain_format == Format::Unknown) {
-    nx::logw(nx::log::rhi, "surface format {} has no portable equivalent",
-             nx::cast<i32>(chosen.format));
-  }
+    if (sc.present_mode != wanted)
+      nx::logw(nx::log::rhi, "present mode unsupported, falling back to FIFO");
 
-  m_requested_alpha = desc.alpha;
+    u32 format_count = 0;
+    NX_VK_TRY(vkGetPhysicalDeviceSurfaceFormatsKHR(
+        m_physical_device, sc.surface, &format_count, nullptr));
+    if (format_count == 0) {
+      nx::logc(nx::log::rhi, "surface reports no formats");
+      return false;
+    }
+    nx::small_vector<VkSurfaceFormatKHR, 32> formats(format_count);
+    NX_VK_TRY(vkGetPhysicalDeviceSurfaceFormatsKHR(
+        m_physical_device, sc.surface, &format_count, formats.data()));
+
+    // The first swapchain prefers the requested format, else takes whatever
+    // comes first. The rest must match it: pipelines are built for one.
+    const bool fixed = !m_swapchains.empty();
+    const VkFormat preferred =
+        to_vk_format(fixed ? m_swapchain_format : desc.preferred_format);
+    const VkSurfaceFormatKHR *chosen = fixed ? nullptr : &formats[0];
+    for (const VkSurfaceFormatKHR &format : formats) {
+      if (format.format == preferred &&
+          format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+        chosen = &format;
+        break;
+      }
+    }
+    if (chosen == nullptr) {
+      nx::loge(nx::log::rhi,
+               "surface cannot present {}, the format the other swapchains "
+               "have",
+               to_string(m_swapchain_format));
+      return false;
+    }
+    if (!fixed) {
+      m_swapchain_format = from_vk_format(chosen->format);
+      if (m_swapchain_format == Format::Unknown)
+        nx::logw(nx::log::rhi, "surface format {} has no portable equivalent",
+                 nx::cast<i32>(chosen->format));
+    }
+
+    sc.requested_alpha = desc.alpha;
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
-  if (desc.alpha == SurfaceAlpha::Premultiplied) {
-    VkSurfaceCapabilitiesKHR caps{};
-    NX_VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device,
-                                                        m_surface, &caps));
-    if ((caps.supportedCompositeAlpha &
-         VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) == 0 &&
-        create_composed_swapchain(desc))
-      return true;
-  }
+    if (desc.alpha == SurfaceAlpha::Premultiplied) {
+      VkSurfaceCapabilitiesKHR caps{};
+      NX_VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device,
+                                                          sc.surface, &caps));
+      if ((caps.supportedCompositeAlpha &
+           VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) == 0 &&
+          create_composed_swapchain(sc, desc))
+        return true;
+    }
 #endif
-  return build_swapchain(desc.width, desc.height);
+    return build_swapchain(sc, desc.width, desc.height) &&
+           create_acquire_semaphores(sc);
+  };
+  if (!make()) {
+    release_swapchain(sc);
+    return {};
+  }
+  return m_swapchains.insert(std::move(sc));
 }
 
-bool VulkanDevice::create_offscreen_swapchain(const u32 width, const u32 height,
-                                             const Format format) {
-  if (device_status() == GpuDeviceStatus::Lost || width == 0 || height == 0 ||
-      format == Format::Unknown)
-    return false;
-
-  if (m_swapchain != VK_NULL_HANDLE || !m_backbuffers.empty()) {
-    wait_idle();
-    if (device_status() == GpuDeviceStatus::Lost)
-      return false;
-    destroy_swapchain();
-  }
-
-  m_swapchain_format = format;
-  m_swapchain_extent = {width, height};
-  m_offscreen = true;
-
-  // One image per frame in flight, same as a surface swapchain gets, so a
-  // frame never writes the image the one before it is still reading.
-  // CopySrc because a frame capture reads the backbuffer back, and Sampled
-  // because a pass may sample what an earlier one wrote to it.
+// One image per frame in flight, same as a surface swapchain gets, so a frame
+// never writes the image the one before it is still reading. CopySrc because a
+// frame capture reads the backbuffer back, and Sampled because a pass may
+// sample what an earlier one wrote to it.
+bool VulkanDevice::make_offscreen_images(VulkanSwapchain &sc, const u32 width,
+                                         const u32 height) {
   for (u32 i = 0; i < m_frames_in_flight; ++i) {
     const nx::string name = nx::format("offscreen backbuffer {}", i);
     const TextureHandle image = create_texture({
         .name = name.view(),
-        .format = format,
+        .format = m_swapchain_format,
         .width = width,
         .height = height,
         .usage = TextureUsage::RenderTarget | TextureUsage::Sampled |
                  TextureUsage::CopySrc,
     });
-    if (!image.valid()) {
-      destroy_swapchain();
+    if (!image.valid())
       return false;
-    }
-    m_backbuffers.push_back(image);
+    sc.backbuffers.push_back(image);
   }
-
-  m_image_index = 0;
+  sc.extent = {width, height};
+  sc.image_index = 0;
   nx::logd(nx::log::rhi, "offscreen swapchain: {}x{}, {} images, {}", width,
-           height, m_frames_in_flight, to_string(format));
+           height, m_frames_in_flight, to_string(m_swapchain_format));
   return true;
 }
 
-bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
+SwapchainHandle VulkanDevice::create_offscreen_swapchain(const u32 width,
+                                                        const u32 height,
+                                                        const Format format) {
+  if (device_status() == GpuDeviceStatus::Lost || width == 0 || height == 0 ||
+      format == Format::Unknown)
+    return {};
+  if (!m_swapchains.empty() && format != m_swapchain_format) {
+    nx::loge(nx::log::rhi,
+             "offscreen swapchain in {} while the other swapchains are {}",
+             to_string(format), to_string(m_swapchain_format));
+    return {};
+  }
+
+  m_swapchain_format = format;
+  VulkanSwapchain sc;
+  sc.offscreen = true;
+  if (!make_offscreen_images(sc, width, height)) {
+    release_swapchain(sc);
+    return {};
+  }
+  return m_swapchains.insert(std::move(sc));
+}
+
+bool VulkanDevice::create_acquire_semaphores(VulkanSwapchain &sc) {
+  VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+  for (u32 i = 0; i < m_frames_in_flight; ++i) {
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    NX_VK_DEVICE_TRY(*this,
+                     vkCreateSemaphore(m_device, &info, nullptr, &semaphore));
+    set_object_name(vk_handle_value(semaphore), VK_OBJECT_TYPE_SEMAPHORE,
+                    nx::format("frame {} acquire", i));
+    sc.acquire_semaphores.push_back(semaphore);
+  }
+  return true;
+}
+
+bool VulkanDevice::build_swapchain(VulkanSwapchain &sc, const u32 width,
+                                   const u32 height) {
   VkSurfaceCapabilitiesKHR caps{};
   NX_VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device,
-                                                      m_surface, &caps));
+                                                      sc.surface, &caps));
 
   VkExtent2D extent = caps.currentExtent;
   // 0xFFFFFFFF means "you choose"; otherwise the surface dictates the size and
@@ -290,7 +321,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
                              : extent.height);
 
   if (extent.width == 0 || extent.height == 0) {
-    m_swapchain_extent = {0, 0};
+    sc.extent = {0, 0};
     return false;
   }
 
@@ -301,7 +332,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     image_count = caps.maxImageCount;
 
   VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
-  info.surface = m_surface;
+  info.surface = sc.surface;
   info.minImageCount = image_count;
   info.imageFormat = to_vk_format(m_swapchain_format);
   info.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -317,31 +348,32 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
           ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
           : caps.currentTransform;
   info.compositeAlpha =
-      pick_composite_alpha(caps.supportedCompositeAlpha, m_requested_alpha);
-  info.presentMode = m_present_mode;
+      pick_composite_alpha(caps.supportedCompositeAlpha, sc.requested_alpha);
+  info.presentMode = sc.present_mode;
   info.clipped = VK_TRUE;
-  info.oldSwapchain = m_swapchain;
+  info.oldSwapchain = sc.swapchain;
 
   VkSwapchainKHR new_swapchain = VK_NULL_HANDLE;
   NX_VK_DEVICE_TRY(
       *this, vkCreateSwapchainKHR(m_device, &info, nullptr, &new_swapchain));
 
-  destroy_backbuffer_views();
-  if (m_swapchain != VK_NULL_HANDLE)
-    vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
-  m_swapchain = new_swapchain;
-  m_swapchain_extent = extent;
-  m_swapchain_alpha = from_vk_composite_alpha(info.compositeAlpha);
-  set_object_name(vk_handle_value(m_swapchain), VK_OBJECT_TYPE_SWAPCHAIN_KHR,
-                  "main swapchain");
+  destroy_backbuffer_views(sc);
+  if (sc.swapchain != VK_NULL_HANDLE)
+    vkDestroySwapchainKHR(m_device, sc.swapchain, nullptr);
+  sc.swapchain = new_swapchain;
+  sc.extent = extent;
+  sc.alpha = from_vk_composite_alpha(info.compositeAlpha);
+  sc.image_index = 0;
+  set_object_name(vk_handle_value(sc.swapchain), VK_OBJECT_TYPE_SWAPCHAIN_KHR,
+                  "swapchain");
 
   u32 actual_count = 0;
-  NX_VK_DEVICE_TRY(*this, vkGetSwapchainImagesKHR(m_device, m_swapchain,
+  NX_VK_DEVICE_TRY(*this, vkGetSwapchainImagesKHR(m_device, sc.swapchain,
                                                   &actual_count, nullptr));
   nx::small_vector<VkImage, 4> images(actual_count);
   NX_VK_DEVICE_TRY(*this,
-                   vkGetSwapchainImagesKHR(m_device, m_swapchain, &actual_count,
-                                           images.data()));
+                   vkGetSwapchainImagesKHR(m_device, sc.swapchain,
+                                           &actual_count, images.data()));
 
   for (u32 i = 0; i < actual_count; ++i) {
     VulkanTexture texture;
@@ -370,7 +402,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
     set_object_name(vk_handle_value(texture.rtv), VK_OBJECT_TYPE_IMAGE_VIEW,
                     nx::format("swapchain image {} attachment", i));
 
-    m_backbuffers.push_back(m_textures.insert(std::move(texture)));
+    sc.backbuffers.push_back(m_textures.insert(std::move(texture)));
 
     VkSemaphore release = VK_NULL_HANDLE;
     VkSemaphoreCreateInfo semaphore_info{
@@ -379,7 +411,7 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
         *this, vkCreateSemaphore(m_device, &semaphore_info, nullptr, &release));
     set_object_name(vk_handle_value(release), VK_OBJECT_TYPE_SEMAPHORE,
                     nx::format("swapchain image {} release", i));
-    m_release_semaphores.push_back(release);
+    sc.release_semaphores.push_back(release);
   }
 
   nx::logd(nx::log::rhi, "swapchain: {}x{}, {} images, {}", extent.width,
@@ -387,83 +419,129 @@ bool VulkanDevice::build_swapchain(const u32 width, const u32 height) {
   return true;
 }
 
-bool VulkanDevice::resize_swapchain(const u32 width, const u32 height) {
-  if (m_offscreen)
-    return create_offscreen_swapchain(width, height, m_swapchain_format);
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
-  if (composed()) {
-    wait_idle();
-    if (device_status() == GpuDeviceStatus::Lost)
-      return false;
-    release_composed_images();
-    if (!m_composition->resize(width, height) ||
-        !import_composed_images(width, height))
-      return false;
-    m_swapchain_extent = {width, height};
-    return true;
+bool VulkanDevice::resize_swapchain(const SwapchainHandle handle,
+                                    const u32 width, const u32 height) {
+  VulkanSwapchain *const sc = m_swapchains.try_get(handle);
+  if (sc == nullptr || device_status() == GpuDeviceStatus::Lost)
+    return false;
+  if (sc->acquired) {
+    nx::loge(nx::log::rhi, "resize_swapchain between acquire and end_frame");
+    return false;
   }
-#endif
-  if (m_surface == VK_NULL_HANDLE || device_status() == GpuDeviceStatus::Lost)
+  if (sc->offscreen && (width == 0 || height == 0))
     return false;
   wait_idle();
   if (device_status() == GpuDeviceStatus::Lost)
     return false;
-  return build_swapchain(width, height);
+  sc->stale = false;
+
+  if (sc->offscreen) {
+    for (const TextureHandle image : sc->backbuffers)
+      destroy_texture(image);
+    sc->backbuffers.clear();
+    return make_offscreen_images(*sc, width, height);
+  }
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (sc->composed()) {
+    release_composed_images(*sc);
+    if (!sc->composition->resize(width, height) ||
+        !import_composed_images(*sc, width, height))
+      return false;
+    sc->extent = {width, height};
+    return true;
+  }
+#endif
+  if (sc->surface == VK_NULL_HANDLE)
+    return false;
+  return build_swapchain(*sc, width, height);
 }
 
-void VulkanDevice::destroy_backbuffer_views() noexcept {
-  for (const TextureHandle handle : m_backbuffers) {
+void VulkanDevice::destroy_backbuffer_views(VulkanSwapchain &sc) noexcept {
+  for (const TextureHandle handle : sc.backbuffers) {
     if (const VulkanTexture *texture = m_textures.try_get(handle)) {
       if (texture->rtv != VK_NULL_HANDLE)
         vkDestroyImageView(m_device, texture->rtv, nullptr);
     }
     m_textures.erase(handle);
   }
-  m_backbuffers.clear();
+  sc.backbuffers.clear();
 
-  for (const VkSemaphore semaphore : m_release_semaphores)
+  for (const VkSemaphore semaphore : sc.release_semaphores)
     if (semaphore != VK_NULL_HANDLE)
       vkDestroySemaphore(m_device, semaphore, nullptr);
-  m_release_semaphores.clear();
+  sc.release_semaphores.clear();
 }
 
-void VulkanDevice::destroy_swapchain() noexcept {
+void VulkanDevice::release_swapchain(VulkanSwapchain &sc) noexcept {
   if (m_device == VK_NULL_HANDLE)
     return;
-  m_swapchain_alpha = SurfaceAlpha::Opaque;
-
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
-  if (composed()) {
-    destroy_composed_swapchain();
-    return;
-  }
+  release_composition(sc);
 #endif
-
-  if (m_offscreen) {
+  if (sc.offscreen) {
     // These images are this device's own, so they go back the way any texture
     // does - destroy_backbuffer_views() would drop the views and leak the
     // allocations behind them.
-    for (const TextureHandle handle : m_backbuffers)
+    for (const TextureHandle handle : sc.backbuffers)
       destroy_texture(handle);
-    m_backbuffers.clear();
-    m_offscreen = false;
-    m_swapchain_extent = {0, 0};
-    m_swapchain_format = Format::Unknown;
-    m_image_index = 0;
+    sc.backbuffers.clear();
+  }
+  destroy_backbuffer_views(sc);
+  for (const VkSemaphore semaphore : sc.acquire_semaphores)
+    vkDestroySemaphore(m_device, semaphore, nullptr);
+  sc.acquire_semaphores.clear();
+  if (sc.swapchain != VK_NULL_HANDLE) {
+    vkDestroySwapchainKHR(m_device, sc.swapchain, nullptr);
+    sc.swapchain = VK_NULL_HANDLE;
+  }
+  if (sc.surface != VK_NULL_HANDLE) {
+    vkDestroySurfaceKHR(m_instance, sc.surface, nullptr);
+    sc.surface = VK_NULL_HANDLE;
+  }
+  sc.extent = {0, 0};
+}
+
+void VulkanDevice::destroy_swapchain(const SwapchainHandle handle) noexcept {
+  VulkanSwapchain *const sc = m_swapchains.try_get(handle);
+  if (sc == nullptr)
+    return;
+  if (sc->acquired) {
+    nx::loge(nx::log::rhi, "destroy_swapchain between acquire and end_frame");
     return;
   }
+  if (m_device != VK_NULL_HANDLE)
+    wait_idle();
+  release_swapchain(*sc);
+  m_swapchains.erase(handle);
+}
 
-  destroy_backbuffer_views();
+bool VulkanDevice::offscreen_swapchain(const SwapchainHandle handle) const {
+  const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
+  return sc != nullptr && sc->offscreen;
+}
 
-  if (m_swapchain != VK_NULL_HANDLE) {
-    vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
-    m_swapchain = VK_NULL_HANDLE;
-  }
-  if (m_surface != VK_NULL_HANDLE) {
-    vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
-    m_surface = VK_NULL_HANDLE;
-  }
-  m_swapchain_extent = {0, 0};
+Extent2D VulkanDevice::swapchain_extent(const SwapchainHandle handle) const {
+  const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
+  return sc != nullptr ? Extent2D{sc->extent.width, sc->extent.height}
+                       : Extent2D{};
+}
+
+SurfaceAlpha VulkanDevice::swapchain_alpha(const SwapchainHandle handle) const {
+  const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
+  return sc != nullptr ? sc->alpha : SurfaceAlpha::Opaque;
+}
+
+bool VulkanDevice::swapchain_stale(const SwapchainHandle handle) const {
+  const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
+  return sc != nullptr && sc->stale;
+}
+
+TextureHandle
+VulkanDevice::current_backbuffer(const SwapchainHandle handle) const noexcept {
+  const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
+  return sc != nullptr && !sc->backbuffers.empty()
+             ? sc->backbuffers[sc->image_index]
+             : TextureHandle{};
 }
 
 // A render job that would block in the driver waits on a blocking-service
@@ -653,91 +731,7 @@ void VulkanDevice::end_recording(VulkanCommandContext &recording) {
   recording = {};
 }
 
-AcquireResult VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
-  NX_PROFILE_ZONE("vk::begin_frame");
-  if (device_status() == GpuDeviceStatus::Lost ||
-      m_swapchain_extent.width == 0 ||
-      (m_swapchain == VK_NULL_HANDLE && !m_offscreen && !composed()))
-    return AcquireResult::SurfaceLost;
-
-  FrameContext &frame = m_frames[m_frame_index];
-
-  if (frame.timeline_value > 0) {
-    NX_PROFILE_ZONE_COLOR("vk::wait_gpu", 0x604040);
-    if (NX_VK_DEVICE_CHECK(*this, wait_timeline(frame.timeline_value)) !=
-        VK_SUCCESS)
-      return AcquireResult::SurfaceLost;
-  }
-
-  u64 completed = 0;
-  if (NX_VK_DEVICE_CHECK(*this, vkGetSemaphoreCounterValueKHR(
-                                    m_device, m_timeline, &completed)) !=
-      VK_SUCCESS)
-    return AcquireResult::SurfaceLost;
-  collect_garbage(completed);
-  m_uploader.reclaim();
-
-  VkResult acquired = VK_SUCCESS;
-  if (m_offscreen || composed()) {
-    // Nothing to acquire from, and so no acquire semaphore for end_frame to
-    // wait on: the image for this frame is the one that belongs to its slot.
-    m_image_index = m_frame_index;
-  } else {
-    NX_PROFILE_ZONE_COLOR("vk::acquire", 0x604040);
-    const auto acquire = [&](const u64 timeout) {
-      return vkAcquireNextImageKHR(m_device, m_swapchain, timeout,
-                                   frame.acquire_semaphore, VK_NULL_HANDLE,
-                                   &m_image_index);
-    };
-    acquired = acquire(0);
-    if (acquired == VK_NOT_READY || acquired == VK_TIMEOUT)
-      nx::fiber::run_blocking([&] { acquired = acquire(UINT64_MAX); });
-  }
-
-  if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
-    return AcquireResult::OutOfDate;
-  if (acquired == VK_ERROR_SURFACE_LOST_KHR)
-    return AcquireResult::SurfaceLost;
-  if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
-    NX_VK_DEVICE_CHECK(*this, acquired);
-    return AcquireResult::SurfaceLost;
-  }
-
-  const VkCommandBuffer cmd = open_frame_slot(frame);
-  if (cmd == VK_NULL_HANDLE)
-    return AcquireResult::SurfaceLost;
-  m_gpu_profiler.collect(cmd);
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
-  if (composed())
-    acquire_composed_image(cmd);
-#endif
-
-  // Submit the batch of uploads accumulated since the last frame, then take
-  // ownership of everything it produced and note the copy-timeline value this
-  // frame's submit must wait on.
-  m_uploader.flush_batch();
-  m_frame_upload_wait = m_uploader.record_acquires(cmd);
-
-  out_context = {};
-  out_context.m_cmd = cmd;
-  out_context.m_device = this;
-  out_context.m_zones = &frame.slot.zones;
-  m_frame_active = true;
-
-  const bool suboptimal =
-      acquired == VK_SUBOPTIMAL_KHR &&
-      surface_resized(m_physical_device, m_surface, m_swapchain_extent);
-  return suboptimal ? AcquireResult::Suboptimal : AcquireResult::Success;
-}
-
-bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
-  if (m_device == VK_NULL_HANDLE || m_frame_active ||
-      device_status() == GpuDeviceStatus::Lost)
-    return false;
-
-  if (m_frames.empty())
-    return false;
-
+bool VulkanDevice::open_frame(VulkanCommandContext &out_context) {
   FrameContext &frame = m_frames[m_frame_index];
   if (frame.timeline_value > 0) {
     NX_PROFILE_ZONE_COLOR("vk::wait_gpu", 0x604040);
@@ -758,6 +752,10 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   if (cmd == VK_NULL_HANDLE)
     return false;
   m_gpu_profiler.collect(cmd);
+
+  // Submit the batch of uploads accumulated since the last frame, then take
+  // ownership of everything it produced and note the copy-timeline value this
+  // frame's submit must wait on.
   m_uploader.flush_batch();
   m_frame_upload_wait = m_uploader.record_acquires(cmd);
 
@@ -766,6 +764,81 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   out_context.m_device = this;
   out_context.m_zones = &frame.slot.zones;
   m_frame_active = true;
+  return true;
+}
+
+bool VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
+  NX_PROFILE_ZONE("vk::begin_frame");
+  if (m_device == VK_NULL_HANDLE || m_frames.empty() ||
+      device_status() == GpuDeviceStatus::Lost)
+    return false;
+  if (m_frame_active) {
+    nx::loge(nx::log::rhi, "begin_frame called twice without an end_frame");
+    return false;
+  }
+  m_acquired.clear();
+  return open_frame(out_context);
+}
+
+AcquireResult VulkanDevice::acquire(const SwapchainHandle handle) {
+  VulkanSwapchain *const sc = m_swapchains.try_get(handle);
+  if (!m_frame_active || m_headless_frame || sc == nullptr ||
+      device_status() == GpuDeviceStatus::Lost)
+    return AcquireResult::SurfaceLost;
+  if (sc->acquired) {
+    nx::loge(nx::log::rhi, "a swapchain was acquired twice in one frame");
+    return AcquireResult::SurfaceLost;
+  }
+  if (sc->extent.width == 0 ||
+      (!sc->presents() && !sc->offscreen && !sc->composed()))
+    return AcquireResult::SurfaceLost;
+
+  VkResult acquired = VK_SUCCESS;
+  if (sc->offscreen || sc->composed()) {
+    // Nothing to acquire from, and so no acquire semaphore for end_frame to
+    // wait on: the image for this frame is the one that belongs to its slot.
+    sc->image_index = m_frame_index;
+  } else {
+    NX_PROFILE_ZONE_COLOR("vk::acquire", 0x604040);
+    const VkSemaphore semaphore = sc->acquire_semaphores[m_frame_index];
+    const auto acquire_image = [&](const u64 timeout) {
+      return vkAcquireNextImageKHR(m_device, sc->swapchain, timeout, semaphore,
+                                   VK_NULL_HANDLE, &sc->image_index);
+    };
+    acquired = acquire_image(0);
+    if (acquired == VK_NOT_READY || acquired == VK_TIMEOUT)
+      nx::fiber::run_blocking([&] { acquired = acquire_image(UINT64_MAX); });
+  }
+
+  if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
+    return AcquireResult::OutOfDate;
+  if (acquired == VK_ERROR_SURFACE_LOST_KHR)
+    return AcquireResult::SurfaceLost;
+  if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
+    NX_VK_DEVICE_CHECK(*this, acquired);
+    return AcquireResult::SurfaceLost;
+  }
+
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (sc->composed())
+    acquire_composed_image(*sc, m_frames[m_frame_index].order.back());
+#endif
+  sc->acquired = true;
+  m_acquired.push_back(handle);
+
+  const bool suboptimal =
+      acquired == VK_SUBOPTIMAL_KHR &&
+      surface_resized(m_physical_device, sc->surface, sc->extent);
+  return suboptimal ? AcquireResult::Suboptimal : AcquireResult::Success;
+}
+
+bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
+  if (m_device == VK_NULL_HANDLE || m_frame_active || m_frames.empty() ||
+      device_status() == GpuDeviceStatus::Lost)
+    return false;
+  m_acquired.clear();
+  if (!open_frame(out_context))
+    return false;
   m_headless_frame = true;
   return true;
 }
@@ -827,6 +900,75 @@ bool VulkanDevice::submit_without_present() {
   return true;
 }
 
+void VulkanDevice::finish_backbuffer(VulkanSwapchain &sc,
+                                     const VkCommandBuffer cmd) noexcept {
+  // No surface: the image keeps whatever state the last pass left it in,
+  // which is what a reader wants.
+  if (sc.offscreen)
+    return;
+  VulkanTexture *const image = m_textures.try_get(sc.backbuffers[sc.image_index]);
+  if (image == nullptr)
+    return;
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  if (sc.composed()) {
+    // General first, then handed to D3D11: a release and the acquire that
+    // matches it must describe the same layout transition, and this way both
+    // describe none.
+    const VkStateInfo from = to_vk_state(image->state);
+    VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = from.stage;
+    barrier.srcAccessMask = from.access;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
+    barrier.oldLayout = from.layout;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image->image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2KHR(cmd, &dependency);
+
+    VkImageMemoryBarrier2 release = barrier;
+    release.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    release.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    release.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+    release.dstAccessMask = 0;
+    release.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    release.srcQueueFamilyIndex =
+        m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+    release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    dependency.pImageMemoryBarriers = &release;
+    vkCmdPipelineBarrier2KHR(cmd, &dependency);
+    image->state = ResourceState::General;
+    return;
+  }
+#endif
+  // The image must be in PRESENT_SRC before handing it to the present engine.
+  if (image->state == ResourceState::Present)
+    return;
+  const VkStateInfo from = to_vk_state(image->state);
+  const VkStateInfo to = to_vk_state(ResourceState::Present);
+  VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  barrier.srcStageMask = from.stage;
+  barrier.srcAccessMask = from.access;
+  barrier.dstStageMask = to.stage;
+  barrier.dstAccessMask = to.access;
+  barrier.oldLayout = from.layout;
+  barrier.newLayout = to.layout;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.image = image->image;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dependency.imageMemoryBarrierCount = 1;
+  dependency.pImageMemoryBarriers = &barrier;
+  vkCmdPipelineBarrier2KHR(cmd, &dependency);
+  image->state = ResourceState::Present;
+}
+
 bool VulkanDevice::end_frame() {
   if (device_status() == GpuDeviceStatus::Lost)
     return false;
@@ -840,125 +982,155 @@ bool VulkanDevice::end_frame() {
   }
   m_frame_active = false;
 
-  // No surface, so there is nothing to transition to PRESENT_SRC and nothing
-  // to present to: the frame is finished by submitting it. The image keeps
-  // whatever state the last pass left it in, which is what a reader wants.
-  if (m_offscreen)
-    return submit_without_present();
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
-  if (composed())
-    return end_composed_frame();
-#endif
-
   FrameContext &frame = m_frames[m_frame_index];
+  nx::small_vector<VulkanSwapchain *, 4> acquired;
+  for (const SwapchainHandle handle : m_acquired)
+    if (VulkanSwapchain *const sc = m_swapchains.try_get(handle))
+      acquired.push_back(sc);
+  m_acquired.clear();
+  const auto let_go = [&] {
+    for (VulkanSwapchain *const sc : acquired)
+      sc->acquired = false;
+  };
+
   const VkCommandBuffer cmd = frame.order.back();
-
-  // The image must be in PRESENT_SRC before handing it to the present engine.
-  if (VulkanTexture *backbuffer =
-          m_textures.try_get(m_backbuffers[m_image_index])) {
-    if (backbuffer->state != ResourceState::Present) {
-      const VkStateInfo from = to_vk_state(backbuffer->state);
-      const VkStateInfo to = to_vk_state(ResourceState::Present);
-
-      VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-      barrier.srcStageMask = from.stage;
-      barrier.srcAccessMask = from.access;
-      barrier.dstStageMask = to.stage;
-      barrier.dstAccessMask = to.access;
-      barrier.oldLayout = from.layout;
-      barrier.newLayout = to.layout;
-      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      barrier.image = backbuffer->image;
-      barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-      VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-      dependency.imageMemoryBarrierCount = 1;
-      dependency.pImageMemoryBarriers = &barrier;
-      vkCmdPipelineBarrier2KHR(cmd, &dependency);
-
-      backbuffer->state = ResourceState::Present;
-    }
-  }
+  for (VulkanSwapchain *const sc : acquired)
+    finish_backbuffer(*sc, cmd);
 
   nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
-  if (!close_frame(frame, cmd_infos))
+  if (!close_frame(frame, cmd_infos)) {
+    let_go();
     return false;
+  }
 
   ++m_timeline_value;
   m_report_frame.store(m_timeline_value, std::memory_order_release);
   frame.timeline_value = m_timeline_value;
 
-  // Wait on the swapchain acquire, and - when the transfer queue uploaded
-  // resources this frame consumes - on the upload timeline as well.
-  VkSemaphoreSubmitInfo wait_infos[2] = {};
-  wait_infos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-  wait_infos[0].semaphore = frame.acquire_semaphore;
-  wait_infos[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  u32 wait_count = 1;
-  if (m_frame_upload_wait > 0) {
-    wait_infos[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    wait_infos[1].semaphore = m_uploader.timeline();
-    wait_infos[1].value = m_frame_upload_wait;
-    wait_infos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    wait_count = 2;
+  // Every acquired image, and - when the transfer queue uploaded resources this
+  // frame consumes - the upload timeline too.
+  const auto semaphore = [](const VkSemaphore handle, const u64 value) {
+    VkSemaphoreSubmitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    info.semaphore = handle;
+    info.value = value;
+    info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    return info;
+  };
+  nx::small_vector<VkSemaphoreSubmitInfo, 8> waits;
+  nx::small_vector<VkSemaphoreSubmitInfo, 8> signals;
+  if (m_frame_upload_wait > 0)
+    waits.push_back(semaphore(m_uploader.timeline(), m_frame_upload_wait));
+  bool offscreen_only = !acquired.empty();
+  for (VulkanSwapchain *const sc : acquired) {
+    if (sc->presents()) {
+      waits.push_back(semaphore(sc->acquire_semaphores[m_frame_index], 0));
+      signals.push_back(semaphore(sc->release_semaphores[sc->image_index], 0));
+    }
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+    if (sc->composed()) {
+      // The image's previous copy into the swap chain must be done before
+      // this frame writes it again.
+      if (const u64 copied = sc->composed_serials[sc->image_index]; copied > 0)
+        waits.push_back(semaphore(sc->composed_copied, copied));
+      signals.push_back(semaphore(sc->composed_rendered, m_timeline_value));
+    }
+#endif
+    offscreen_only = offscreen_only && sc->offscreen;
   }
-
-  VkSemaphoreSubmitInfo signal_infos[2] = {};
-  signal_infos[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-  signal_infos[0].semaphore = m_release_semaphores[m_image_index];
-  signal_infos[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  signal_infos[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-  signal_infos[1].semaphore = m_timeline;
-  signal_infos[1].value = m_timeline_value;
-  signal_infos[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  signals.push_back(semaphore(m_timeline, m_timeline_value));
 
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-  submit.waitSemaphoreInfoCount = wait_count;
-  submit.pWaitSemaphoreInfos = wait_infos;
+  submit.waitSemaphoreInfoCount = nx::cast<u32>(waits.size());
+  submit.pWaitSemaphoreInfos = waits.data();
   submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
   submit.pCommandBufferInfos = cmd_infos.data();
-  submit.signalSemaphoreInfoCount = 2;
-  submit.pSignalSemaphoreInfos = signal_infos;
-
+  submit.signalSemaphoreInfoCount = nx::cast<u32>(signals.size());
+  submit.pSignalSemaphoreInfos = signals.data();
   if (NX_VK_DEVICE_CHECK(
           *this,
           vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
-                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
+                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS) {
+    let_go();
     return false;
+  }
 
-  VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-  present.waitSemaphoreCount = 1;
-  present.pWaitSemaphores = &m_release_semaphores[m_image_index];
-  present.swapchainCount = 1;
-  present.pSwapchains = &m_swapchain;
-  present.pImageIndices = &m_image_index;
+  // One present for every surface, so FIFO waits once per frame rather than
+  // once per window.
+  nx::small_vector<VkSwapchainKHR, 4> chains;
+  nx::small_vector<u32, 4> indices;
+  nx::small_vector<VkSemaphore, 4> ready;
+  nx::small_vector<VulkanSwapchain *, 4> presented;
+  for (VulkanSwapchain *const sc : acquired) {
+    if (!sc->presents())
+      continue;
+    chains.push_back(sc->swapchain);
+    indices.push_back(sc->image_index);
+    ready.push_back(sc->release_semaphores[sc->image_index]);
+    presented.push_back(sc);
+  }
+  if (!chains.empty()) {
+    nx::small_vector<VkResult, 4> results(chains.size(), VK_SUCCESS);
+    VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    present.waitSemaphoreCount = nx::cast<u32>(ready.size());
+    present.pWaitSemaphores = ready.data();
+    present.swapchainCount = nx::cast<u32>(chains.size());
+    present.pSwapchains = chains.data();
+    present.pImageIndices = indices.data();
+    present.pResults = results.data();
+    {
+      NX_PROFILE_ZONE("vk::present");
+      nx::fiber::run_blocking([&] {
+        (void)vkQueuePresentKHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
+                                &present);
+      });
+    }
+    for (usize i = 0; i < presented.size(); ++i) {
+      VulkanSwapchain &sc = *presented[i];
+      const VkResult result = results[i];
+      if (result == VK_ERROR_OUT_OF_DATE_KHR)
+        sc.stale = true;
+      else if (result == VK_SUBOPTIMAL_KHR)
+        sc.stale = surface_resized(m_physical_device, sc.surface, sc.extent);
+      else if (result != VK_SUCCESS) {
+        NX_VK_DEVICE_CHECK(*this, result);
+        sc.stale = true;
+      }
+    }
+  }
 
-  VkResult presented = VK_SUCCESS;
-  {
-    NX_PROFILE_ZONE("vk::present");
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  for (VulkanSwapchain *const sc : acquired) {
+    if (!sc->composed())
+      continue;
+    sc->composed_serials[sc->image_index] = m_timeline_value;
+    NX_PROFILE_ZONE("vk::present_composed");
+    const bool vsync = sc->present_mode == VK_PRESENT_MODE_FIFO_KHR ||
+                       sc->present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    bool shown = false;
     nx::fiber::run_blocking([&] {
-      presented = vkQueuePresentKHR(
-          m_queues[nx::cast<usize>(QueueType::Graphics)], &present);
+      shown = sc->composition->present(sc->image_index, m_timeline_value,
+                                       vsync);
     });
+    if (!shown)
+      sc->stale = true;
   }
+#endif
+  let_go();
 
+  // Nothing presented to pace the frame, so a frame drawn only offscreen is
+  // finished before the next begins, as a reader of it expects.
+  bool finished = true;
+  if (offscreen_only)
+    finished = NX_VK_DEVICE_CHECK(*this, wait_timeline(m_timeline_value)) ==
+               VK_SUCCESS;
   m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
-
-  if (presented == VK_ERROR_OUT_OF_DATE_KHR)
-    return false;
-  if (presented == VK_SUBOPTIMAL_KHR)
-    return !surface_resized(m_physical_device, m_surface, m_swapchain_extent);
-  if (presented != VK_SUCCESS) {
-    NX_VK_DEVICE_CHECK(*this, presented);
-    return false;
-  }
-  return true;
+  return finished;
 }
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 
-bool VulkanDevice::create_composed_swapchain(const SwapchainDesc &desc) {
+bool VulkanDevice::create_composed_swapchain(VulkanSwapchain &sc,
+                                             const SwapchainDesc &desc) {
   if (!m_routes.win32_interop || (m_swapchain_format != Format::BGRA8_UNORM &&
                                   m_swapchain_format != Format::RGBA8_UNORM))
     return false;
@@ -977,7 +1149,7 @@ bool VulkanDevice::create_composed_swapchain(const SwapchainDesc &desc) {
                          desc.height, m_frames_in_flight,
                          m_swapchain_format == Format::RGBA8_UNORM))
     return false;
-  m_composition = std::move(presenter);
+  sc.composition = std::move(presenter);
 
   const auto import_fence = [&](VkSemaphore &out, void *const handle,
                                 const nx::string_view name) {
@@ -1002,40 +1174,43 @@ bool VulkanDevice::create_composed_swapchain(const SwapchainDesc &desc) {
       set_object_name(vk_handle_value(out), VK_OBJECT_TYPE_SEMAPHORE, name);
     return ok;
   };
-  if (!import_fence(m_composed_rendered, m_composition->rendered_fence_handle(),
+  if (!import_fence(sc.composed_rendered,
+                    sc.composition->rendered_fence_handle(),
                     "composition rendered") ||
-      !import_fence(m_composed_copied, m_composition->copied_fence_handle(),
+      !import_fence(sc.composed_copied, sc.composition->copied_fence_handle(),
                     "composition copied") ||
-      !import_composed_images(desc.width, desc.height)) {
-    destroy_composed_swapchain();
+      !import_composed_images(sc, desc.width, desc.height)) {
+    // What is left is the surface, for an ordinary swapchain to try.
+    release_composition(sc);
     return false;
   }
 
   // The surface was only asked what it could composite; DirectComposition
   // owns the window's content from here.
-  vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
-  m_surface = VK_NULL_HANDLE;
-  m_swapchain_extent = {desc.width, desc.height};
-  m_swapchain_alpha = SurfaceAlpha::Premultiplied;
-  m_image_index = 0;
+  vkDestroySurfaceKHR(m_instance, sc.surface, nullptr);
+  sc.surface = VK_NULL_HANDLE;
+  sc.extent = {desc.width, desc.height};
+  sc.alpha = SurfaceAlpha::Premultiplied;
+  sc.image_index = 0;
   nx::logd(nx::log::rhi,
            "swapchain: {}x{} through DirectComposition, {} images, {}",
-           desc.width, desc.height, m_composition->image_count(),
+           desc.width, desc.height, sc.composition->image_count(),
            to_string(m_swapchain_format));
   return true;
 }
 
-bool VulkanDevice::import_composed_images(const u32 width, const u32 height) {
+bool VulkanDevice::import_composed_images(VulkanSwapchain &sc, const u32 width,
+                                          const u32 height) {
   constexpr VkExternalMemoryHandleTypeFlagBits handle_type =
       VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
   const VkFormat format = to_vk_format(m_swapchain_format);
-  const u32 count = m_composition->image_count();
-  m_composed_serials.clear();
+  const u32 count = sc.composition->image_count();
+  sc.composed_serials.clear();
   for (u32 i = 0; i < count; ++i)
-    m_composed_serials.push_back(0);
+    sc.composed_serials.push_back(0);
 
   for (u32 i = 0; i < count; ++i) {
-    void *const handle = m_composition->image_handle(i);
+    void *const handle = sc.composition->image_handle(i);
     if (handle == nullptr)
       return false;
 
@@ -1125,50 +1300,47 @@ bool VulkanDevice::import_composed_images(const u32 width, const u32 height) {
     texture.usage = TextureUsage::RenderTarget | TextureUsage::CopySrc;
     texture.state = ResourceState::Undefined;
     texture.owns_image = false;
-    m_backbuffers.push_back(m_textures.insert(std::move(texture)));
-    m_composed_memory.push_back(memory);
+    sc.backbuffers.push_back(m_textures.insert(std::move(texture)));
+    sc.composed_memory.push_back(memory);
   }
   return true;
 }
 
-void VulkanDevice::release_composed_images() noexcept {
-  for (const TextureHandle handle : m_backbuffers) {
+void VulkanDevice::release_composed_images(VulkanSwapchain &sc) noexcept {
+  for (const TextureHandle handle : sc.backbuffers) {
     if (const VulkanTexture *texture = m_textures.try_get(handle)) {
       vkDestroyImageView(m_device, texture->rtv, nullptr);
       vkDestroyImage(m_device, texture->image, nullptr);
     }
     m_textures.erase(handle);
   }
-  m_backbuffers.clear();
-  for (const VkDeviceMemory memory : m_composed_memory)
+  sc.backbuffers.clear();
+  for (const VkDeviceMemory memory : sc.composed_memory)
     vkFreeMemory(m_device, memory, nullptr);
-  m_composed_memory.clear();
-  m_composed_serials.clear();
+  sc.composed_memory.clear();
+  sc.composed_serials.clear();
 }
 
-void VulkanDevice::destroy_composed_swapchain() noexcept {
-  wait_idle();
-  release_composed_images();
+void VulkanDevice::release_composition(VulkanSwapchain &sc) noexcept {
+  // The images of a surface's own swapchain are not ours to destroy.
+  if (!sc.composed())
+    return;
+  release_composed_images(sc);
   for (VkSemaphore *const semaphore :
-       {&m_composed_rendered, &m_composed_copied}) {
+       {&sc.composed_rendered, &sc.composed_copied}) {
     if (*semaphore != VK_NULL_HANDLE)
       vkDestroySemaphore(m_device, *semaphore, nullptr);
     *semaphore = VK_NULL_HANDLE;
   }
-  m_composition.reset();
-  if (m_surface != VK_NULL_HANDLE) {
-    vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
-    m_surface = VK_NULL_HANDLE;
-  }
-  m_swapchain_extent = {0, 0};
-  m_image_index = 0;
+  sc.composition.reset();
 }
 
-void VulkanDevice::acquire_composed_image(const VkCommandBuffer cmd) noexcept {
+void VulkanDevice::acquire_composed_image(VulkanSwapchain &sc,
+                                          const VkCommandBuffer cmd) noexcept {
   // An image D3D11 has not copied from yet was never released to it.
-  if (m_composed_serials[m_image_index] == 0)
+  if (sc.composed_serials[sc.image_index] == 0)
     return;
-  VulkanTexture *const image = m_textures.try_get(m_backbuffers[m_image_index]);
+  VulkanTexture *const image = m_textures.try_get(sc.backbuffers[sc.image_index]);
   if (image == nullptr)
     return;
 
@@ -1187,108 +1359,6 @@ void VulkanDevice::acquire_composed_image(const VkCommandBuffer cmd) noexcept {
   vkCmdPipelineBarrier2KHR(cmd, &dependency);
   // The frame redraws the whole image, so its old contents may go.
   image->state = ResourceState::Undefined;
-}
-
-bool VulkanDevice::end_composed_frame() {
-  FrameContext &frame = m_frames[m_frame_index];
-  const VkCommandBuffer cmd = frame.order.back();
-
-  // General first, then handed to D3D11: a release and the acquire that
-  // matches it must describe the same layout transition, and this way both
-  // describe none.
-  if (VulkanTexture *const image =
-          m_textures.try_get(m_backbuffers[m_image_index])) {
-    const VkStateInfo from = to_vk_state(image->state);
-    VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    barrier.srcStageMask = from.stage;
-    barrier.srcAccessMask = from.access;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
-    barrier.oldLayout = from.layout;
-    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image->image;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount = 1;
-    dependency.pImageMemoryBarriers = &barrier;
-    vkCmdPipelineBarrier2KHR(cmd, &dependency);
-
-    VkImageMemoryBarrier2 release = barrier;
-    release.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    release.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    release.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
-    release.dstAccessMask = 0;
-    release.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    release.srcQueueFamilyIndex =
-        m_queue_families[nx::cast<usize>(QueueType::Graphics)];
-    release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
-    dependency.pImageMemoryBarriers = &release;
-    vkCmdPipelineBarrier2KHR(cmd, &dependency);
-    image->state = ResourceState::General;
-  }
-
-  nx::small_vector<VkCommandBufferSubmitInfo, 8> cmd_infos;
-  if (!close_frame(frame, cmd_infos))
-    return false;
-
-  ++m_timeline_value;
-  m_report_frame.store(m_timeline_value, std::memory_order_release);
-  frame.timeline_value = m_timeline_value;
-
-  // The image's previous copy into the swap chain must be done before this
-  // frame writes it again.
-  nx::small_vector<VkSemaphoreSubmitInfo, 2> waits;
-  if (m_frame_upload_wait > 0) {
-    VkSemaphoreSubmitInfo &wait = waits.emplace_back();
-    wait = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    wait.semaphore = m_uploader.timeline();
-    wait.value = m_frame_upload_wait;
-    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  }
-  if (const u64 copied = m_composed_serials[m_image_index]; copied > 0) {
-    VkSemaphoreSubmitInfo &wait = waits.emplace_back();
-    wait = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    wait.semaphore = m_composed_copied;
-    wait.value = copied;
-    wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  }
-
-  VkSemaphoreSubmitInfo signals[2] = {};
-  signals[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-  signals[0].semaphore = m_timeline;
-  signals[0].value = m_timeline_value;
-  signals[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-  signals[1] = signals[0];
-  signals[1].semaphore = m_composed_rendered;
-
-  VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-  submit.waitSemaphoreInfoCount = nx::cast<u32>(waits.size());
-  submit.pWaitSemaphoreInfos = waits.data();
-  submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
-  submit.pCommandBufferInfos = cmd_infos.data();
-  submit.signalSemaphoreInfoCount = 2;
-  submit.pSignalSemaphoreInfos = signals;
-  if (NX_VK_DEVICE_CHECK(
-          *this,
-          vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
-                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
-    return false;
-  m_composed_serials[m_image_index] = m_timeline_value;
-
-  bool presented = false;
-  {
-    NX_PROFILE_ZONE("vk::present_composed");
-    const bool vsync = m_present_mode == VK_PRESENT_MODE_FIFO_KHR ||
-                       m_present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
-    nx::fiber::run_blocking([&] {
-      presented =
-          m_composition->present(m_image_index, m_timeline_value, vsync);
-    });
-  }
-  m_frame_index = (m_frame_index + 1) % m_frames_in_flight;
-  return presented;
 }
 
 #endif

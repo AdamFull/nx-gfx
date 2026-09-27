@@ -254,8 +254,53 @@ struct FrameContext {
   nx::small_vector<CommandSlot *, 4> idle;
   /// Every command buffer the frame submits, in submission order.
   nx::small_vector<VkCommandBuffer, 8> order;
-  VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
   u64 timeline_value = 0;
+};
+
+/// One window's swapchain: a surface's, one presented through
+/// DirectComposition, or images of the device's own that nothing presents.
+struct VulkanSwapchain {
+  VkSurfaceKHR surface = VK_NULL_HANDLE;
+  VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+  VkExtent2D extent = {};
+  VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+  SurfaceAlpha requested_alpha = SurfaceAlpha::Opaque;
+  SurfaceAlpha alpha = SurfaceAlpha::Opaque;
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+  // Set instead of swapchain when frames reach the screen through
+  // DirectComposition. The backbuffers are imported images of its own.
+  nx::unique_ptr<CompositionPresenter> composition;
+  VkSemaphore composed_rendered = VK_NULL_HANDLE;
+  VkSemaphore composed_copied = VK_NULL_HANDLE;
+  nx::small_vector<VkDeviceMemory, 4> composed_memory;
+  /// The frame that last rendered each image; its copy must finish before the
+  /// image is written again.
+  nx::small_vector<u64, 4> composed_serials;
+#endif
+  nx::small_vector<TextureHandle, 4> backbuffers;
+  /// One per image, signalled when the frame that drew it is done.
+  nx::small_vector<VkSemaphore, 4> release_semaphores;
+  /// One per frame slot, signalled when the image acquired into it is ready.
+  nx::small_vector<VkSemaphore, 3> acquire_semaphores;
+  u32 image_index = 0;
+  /// The backbuffers are images this device made rather than a surface's, so
+  /// they are destroyed as textures and neither acquired nor presented.
+  bool offscreen = false;
+  /// Acquired by the frame being recorded.
+  bool acquired = false;
+  /// The last present found the surface changed under it.
+  bool stale = false;
+
+  [[nodiscard]] bool composed() const noexcept {
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+    return composition != nullptr;
+#else
+    return false;
+#endif
+  }
+  [[nodiscard]] bool presents() const noexcept {
+    return swapchain != VK_NULL_HANDLE;
+  }
 };
 
 class VulkanDevice {
@@ -297,35 +342,47 @@ public:
   /// transfer family.
   void flush_uploads() noexcept;
 
-  [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
+  /// A swapchain for one window; a device has one per window it draws. Every
+  /// swapchain shares swapchain_format(), so a surface that cannot offer it
+  /// while others exist is refused. Invalid when it cannot be made.
+  [[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDesc &desc);
   /// A swapchain with no surface: images of its own that nothing presents.
   /// Everything that reads swapchain_format(), swapchain_extent() or
   /// current_backbuffer() sees a normal swapchain, so a renderer draws a whole
-  /// frame without a window behind it. begin_frame()/end_frame() work as usual
-  /// - the acquire and the present are what they drop.
-  [[nodiscard]] bool create_offscreen_swapchain(u32 width, u32 height,
-                                                Format format);
-  [[nodiscard]] bool resize_swapchain(u32 width, u32 height);
-  void destroy_swapchain() noexcept;
+  /// frame without a window behind it; acquire() and end_frame() drop only
+  /// the acquire and the present.
+  [[nodiscard]] SwapchainHandle
+  create_offscreen_swapchain(u32 width, u32 height, Format format);
+  [[nodiscard]] bool resize_swapchain(SwapchainHandle swapchain, u32 width,
+                                      u32 height);
+  /// Waits for the GPU first; not between acquire() and end_frame().
+  void destroy_swapchain(SwapchainHandle swapchain) noexcept;
 
-  /// Whether the current swapchain is one with no surface behind it.
-  [[nodiscard]] bool offscreen_swapchain() const noexcept {
-    return m_offscreen;
-  }
+  /// Whether @p swapchain is one with no surface behind it.
+  [[nodiscard]] bool offscreen_swapchain(SwapchainHandle swapchain) const;
 
   [[nodiscard]] bool supports(Format format, TextureUsageFlags usage) const;
 
+  /// The format every swapchain has: chosen by the first one made while none
+  /// exists, and kept after it goes, so pipelines built for it stay valid.
   [[nodiscard]] Format swapchain_format() const noexcept {
     return m_swapchain_format;
   }
-  [[nodiscard]] Extent2D swapchain_extent() const noexcept {
-    return {m_swapchain_extent.width, m_swapchain_extent.height};
-  }
-  [[nodiscard]] SurfaceAlpha swapchain_alpha() const noexcept {
-    return m_swapchain_alpha;
-  }
+  [[nodiscard]] Extent2D swapchain_extent(SwapchainHandle swapchain) const;
+  [[nodiscard]] SurfaceAlpha swapchain_alpha(SwapchainHandle swapchain) const;
+  /// The last present found the surface no longer matches: resize it.
+  [[nodiscard]] bool swapchain_stale(SwapchainHandle swapchain) const;
 
-  [[nodiscard]] AcquireResult begin_frame(VulkanCommandContext &out_context);
+  /// Starts GPU frame N: waits for its slot, then flushes uploads. False when
+  /// the device is lost. Swapchains are acquired separately.
+  [[nodiscard]] bool begin_frame(VulkanCommandContext &out_context);
+  /// Takes @p swapchain's next image for this frame, once per frame. A
+  /// swapchain that is not acquired is neither drawn nor presented this
+  /// frame; the others still are.
+  [[nodiscard]] AcquireResult acquire(SwapchainHandle swapchain);
+  /// Submits the frame and presents every swapchain it acquired, together.
+  /// False when the submission failed; a swapchain its present found out of
+  /// date is marked stale instead.
   [[nodiscard]] bool end_frame();
 
   /// Ends the frame context's command buffer and reserves @p count more after
@@ -350,10 +407,9 @@ public:
   /// offscreen swapchain, which differ only in whether a backbuffer exists.
   [[nodiscard]] bool submit_without_present();
 
-  [[nodiscard]] TextureHandle current_backbuffer() const noexcept {
-    return m_backbuffers.empty() ? TextureHandle{}
-                                 : m_backbuffers[m_image_index];
-  }
+  /// The image @p swapchain acquired for this frame.
+  [[nodiscard]] TextureHandle
+  current_backbuffer(SwapchainHandle swapchain) const noexcept;
 
   void wait_idle() noexcept;
 
@@ -526,24 +582,31 @@ private:
   bool create_frame_contexts(u32 frames_in_flight);
 
   bool m_headless_frame = false;
-  bool build_swapchain(u32 width, u32 height);
-  [[nodiscard]] bool composed() const noexcept {
+  /// What begin_frame and begin_headless_frame share: the slot wait, garbage,
+  /// the slot's command buffer and the upload batch.
+  [[nodiscard]] bool open_frame(VulkanCommandContext &out_context);
+  [[nodiscard]] bool build_swapchain(VulkanSwapchain &sc, u32 width,
+                                     u32 height);
+  [[nodiscard]] bool create_acquire_semaphores(VulkanSwapchain &sc);
+  [[nodiscard]] bool make_offscreen_images(VulkanSwapchain &sc, u32 width,
+                                           u32 height);
+  /// Everything @p sc holds; the GPU must be done with it.
+  void release_swapchain(VulkanSwapchain &sc) noexcept;
+  /// Moves the acquired image to where its presenter takes it from.
+  void finish_backbuffer(VulkanSwapchain &sc, VkCommandBuffer cmd) noexcept;
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
-    return m_composition != nullptr;
-#else
-    return false;
-#endif
-  }
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
-  [[nodiscard]] bool create_composed_swapchain(const SwapchainDesc &desc);
-  [[nodiscard]] bool import_composed_images(u32 width, u32 height);
-  void release_composed_images() noexcept;
-  void destroy_composed_swapchain() noexcept;
-  void acquire_composed_image(VkCommandBuffer cmd) noexcept;
-  [[nodiscard]] bool end_composed_frame();
+  [[nodiscard]] bool create_composed_swapchain(VulkanSwapchain &sc,
+                                               const SwapchainDesc &desc);
+  [[nodiscard]] bool import_composed_images(VulkanSwapchain &sc, u32 width,
+                                            u32 height);
+  void release_composed_images(VulkanSwapchain &sc) noexcept;
+  /// Everything DirectComposition gave @p sc, leaving its surface.
+  void release_composition(VulkanSwapchain &sc) noexcept;
+  void acquire_composed_image(VulkanSwapchain &sc,
+                              VkCommandBuffer cmd) noexcept;
 #endif
   bool create_texture_views(VulkanTexture &texture, nx::string_view name);
-  void destroy_backbuffer_views() noexcept;
+  void destroy_backbuffer_views(VulkanSwapchain &sc) noexcept;
   void set_object_name(u64 object, VkObjectType type, nx::string_view name);
   void collect_garbage(u64 completed_timeline_value) noexcept;
   [[nodiscard]] VkCommandBuffer next_command_buffer(CommandSlot &slot);
@@ -603,31 +666,11 @@ private:
   u32 m_frame_index = 0;
   u32 m_frames_in_flight = 2;
 
-  VkSurfaceKHR m_surface = VK_NULL_HANDLE;
-  VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
-  VkExtent2D m_swapchain_extent = {};
+  nx::slot_map<VulkanSwapchain, SwapchainHandle> m_swapchains;
+  /// The swapchains the frame being recorded acquired, in acquire order.
+  nx::small_vector<SwapchainHandle, 4> m_acquired;
   Format m_swapchain_format = Format::Unknown;
-  VkPresentModeKHR m_present_mode = VK_PRESENT_MODE_FIFO_KHR;
-  SurfaceAlpha m_requested_alpha = SurfaceAlpha::Opaque;
-  SurfaceAlpha m_swapchain_alpha = SurfaceAlpha::Opaque;
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
-  // Set instead of m_swapchain when frames reach the screen through
-  // DirectComposition. The backbuffers are imported images of its own.
-  nx::unique_ptr<CompositionPresenter> m_composition;
-  VkSemaphore m_composed_rendered = VK_NULL_HANDLE;
-  VkSemaphore m_composed_copied = VK_NULL_HANDLE;
-  nx::small_vector<VkDeviceMemory, 4> m_composed_memory;
-  /// The frame that last rendered each image; its copy must finish before the
-  /// image is written again.
-  nx::small_vector<u64, 4> m_composed_serials;
-#endif
-  nx::small_vector<TextureHandle, 4> m_backbuffers;
-  nx::small_vector<VkSemaphore, 4> m_release_semaphores;
-  u32 m_image_index = 0;
   bool m_frame_active = false;
-  /// The backbuffers are images this device made rather than a surface's, so
-  /// they are destroyed as textures and neither acquired nor presented.
-  bool m_offscreen = false;
 
   nx::sync_slot_map<VulkanTexture, TextureHandle> m_textures;
   nx::slot_map<VulkanBuffer, BufferHandle> m_buffers;

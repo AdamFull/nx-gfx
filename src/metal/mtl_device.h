@@ -198,27 +198,34 @@ public:
 
   void flush_uploads() noexcept;
 
-  [[nodiscard]] bool create_swapchain(const SwapchainDesc &desc);
+  /// See VulkanDevice::create_swapchain.
+  [[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDesc &desc);
   /// A swapchain with no layer behind it: a texture of its own that nothing
   /// presents. Everything that reads swapchain_format(), swapchain_extent() or
   /// current_backbuffer() sees a normal swapchain, so a renderer draws a whole
-  /// frame without a window. begin_frame()/end_frame() work as usual - the
-  /// drawable and the present are what they drop.
-  [[nodiscard]] bool create_offscreen_swapchain(u32 width, u32 height,
-                                                Format format);
-  [[nodiscard]] bool resize_swapchain(u32 width, u32 height);
-  void destroy_swapchain() noexcept;
+  /// frame without a window; acquire() and end_frame() drop only the drawable
+  /// and the present.
+  [[nodiscard]] SwapchainHandle
+  create_offscreen_swapchain(u32 width, u32 height, Format format);
+  [[nodiscard]] bool resize_swapchain(SwapchainHandle swapchain, u32 width,
+                                      u32 height);
+  void destroy_swapchain(SwapchainHandle swapchain) noexcept;
 
-  /// Whether the current swapchain is one with no layer behind it.
-  [[nodiscard]] bool offscreen_swapchain() const noexcept;
+  /// Whether @p swapchain is one with no layer behind it.
+  [[nodiscard]] bool offscreen_swapchain(SwapchainHandle swapchain) const;
 
   [[nodiscard]] bool supports(Format format, TextureUsageFlags usage) const;
 
+  /// See VulkanDevice::swapchain_format.
   [[nodiscard]] Format swapchain_format() const noexcept;
-  [[nodiscard]] Extent2D swapchain_extent() const noexcept;
-  [[nodiscard]] SurfaceAlpha swapchain_alpha() const noexcept;
+  [[nodiscard]] Extent2D swapchain_extent(SwapchainHandle swapchain) const;
+  [[nodiscard]] SurfaceAlpha swapchain_alpha(SwapchainHandle swapchain) const;
+  /// A layer resizes with its drawableSize, so nothing goes stale here.
+  [[nodiscard]] bool swapchain_stale(SwapchainHandle) const { return false; }
 
-  [[nodiscard]] AcquireResult begin_frame(MetalCommandContext &out_context);
+  /// See VulkanDevice::begin_frame, acquire and end_frame.
+  [[nodiscard]] bool begin_frame(MetalCommandContext &out_context);
+  [[nodiscard]] AcquireResult acquire(SwapchainHandle swapchain);
   [[nodiscard]] bool end_frame();
 
   // A frame records into one command buffer here, so caps() reports no
@@ -236,7 +243,8 @@ public:
 
   [[nodiscard]] bool end_headless_frame();
 
-  [[nodiscard]] TextureHandle current_backbuffer() const noexcept;
+  [[nodiscard]] TextureHandle
+  current_backbuffer(SwapchainHandle swapchain) const noexcept;
 
   void wait_idle() noexcept;
 

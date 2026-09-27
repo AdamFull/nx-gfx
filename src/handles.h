@@ -17,6 +17,7 @@ using SamplerHandle = nx::basic_handle<u32, 24, struct SamplerTag>;
 using PipelineHandle = nx::basic_handle<u32, 24, struct PipelineTag>;
 using ShaderHandle = nx::basic_handle<u32, 24, struct ShaderTag>;
 using QueryPoolHandle = nx::basic_handle<u32, 24, struct QueryPoolTag>;
+using SwapchainHandle = nx::basic_handle<u32, 24, struct SwapchainTag>;
 
 template <typename Repr, usize IndexBits, typename Tag>
 [[nodiscard]] constexpr u32

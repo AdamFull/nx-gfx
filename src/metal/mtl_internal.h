@@ -197,25 +197,40 @@ struct MetalUploadState {
   u64 bytes_staged = 0;
 };
 
-struct MetalDeviceState {
-  id<MTLDevice> device = nil;
-  id<MTLCommandQueue> queue = nil;
-  id gpu_crash_observer = nil;
-  bool gpu_crash_detailed = false;
-
-  // Swapchain. The layer is owned by the window's view once attached; we keep a
-  // strong reference so a resize can still reach it.
+/// One window's layer, or a texture of the device's own that nothing presents.
+struct MetalSwapchain {
+  // The layer is owned by the window's view once attached; we keep a strong
+  // reference so a resize can still reach it.
   CAMetalLayer *layer = nil;
   /// The NSView the layer was attached to, so destroy_swapchain can detach it
   /// again. Typed as `id` rather than NSView* to keep AppKit out of this
   /// header; nil on iOS, where the layer is handed to us already attached.
   id layer_host = nil;
   id<CAMetalDrawable> drawable = nil;
-  Format swapchain_format = Format::Unknown;
   Extent2D extent = {};
   PresentMode present_mode = PresentMode::Fifo;
   SurfaceAlpha alpha = SurfaceAlpha::Opaque;
+  /// One handle for the swapchain's lifetime; the MTLTexture behind it is the
+  /// frame's drawable, or the device's own texture offscreen.
   TextureHandle backbuffer;
+  /// The backbuffer is a texture this device made rather than a layer's
+  /// drawable, so there is nothing to acquire and nothing to present.
+  bool offscreen = false;
+  /// Acquired by the frame being recorded.
+  bool acquired = false;
+};
+
+struct MetalDeviceState {
+  id<MTLDevice> device = nil;
+  id<MTLCommandQueue> queue = nil;
+  id gpu_crash_observer = nil;
+  bool gpu_crash_detailed = false;
+
+  nx::slot_map<MetalSwapchain, SwapchainHandle> swapchains;
+  /// The swapchains the frame being recorded acquired, in acquire order.
+  nx::small_vector<SwapchainHandle, 4> acquired;
+  /// Every swapchain's; see MetalDevice::swapchain_format.
+  Format swapchain_format = Format::Unknown;
 
   dispatch_semaphore_t frame_semaphore = nil;
   u32 frames_in_flight = 2;
@@ -223,9 +238,6 @@ struct MetalDeviceState {
 
   bool frame_active = false;
   bool headless_frame = false;
-  /// The backbuffer is a texture this device made rather than a layer's
-  /// drawable, so there is nothing to acquire and nothing to present.
-  bool offscreen = false;
 
   static constexpr usize MAX_CONTEXTS = 1;
   nx::vector<MetalContextSlot> contexts;

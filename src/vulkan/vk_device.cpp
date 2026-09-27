@@ -1023,16 +1023,8 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
 
   m_frames.clear();
   m_frames.reserve(m_frames_in_flight);
-  for (u32 i = 0; i < m_frames_in_flight; ++i) {
-    FrameContext &frame = m_frames.emplace_back();
-
-    VkSemaphoreCreateInfo binary_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    NX_VK_DEVICE_TRY(*this, vkCreateSemaphore(m_device, &binary_info, nullptr,
-                                              &frame.acquire_semaphore));
-    set_object_name(vk_handle_value(frame.acquire_semaphore),
-                    VK_OBJECT_TYPE_SEMAPHORE,
-                    nx::format("frame {} acquire", i));
-  }
+  for (u32 i = 0; i < m_frames_in_flight; ++i)
+    m_frames.emplace_back();
   return true;
 }
 
@@ -1155,7 +1147,10 @@ void VulkanDevice::shutdown() noexcept {
   m_gpu_profiler.shutdown();
   m_copy_profiler.shutdown();
 
-  destroy_swapchain();
+  for (VulkanSwapchain &sc : m_swapchains)
+    release_swapchain(sc);
+  m_swapchains.clear();
+  m_acquired.clear();
 
   release_retirements(~0ull);
   collect_garbage(~0ull);
@@ -1201,8 +1196,6 @@ void VulkanDevice::shutdown() noexcept {
   m_bindless = {};
 
   for (auto &frame : m_frames) {
-    if (frame.acquire_semaphore != VK_NULL_HANDLE)
-      vkDestroySemaphore(m_device, frame.acquire_semaphore, nullptr);
     if (frame.slot.pool != VK_NULL_HANDLE)
       vkDestroyCommandPool(m_device, frame.slot.pool, nullptr);
     for (const nx::unique_ptr<CommandSlot> &recorder : frame.recorders)
