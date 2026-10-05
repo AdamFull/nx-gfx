@@ -9,6 +9,9 @@
 // Slang reads it inside a module with neither a `module` declaration nor any
 // visibility keyword, where every declaration is public, fields included; a
 // module with an API of its own re-exports that one with `__exported import`.
+// Headers read into one module include each other; one read into another
+// module includes them for C++ only and its shader imports the module that
+// has them, since a second copy of a struct makes every use of it ambiguous.
 //
 // A shared struct has the same offsets in C++, in Slang's natural layout
 // (what NxPtr loads through) and in std430 (push constants): fields are 4, 8

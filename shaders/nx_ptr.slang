@@ -91,7 +91,7 @@ public NxPtr<T> operator-<T>(NxPtr<T> a, uint n)
 public bool operator==<T>(NxPtr<T> a, NxPtr<T> b) { return a.value == b.value; }
 public bool operator!=<T>(NxPtr<T> a, NxPtr<T> b) { return a.value != b.value; }
 
-// An atomic on a 32-bit word, for counters and cursors the GPU claims from.
+// Atomics on 32-bit words, for counters and cursors the GPU claims from.
 public extension NxPtr<uint>
 {
     /// Adds @p value to word @p index and returns what it held before.
@@ -99,6 +99,18 @@ public extension NxPtr<uint>
     {
         uint* word = (uint*)element_address(index);
         uint before;
+        InterlockedAdd(*word, value, before);
+        return before;
+    }
+}
+
+public extension NxPtr<int>
+{
+    /// Adds @p value to word @p index and returns what it held before.
+    public int atomic_add(uint index, int value)
+    {
+        int* word = (int*)element_address(index);
+        int before;
         InterlockedAdd(*word, value, before);
         return before;
     }
