@@ -2,7 +2,8 @@
 
 // What every header shared by C++ and Slang starts from. Such a header is
 // written once for both languages: structs whose fields use the types here
-// (NxPtr<T>, the texture handles, float4 and the rest), constants made with
+// (NxPtr<T>, NxTexture2D<T> and the other texture handles, float4 and the
+// rest), constants made with
 // NX_CONST and functions marked NX_SHARED_FN, with no #ifdef and no
 // visibility keywords.
 //
@@ -20,6 +21,7 @@
 #ifdef __cplusplus
 #include "core/foundation/core/foundation.h"
 #include "rendering/rhi/shaders/nx_ptr.hpp"
+#include "rendering/rhi/shaders/nx_texture.hpp"
 
 #include <glm/glm.hpp>
 
