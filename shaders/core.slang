@@ -441,6 +441,388 @@ public struct NxRWTexture2D<T>
     }
 }
 
+#if !defined(NX_TARGET_METAL)
+
+// Cube, array and 3D textures share the 2D tables: a slot holds a view of its
+// texture's own type, and a shader names that type when it reads the slot.
+// Metal reports them absent until its 3D track, so they are Vulkan's alone.
+
+public TextureCube<float4> get_texture_cube(uint index) {
+    return g_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<TextureCube<float4>>();
+}
+public TextureCube<uint4> get_uint_texture_cube(uint index) {
+    return g_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<TextureCube<uint4>>();
+}
+public Texture2DArray<float4> get_texture_2d_array(uint index) {
+    return g_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<Texture2DArray<float4>>();
+}
+public Texture2DArray<uint4> get_uint_texture_2d_array(uint index) {
+    return g_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<Texture2DArray<uint4>>();
+}
+public Texture3D<float4> get_texture_3d(uint index) {
+    return g_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<Texture3D<float4>>();
+}
+public Texture3D<uint4> get_uint_texture_3d(uint index) {
+    return g_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<Texture3D<uint4>>();
+}
+// A cube's storage view is a 2D array of its faces.
+public RWTexture2DArray<float4> get_rw_texture_2d_array(uint index) {
+    return g_rw_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<RWTexture2DArray<float4>>();
+}
+public RWTexture2DArray<uint4> get_rw_uint_texture_2d_array(uint index) {
+    return g_rw_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<RWTexture2DArray<uint4>>();
+}
+public RWTexture3D<float4> get_rw_texture_3d(uint index) {
+    return g_rw_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<RWTexture3D<float4>>();
+}
+public RWTexture3D<uint4> get_rw_uint_texture_3d(uint index) {
+    return g_rw_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<RWTexture3D<uint4>>();
+}
+
+float4 nx_texel4(float value) { return float4(value, 0.0, 0.0, 0.0); }
+float4 nx_texel4(float2 value) { return float4(value, 0.0, 0.0); }
+float4 nx_texel4(float3 value) { return float4(value, 0.0); }
+float4 nx_texel4(float4 value) { return value; }
+uint4 nx_texel4(uint value) { return uint4(value, 0u, 0u, 0u); }
+uint4 nx_texel4(uint2 value) { return uint4(value, 0u, 0u); }
+uint4 nx_texel4(uint3 value) { return uint4(value, 0u); }
+uint4 nx_texel4(uint4 value) { return value; }
+
+public interface INxTextureElement {
+    static This sample_cube(uint texture, uint sampler, float3 direction);
+    static This sample_level_cube(uint texture, uint sampler, float3 direction,
+                                  float lod);
+    static uint2 dimensions_cube(uint texture);
+    static This sample_2d_array(uint texture, uint sampler, float3 at);
+    static This sample_level_2d_array(uint texture, uint sampler, float3 at,
+                                      float lod);
+    static This load_2d_array(uint texture, int4 at);
+    static uint3 dimensions_2d_array(uint texture);
+    static This sample_3d(uint texture, uint sampler, float3 at);
+    static This sample_level_3d(uint texture, uint sampler, float3 at,
+                                float lod);
+    static This load_3d(uint texture, int4 at);
+    static uint3 dimensions_3d(uint texture);
+}
+
+#define NX_DEFINE_TEXTURE_ELEMENT(TYPE, SWIZZLE, CUBE, ARRAY, VOLUME)       \
+    public extension TYPE : INxTextureElement {                           \
+        static TYPE sample_cube(uint t, uint s, float3 direction) {        \
+            return CUBE(t).Sample(get_sampler(s), direction)SWIZZLE;       \
+        }                                                                  \
+        static TYPE sample_level_cube(uint t, uint s, float3 direction,    \
+                                      float lod) {                         \
+            return CUBE(t)                                                 \
+                .SampleLevel(get_sampler(s), direction, lod)SWIZZLE;       \
+        }                                                                  \
+        static uint2 dimensions_cube(uint t) {                             \
+            uint2 dimensions;                                              \
+            CUBE(t).GetDimensions(dimensions.x, dimensions.y);             \
+            return dimensions;                                             \
+        }                                                                  \
+        static TYPE sample_2d_array(uint t, uint s, float3 at) {           \
+            return ARRAY(t).Sample(get_sampler(s), at)SWIZZLE;             \
+        }                                                                  \
+        static TYPE sample_level_2d_array(uint t, uint s, float3 at,       \
+                                          float lod) {                     \
+            return ARRAY(t).SampleLevel(get_sampler(s), at, lod)SWIZZLE;   \
+        }                                                                  \
+        static TYPE load_2d_array(uint t, int4 at) {                       \
+            return ARRAY(t).Load(at)SWIZZLE;                               \
+        }                                                                  \
+        static uint3 dimensions_2d_array(uint t) {                         \
+            uint3 dimensions;                                              \
+            ARRAY(t).GetDimensions(dimensions.x, dimensions.y,             \
+                                   dimensions.z);                          \
+            return dimensions;                                             \
+        }                                                                  \
+        static TYPE sample_3d(uint t, uint s, float3 at) {                 \
+            return VOLUME(t).Sample(get_sampler(s), at)SWIZZLE;            \
+        }                                                                  \
+        static TYPE sample_level_3d(uint t, uint s, float3 at, float lod) {\
+            return VOLUME(t).SampleLevel(get_sampler(s), at, lod)SWIZZLE;  \
+        }                                                                  \
+        static TYPE load_3d(uint t, int4 at) {                             \
+            return VOLUME(t).Load(at)SWIZZLE;                              \
+        }                                                                  \
+        static uint3 dimensions_3d(uint t) {                               \
+            uint3 dimensions;                                              \
+            VOLUME(t).GetDimensions(dimensions.x, dimensions.y,            \
+                                    dimensions.z);                         \
+            return dimensions;                                             \
+        }                                                                  \
+    }
+
+NX_DEFINE_TEXTURE_ELEMENT(float, .x, get_texture_cube, get_texture_2d_array,
+                          get_texture_3d)
+NX_DEFINE_TEXTURE_ELEMENT(float2, .xy, get_texture_cube, get_texture_2d_array,
+                          get_texture_3d)
+NX_DEFINE_TEXTURE_ELEMENT(float3, .xyz, get_texture_cube, get_texture_2d_array,
+                          get_texture_3d)
+NX_DEFINE_TEXTURE_ELEMENT(float4, .xyzw, get_texture_cube,
+                          get_texture_2d_array, get_texture_3d)
+NX_DEFINE_TEXTURE_ELEMENT(uint, .x, get_uint_texture_cube,
+                          get_uint_texture_2d_array, get_uint_texture_3d)
+NX_DEFINE_TEXTURE_ELEMENT(uint2, .xy, get_uint_texture_cube,
+                          get_uint_texture_2d_array, get_uint_texture_3d)
+NX_DEFINE_TEXTURE_ELEMENT(uint3, .xyz, get_uint_texture_cube,
+                          get_uint_texture_2d_array, get_uint_texture_3d)
+NX_DEFINE_TEXTURE_ELEMENT(uint4, .xyzw, get_uint_texture_cube,
+                          get_uint_texture_2d_array, get_uint_texture_3d)
+
+#undef NX_DEFINE_TEXTURE_ELEMENT
+
+/// Compact sampled cube texture, in NxTexture2D's one-word ABI.
+public struct NxTextureCube<T>
+    where T : INxTextureElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTextureCube<T> from_packed(uint packed) {
+        NxTextureCube<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public uint sampler_index() { return value & NX_TEXTURE_SAMPLER_MASK; }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    /// One face's.
+    [ForceInline]
+    public uint2 dimensions() { return T.dimensions_cube(texture_index()); }
+
+    [ForceInline]
+    public T sample(float3 direction) {
+        return T.sample_cube(texture_index(), sampler_index(), direction);
+    }
+
+    [ForceInline]
+    public T sample_level(float3 direction, float lod) {
+        return T.sample_level_cube(texture_index(), sampler_index(), direction,
+                                   lod);
+    }
+}
+
+/// Compact sampled 2D array texture, in NxTexture2D's one-word ABI.
+public struct NxTexture2DArray<T>
+    where T : INxTextureElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTexture2DArray<T> from_packed(uint packed) {
+        NxTexture2DArray<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public uint sampler_index() { return value & NX_TEXTURE_SAMPLER_MASK; }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    /// Width, height and layers.
+    [ForceInline]
+    public uint3 dimensions() {
+        return T.dimensions_2d_array(texture_index());
+    }
+
+    [ForceInline]
+    public T sample(float2 uv, float layer) {
+        return T.sample_2d_array(texture_index(), sampler_index(),
+                                 float3(uv, layer));
+    }
+
+    [ForceInline]
+    public T sample_level(float2 uv, float layer, float lod) {
+        return T.sample_level_2d_array(texture_index(), sampler_index(),
+                                       float3(uv, layer), lod);
+    }
+
+    [ForceInline]
+    public T load(int2 at, uint layer, uint mip) {
+        return T.load_2d_array(texture_index(), int4(at, int(layer), int(mip)));
+    }
+}
+
+/// Compact sampled 3D texture, in NxTexture2D's one-word ABI.
+public struct NxTexture3D<T>
+    where T : INxTextureElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTexture3D<T> from_packed(uint packed) {
+        NxTexture3D<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public uint sampler_index() { return value & NX_TEXTURE_SAMPLER_MASK; }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    [ForceInline]
+    public uint3 dimensions() { return T.dimensions_3d(texture_index()); }
+
+    [ForceInline]
+    public T sample(float3 at) {
+        return T.sample_3d(texture_index(), sampler_index(), at);
+    }
+
+    [ForceInline]
+    public T sample_level(float3 at, float lod) {
+        return T.sample_level_3d(texture_index(), sampler_index(), at, lod);
+    }
+
+    [ForceInline]
+    public T load(int3 at, uint mip) {
+        return T.load_3d(texture_index(), int4(at, int(mip)));
+    }
+}
+
+public interface INxRWTextureElement {
+    static This load_rw_2d_array(uint texture, uint3 at);
+    static void store_rw_2d_array(uint texture, uint3 at, This value);
+    static uint3 dimensions_rw_2d_array(uint texture);
+    static This load_rw_3d(uint texture, uint3 at);
+    static void store_rw_3d(uint texture, uint3 at, This value);
+    static uint3 dimensions_rw_3d(uint texture);
+}
+
+#define NX_DEFINE_RW_TEXTURE_ELEMENT(TYPE, SWIZZLE, ARRAY, VOLUME)          \
+    public extension TYPE : INxRWTextureElement {                          \
+        static TYPE load_rw_2d_array(uint t, uint3 at) {                   \
+            return ARRAY(t)[at]SWIZZLE;                                    \
+        }                                                                  \
+        static void store_rw_2d_array(uint t, uint3 at, TYPE value) {      \
+            ARRAY(t)[at] = nx_texel4(value);                               \
+        }                                                                  \
+        static uint3 dimensions_rw_2d_array(uint t) {                      \
+            uint3 dimensions;                                              \
+            ARRAY(t).GetDimensions(dimensions.x, dimensions.y,             \
+                                   dimensions.z);                          \
+            return dimensions;                                             \
+        }                                                                  \
+        static TYPE load_rw_3d(uint t, uint3 at) {                         \
+            return VOLUME(t)[at]SWIZZLE;                                   \
+        }                                                                  \
+        static void store_rw_3d(uint t, uint3 at, TYPE value) {            \
+            VOLUME(t)[at] = nx_texel4(value);                              \
+        }                                                                  \
+        static uint3 dimensions_rw_3d(uint t) {                            \
+            uint3 dimensions;                                              \
+            VOLUME(t).GetDimensions(dimensions.x, dimensions.y,            \
+                                    dimensions.z);                         \
+            return dimensions;                                             \
+        }                                                                  \
+    }
+
+NX_DEFINE_RW_TEXTURE_ELEMENT(float, .x, get_rw_texture_2d_array,
+                             get_rw_texture_3d)
+NX_DEFINE_RW_TEXTURE_ELEMENT(float2, .xy, get_rw_texture_2d_array,
+                             get_rw_texture_3d)
+NX_DEFINE_RW_TEXTURE_ELEMENT(float3, .xyz, get_rw_texture_2d_array,
+                             get_rw_texture_3d)
+NX_DEFINE_RW_TEXTURE_ELEMENT(float4, .xyzw, get_rw_texture_2d_array,
+                             get_rw_texture_3d)
+NX_DEFINE_RW_TEXTURE_ELEMENT(uint, .x, get_rw_uint_texture_2d_array,
+                             get_rw_uint_texture_3d)
+NX_DEFINE_RW_TEXTURE_ELEMENT(uint2, .xy, get_rw_uint_texture_2d_array,
+                             get_rw_uint_texture_3d)
+NX_DEFINE_RW_TEXTURE_ELEMENT(uint3, .xyz, get_rw_uint_texture_2d_array,
+                             get_rw_uint_texture_3d)
+NX_DEFINE_RW_TEXTURE_ELEMENT(uint4, .xyzw, get_rw_uint_texture_2d_array,
+                             get_rw_uint_texture_3d)
+
+#undef NX_DEFINE_RW_TEXTURE_ELEMENT
+
+/// A storage 2D array, or a cube's faces as one: x, y and the layer.
+public struct NxRWTexture2DArray<T>
+    where T : INxRWTextureElement {
+    public uint index;
+
+    [ForceInline]
+    public static NxRWTexture2DArray<T> from_index(uint index) {
+        NxRWTexture2DArray<T> result;
+        result.index = index;
+        return result;
+    }
+
+    [ForceInline]
+    public bool is_valid() { return index != kInvalidIndex; }
+
+    [ForceInline]
+    public uint3 dimensions() { return T.dimensions_rw_2d_array(index); }
+
+    [ForceInline]
+    public T load(uint3 at) { return T.load_rw_2d_array(index, at); }
+
+    [ForceInline]
+    public void store(uint3 at, T value) {
+        T.store_rw_2d_array(index, at, value);
+    }
+
+    public __subscript(uint3 at) -> T {
+        get { return load(at); }
+        [nonmutating] set { store(at, newValue); }
+    }
+}
+
+public struct NxRWTexture3D<T>
+    where T : INxRWTextureElement {
+    public uint index;
+
+    [ForceInline]
+    public static NxRWTexture3D<T> from_index(uint index) {
+        NxRWTexture3D<T> result;
+        result.index = index;
+        return result;
+    }
+
+    [ForceInline]
+    public bool is_valid() { return index != kInvalidIndex; }
+
+    [ForceInline]
+    public uint3 dimensions() { return T.dimensions_rw_3d(index); }
+
+    [ForceInline]
+    public T load(uint3 at) { return T.load_rw_3d(index, at); }
+
+    [ForceInline]
+    public void store(uint3 at, T value) { T.store_rw_3d(index, at, value); }
+
+    public __subscript(uint3 at) -> T {
+        get { return load(at); }
+        [nonmutating] set { store(at, newValue); }
+    }
+}
+
+#endif
+
 public uint64_t stride_of<T>()
 {
     uint64_t size = uint64_t(sizeof(T));
