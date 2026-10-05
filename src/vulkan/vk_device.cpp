@@ -1,6 +1,7 @@
 #include "rendering/rhi/vulkan/vk_device.h"
 
 #include <cstring>
+#include <utility>
 
 #include "core/foundation/core/scope_guard.h"
 #include "core/foundation/diagnostics/diagnostic.h"
@@ -132,6 +133,19 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       listed(available, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
   const bool ext_calibrated_ext =
       listed(available, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+  // Each needs SPIR-V 1.4, core from 1.2.
+  const bool ext_mesh_shader =
+      out.core_12 && listed(available, VK_EXT_MESH_SHADER_EXTENSION_NAME);
+  const bool ext_image_atomic_int64 =
+      listed(available, VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
+  const bool ext_barycentric =
+      listed(available, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+  const bool ext_acceleration_structure =
+      out.core_12 &&
+      listed(available, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+      listed(available, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+  const bool ext_ray_query = ext_acceleration_structure &&
+                             listed(available, VK_KHR_RAY_QUERY_EXTENSION_NAME);
 
   // A feature struct may only be chained when the version or the extension that
   // defines it is there, so the chain is built from what this device has.
@@ -164,6 +178,16 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
   VkPhysicalDeviceAddressBindingReportFeaturesEXT address_binding{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
+  VkPhysicalDeviceMeshShaderFeaturesEXT mesh{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+  VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT image_atomic_int64{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT};
+  VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentric{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR};
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+  VkPhysicalDeviceRayQueryFeaturesKHR ray_query{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
 
   chain(draw_params);
 
@@ -195,6 +219,16 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
     chain(fault_ext);
   if (ext_address_binding)
     chain(address_binding);
+  if (ext_mesh_shader)
+    chain(mesh);
+  if (ext_image_atomic_int64)
+    chain(image_atomic_int64);
+  if (ext_barycentric)
+    chain(barycentric);
+  if (ext_acceleration_structure)
+    chain(acceleration);
+  if (ext_ray_query)
+    chain(ray_query);
 
   vkGetPhysicalDeviceFeatures2(candidate, &features);
 
@@ -263,6 +297,18 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
           "formatless storage-image writes");
 
   out.draw_indirect_count = out.core_12 || ext_draw_indirect_count;
+  out.mesh_shaders = ext_mesh_shader && mesh.meshShader && mesh.taskShader;
+  out.buffer_int64_atomics = out.core_12 && features12.shaderBufferInt64Atomics;
+  out.image_int64_atomics =
+      ext_image_atomic_int64 && image_atomic_int64.shaderImageInt64Atomics;
+  out.fragment_barycentrics =
+      ext_barycentric && barycentric.fragmentShaderBarycentric;
+  out.subgroup_size_control = out.core_13 && features13.subgroupSizeControl &&
+                              features13.computeFullSubgroups;
+  out.acceleration_structures =
+      ext_acceleration_structure && acceleration.accelerationStructure;
+  out.ray_queries =
+      ext_ray_query && out.acceleration_structures && ray_query.rayQuery;
   out.storage_image_extended_formats =
       features.features.shaderStorageImageExtendedFormats != 0;
   if (ext_device_fault_khr && fault_khr.deviceFault) {
@@ -572,7 +618,14 @@ bool VulkanDevice::select_physical_device() {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES};
   VkPhysicalDeviceMaintenance3Properties maintenance{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
+  VkPhysicalDeviceSubgroupProperties subgroup{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+  VkPhysicalDeviceSubgroupSizeControlProperties subgroup_sizes{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
   indexing.pNext = &maintenance;
+  maintenance.pNext = &subgroup;
+  if (m_routes.core_13)
+    subgroup.pNext = &subgroup_sizes;
   VkPhysicalDeviceProperties2 props{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
   props.pNext = &indexing;
@@ -618,6 +671,43 @@ bool VulkanDevice::select_physical_device() {
       indexing.maxDescriptorSetUpdateAfterBindStorageImages;
   m_caps.max_bindless_samplers =
       indexing.maxDescriptorSetUpdateAfterBindSamplers;
+
+  if (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) {
+    constexpr std::pair<VkSubgroupFeatureFlagBits, SubgroupOp> ops[] = {
+        {VK_SUBGROUP_FEATURE_BASIC_BIT, SubgroupOp::Basic},
+        {VK_SUBGROUP_FEATURE_VOTE_BIT, SubgroupOp::Vote},
+        {VK_SUBGROUP_FEATURE_ARITHMETIC_BIT, SubgroupOp::Arithmetic},
+        {VK_SUBGROUP_FEATURE_BALLOT_BIT, SubgroupOp::Ballot},
+        {VK_SUBGROUP_FEATURE_SHUFFLE_BIT, SubgroupOp::Shuffle},
+        {VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT, SubgroupOp::ShuffleRelative},
+        {VK_SUBGROUP_FEATURE_CLUSTERED_BIT, SubgroupOp::Clustered},
+        {VK_SUBGROUP_FEATURE_QUAD_BIT, SubgroupOp::Quad},
+    };
+    for (const auto &[bit, op] : ops)
+      if (subgroup.supportedOperations & bit)
+        m_caps.subgroup_ops |= op;
+  }
+  m_caps.subgroup_size = subgroup.subgroupSize;
+  m_caps.min_subgroup_size =
+      m_routes.core_13 ? subgroup_sizes.minSubgroupSize : subgroup.subgroupSize;
+  m_caps.max_subgroup_size =
+      m_routes.core_13 ? subgroup_sizes.maxSubgroupSize : subgroup.subgroupSize;
+  m_caps.subgroup_size_control = m_routes.subgroup_size_control;
+  m_caps.mesh_shaders = m_routes.mesh_shaders;
+  m_caps.buffer_int64_atomics = m_routes.buffer_int64_atomics;
+  m_caps.image_int64_atomics = m_routes.image_int64_atomics;
+  m_caps.fragment_barycentrics = m_routes.fragment_barycentrics;
+  m_caps.acceleration_structures = m_routes.acceleration_structures;
+  m_caps.ray_queries = m_routes.ray_queries;
+  nx::logd(nx::log::rhi,
+           "3D features: mesh shaders={} int64 atomics buffer={} image={} "
+           "barycentrics={} acceleration structures={} ray queries={} "
+           "subgroups {} in [{}, {}] control={}",
+           m_caps.mesh_shaders, m_caps.buffer_int64_atomics,
+           m_caps.image_int64_atomics, m_caps.fragment_barycentrics,
+           m_caps.acceleration_structures, m_caps.ray_queries,
+           m_caps.subgroup_size, m_caps.min_subgroup_size,
+           m_caps.max_subgroup_size, m_caps.subgroup_size_control);
 
   VkPhysicalDeviceMemoryProperties mem{};
   vkGetPhysicalDeviceMemoryProperties(m_physical_device, &mem);
@@ -737,8 +827,18 @@ bool VulkanDevice::create_logical_device() {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
   VkPhysicalDeviceAddressBindingReportFeaturesEXT address_binding{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
+  VkPhysicalDeviceMeshShaderFeaturesEXT mesh{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+  VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT image_atomic_int64{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT};
+  VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentric{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR};
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+  VkPhysicalDeviceRayQueryFeaturesKHR ray_query{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
 
-  nx::small_vector<const char *, 16> device_extensions;
+  nx::small_vector<const char *, 24> device_extensions;
   device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
   if (m_routes.core_12) {
@@ -757,6 +857,8 @@ bool VulkanDevice::create_logical_device() {
     features12.drawIndirectCount =
         m_routes.draw_indirect_count ? VK_TRUE : VK_FALSE;
     features12.scalarBlockLayout = VK_TRUE;
+    features12.shaderBufferInt64Atomics =
+        m_routes.buffer_int64_atomics ? VK_TRUE : VK_FALSE;
     chain(features12);
   } else {
     indexing.runtimeDescriptorArray = VK_TRUE;
@@ -788,6 +890,10 @@ bool VulkanDevice::create_logical_device() {
   if (m_routes.core_13) {
     features13.dynamicRendering = VK_TRUE;
     features13.synchronization2 = VK_TRUE;
+    features13.subgroupSizeControl =
+        m_routes.subgroup_size_control ? VK_TRUE : VK_FALSE;
+    features13.computeFullSubgroups =
+        m_routes.subgroup_size_control ? VK_TRUE : VK_FALSE;
     chain(features13);
   } else {
     dynamic.dynamicRendering = VK_TRUE;
@@ -823,6 +929,36 @@ bool VulkanDevice::create_logical_device() {
       device_extensions.push_back(
           VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
     }
+  }
+
+  if (m_routes.mesh_shaders) {
+    mesh.meshShader = VK_TRUE;
+    mesh.taskShader = VK_TRUE;
+    chain(mesh);
+    device_extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+  }
+  if (m_routes.image_int64_atomics) {
+    image_atomic_int64.shaderImageInt64Atomics = VK_TRUE;
+    chain(image_atomic_int64);
+    device_extensions.push_back(
+        VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
+  }
+  if (m_routes.fragment_barycentrics) {
+    barycentric.fragmentShaderBarycentric = VK_TRUE;
+    chain(barycentric);
+    device_extensions.push_back(
+        VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+  }
+  if (m_routes.acceleration_structures) {
+    acceleration.accelerationStructure = VK_TRUE;
+    chain(acceleration);
+    device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+  }
+  if (m_routes.ray_queries) {
+    ray_query.rayQuery = VK_TRUE;
+    chain(ray_query);
+    device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
   }
 
 #if NX_PROFILE_ENABLED

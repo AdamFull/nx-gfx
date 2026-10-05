@@ -154,6 +154,20 @@ enum class BufferUsage : u16 {
 };
 NX_ENUM_FLAGS_DEFINE(BufferUsage, BufferUsageFlags)
 
+/// The classes of subgroup operation a compute shader may use.
+enum class SubgroupOp : u16 {
+  None = 0,
+  Basic = 1 << 0,
+  Vote = 1 << 1,
+  Arithmetic = 1 << 2,
+  Ballot = 1 << 3,
+  Shuffle = 1 << 4,
+  ShuffleRelative = 1 << 5,
+  Clustered = 1 << 6,
+  Quad = 1 << 7,
+};
+NX_ENUM_FLAGS_DEFINE(SubgroupOp, SubgroupOpFlags)
+
 enum class MemoryUsage : u8 {
   DeviceLocal,
   Upload,

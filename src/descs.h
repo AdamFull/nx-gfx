@@ -305,6 +305,24 @@ struct DeviceCaps {
 
   u32 max_msaa_samples = 1;
 
+  /// What 3D may use where the device has it, each enabled at device
+  /// creation when present. Metal reports none of them until its 3D track.
+  bool mesh_shaders = false;
+  bool buffer_int64_atomics = false;
+  bool image_int64_atomics = false;
+  bool fragment_barycentrics = false;
+  bool acceleration_structures = false;
+  /// Implies acceleration_structures.
+  bool ray_queries = false;
+  /// In compute shaders. subgroup_size is what a dispatch gets unless its
+  /// pipeline asks for another in [min_subgroup_size, max_subgroup_size],
+  /// which needs subgroup_size_control.
+  SubgroupOpFlags subgroup_ops;
+  u32 subgroup_size = 0;
+  u32 min_subgroup_size = 0;
+  u32 max_subgroup_size = 0;
+  bool subgroup_size_control = false;
+
   u32 max_texture_2d = 0;
   u64 max_buffer_size = 0;
   Extent3D max_compute_work_groups{0, 0, 0};

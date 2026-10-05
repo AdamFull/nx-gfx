@@ -145,6 +145,14 @@ struct DeviceRoutes {
   bool core_13 = false;
   bool draw_indirect_count = false;
   bool storage_image_extended_formats = false;
+  /// Optional features 3D uses, enabled when the device has them.
+  bool mesh_shaders = false;
+  bool buffer_int64_atomics = false;
+  bool image_int64_atomics = false;
+  bool fragment_barycentrics = false;
+  bool subgroup_size_control = false;
+  bool acceleration_structures = false;
+  bool ray_queries = false;
   VulkanFaultRoute device_fault = VulkanFaultRoute::None;
   bool device_fault_vendor_binary = false;
   bool address_binding_report = false;
