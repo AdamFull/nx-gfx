@@ -13,17 +13,3 @@
 #define NX_BINDLESS_MAX_SAMPLERS 1024u
 #define NX_BINDLESS_MAX_TEXTURES 65535u
 #define NX_BINDLESS_MAX_RW_TEXTURES 8192u
-
-// Shared C++/Slang layout for the compact sampled-texture handle. The upper
-// half identifies the bindless texture and the lower half identifies its
-// sampler plus sampling metadata.
-#define NX_TEXTURE_NONE 0xFFFFu
-#define NX_TEXTURE_LINEAR 0x4000u
-#define NX_TEXTURE_PREMULTIPLIED 0x8000u
-#define NX_TEXTURE_SAMPLER_MASK 0x3FFFu
-
-// An image resolver's second word: an atlas region rather than a texture,
-// the atlas's index above and the region's below.
-#define NX_IMAGE_ATLAS 0x80000000u
-#define NX_IMAGE_ATLAS_INDEX_MASK 0x7FFFu
-#define NX_IMAGE_REGION_MASK 0xFFFFu

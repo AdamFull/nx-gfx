@@ -5,7 +5,7 @@
 // Slang. C++ carries them in shared structs and hands them to shaders; only
 // shaders sample.
 
-#include "rendering/rhi/shaders/core_layout.h"
+#include "rendering/rhi/shaders/nx_texture_layout.h"
 
 #include <cstdint>
 

@@ -3,4 +3,6 @@
 // module identity for imports.
 module nx_core;
 
+__exported import nx_texture_layout;
+
 #include "core.slang"
