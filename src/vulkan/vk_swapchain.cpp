@@ -776,6 +776,7 @@ bool VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
     nx::loge(nx::log::rhi, "begin_frame called twice without an end_frame");
     return false;
   }
+  apply_replacements();
   m_acquired.clear();
   return open_frame(out_context);
 }
@@ -836,6 +837,7 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   if (m_device == VK_NULL_HANDLE || m_frame_active || m_frames.empty() ||
       device_status() == GpuDeviceStatus::Lost)
     return false;
+  apply_replacements();
   m_acquired.clear();
   if (!open_frame(out_context))
     return false;

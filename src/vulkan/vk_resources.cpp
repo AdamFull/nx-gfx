@@ -352,16 +352,34 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
       !m_textures.contains(target) || !m_textures.contains(replacement))
     return false;
 
-  VulkanTexture *const held = m_textures.try_get(target);
-  VulkanTexture *const fresh = m_textures.try_get(replacement);
+  const VulkanTexture *const held = m_textures.try_get(target);
+  const VulkanTexture *const fresh = m_textures.try_get(replacement);
   if (held == nullptr || fresh == nullptr || held->usage != fresh->usage ||
       held->usage.has(TextureUsage::Storage))
     return false;
 
+  {
+    const nx::scoped_lock<nx::mutex> collecting(m_garbage_lock);
+    if (!m_pending_replaces.empty() || m_retire_hold > m_retire_released + 1) {
+      m_pending_replaces.push_back(
+          {.target = target,
+           .replacement = replacement,
+           .after = m_retire_hold == 0 ? 0 : m_retire_hold - 1});
+      return true;
+    }
+  }
+  return swap_texture(target, replacement);
+}
+
+bool VulkanDevice::swap_texture(const TextureHandle target,
+                                const TextureHandle replacement) noexcept {
   wait_idle();
-  if (device_status() == GpuDeviceStatus::Lost)
-    return false;
   const nx::scoped_lock<nx::mutex> collecting(m_garbage_lock);
+  VulkanTexture *const held = m_textures.try_get(target);
+  VulkanTexture *const fresh = m_textures.try_get(replacement);
+  if (held == nullptr || fresh == nullptr ||
+      device_status() == GpuDeviceStatus::Lost)
+    return false;
   std::swap(*held, *fresh);
   if (held->srv != VK_NULL_HANDLE)
     write_texture_descriptor(nx::cast<u32>(target.index()), held->srv);
@@ -370,6 +388,21 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
   // published, so it is safe to consume through the normal deferred path.
   retire({.texture = replacement});
   return true;
+}
+
+void VulkanDevice::apply_replacements() noexcept {
+  nx::small_vector<PendingReplace, 4> due;
+  {
+    const nx::scoped_lock<nx::mutex> collecting(m_garbage_lock);
+    while (!m_pending_replaces.empty() &&
+           m_pending_replaces.front().after <= m_retire_released) {
+      due.push_back(m_pending_replaces.front());
+      m_pending_replaces.erase(m_pending_replaces.begin());
+    }
+  }
+  for (const PendingReplace &pending : due)
+    if (!swap_texture(pending.target, pending.replacement))
+      destroy_texture(pending.replacement);
 }
 
 bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,

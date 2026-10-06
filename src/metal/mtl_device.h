@@ -254,6 +254,7 @@ public:
 
   [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
   void destroy_texture(TextureHandle handle) noexcept;
+  /// See VulkanDevice::replace_texture.
   [[nodiscard]] bool replace_texture(TextureHandle target,
                                      TextureHandle replacement);
   /// Mip-residency streaming is not yet wired on Metal; returns false so the
@@ -334,6 +335,10 @@ private:
   MetalDeviceState *m_state = nullptr;
   MetalUploader m_uploader;
   nx::workload_tracker m_pipeline_compile_workload;
+
+  // Neither takes retire_lock on entry; each waits for the GPU first.
+  bool swap_texture(TextureHandle target, TextureHandle replacement) noexcept;
+  void apply_replacements() noexcept;
 };
 
 } // namespace nxe::rhi

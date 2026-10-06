@@ -1290,6 +1290,8 @@ void VulkanDevice::shutdown() noexcept {
 
   release_retirements(~0ull);
   collect_garbage(~0ull);
+  // A replacement still waiting goes with the rest of the table.
+  m_pending_replaces.clear();
 
   m_textures.for_each(
       [this](VulkanTexture &texture) { destroy_texture_now(texture); });

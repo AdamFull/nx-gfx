@@ -432,6 +432,10 @@ public:
 
   [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
   void destroy_texture(TextureHandle handle) noexcept;
+  /// Gives @p target @p replacement's image under its own handle and
+  /// bindless index, and takes ownership of @p replacement. Under a hold the
+  /// frame work before the held one may still be recording against the old
+  /// image, so the swap waits for the first frame begun after it is released.
   [[nodiscard]] bool replace_texture(TextureHandle target,
                                      TextureHandle replacement);
   [[nodiscard]] bool set_texture_view_base_mip(TextureHandle handle,
@@ -705,6 +709,16 @@ private:
   };
   // m_garbage_lock held.
   void retire(PendingDelete pending) noexcept;
+
+  struct PendingReplace {
+    TextureHandle target;
+    TextureHandle replacement;
+    /// The last held frame work that may name the target's old image.
+    u64 after = 0;
+  };
+  // Neither takes m_garbage_lock on entry; each waits for the GPU first.
+  bool swap_texture(TextureHandle target, TextureHandle replacement) noexcept;
+  void apply_replacements() noexcept;
   // The render job collects garbage while the owner creates and destroys
   // resources: this guards the deferred lists, the handle tables collection
   // erases from, and the texture views it publishes.
@@ -712,6 +726,7 @@ private:
   nx::small_vector<PendingDelete, 32> m_pending_deletes;
   u64 m_retire_hold = 0;
   u64 m_retire_released = 0;
+  nx::small_vector<PendingReplace, 4> m_pending_replaces;
   nx::small_vector<PendingTextureView, 16> m_pending_texture_views;
   // Taken after m_garbage_lock, never before: writes to the one bindless set
   // must be host-synchronized, and both sides make them.

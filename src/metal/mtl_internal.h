@@ -279,6 +279,13 @@ struct MetalDeviceState {
   nx::vector<PendingDelete> pending_deletes;
   u64 retire_hold = 0;
   u64 retire_released = 0;
+  struct PendingReplace {
+    TextureHandle target;
+    TextureHandle replacement;
+    /// The last held frame work that may name the target's old image.
+    u64 after = 0;
+  };
+  nx::vector<PendingReplace> pending_replaces;
 
   MetalUploadState upload;
   /// The device owns the uploader's lifetime but not its code; these live in

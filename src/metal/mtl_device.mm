@@ -323,6 +323,8 @@ void MetalDevice::shutdown() noexcept {
     destroy_swapchain(m_state->swapchains.handle_at(0));
   release_retirements(~0ull);
   collect_garbage(*m_state, ~0ull);
+  // A replacement still waiting goes with the rest of the table.
+  m_state->pending_replaces.clear();
 
   @autoreleasepool {
     m_uploader.m_state = nullptr;
@@ -388,6 +390,7 @@ bool MetalDevice::begin_frame(MetalCommandContext &out_context) {
     nx::loge(log_rhi, "begin_frame called twice without an end_frame");
     return false;
   }
+  apply_replacements();
 
   wait_frame_slot(s->frame_semaphore);
   if (device_status() == GpuDeviceStatus::Lost)
@@ -556,6 +559,7 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
 
   if (s->frame_semaphore == nil)
     return false;
+  apply_replacements();
 
   wait_frame_slot(s->frame_semaphore);
   if (device_status() == GpuDeviceStatus::Lost)
@@ -941,16 +945,37 @@ bool MetalDevice::replace_texture(const TextureHandle target,
       target == replacement)
     return false;
 
-  MetalTexture *const held = m_state->textures.try_get(target);
-  MetalTexture *const fresh = m_state->textures.try_get(replacement);
+  const MetalTexture *const held = m_state->textures.try_get(target);
+  const MetalTexture *const fresh = m_state->textures.try_get(replacement);
+  // Per-mip storage slots may be cached outside the device. Restrict adoption
+  // to resources whose complete external identity is the stable texture
+  // handle (and sampled slot), which is the editor asset-reload use case.
   if (held == nullptr || fresh == nullptr || held->usage != fresh->usage ||
       held->usage.has(TextureUsage::Storage))
     return false;
 
-  // Per-mip storage slots may be cached outside the device. Restrict adoption
-  // to resources whose complete external identity is the stable texture
-  // handle (and sampled slot), which is the editor asset-reload use case.
+  {
+    const nx::scoped_lock<nx::mutex> locked(m_state->retire_lock);
+    if (!m_state->pending_replaces.empty() ||
+        m_state->retire_hold > m_state->retire_released + 1) {
+      m_state->pending_replaces.push_back(
+          {.target = target,
+           .replacement = replacement,
+           .after = m_state->retire_hold == 0 ? 0 : m_state->retire_hold - 1});
+      return true;
+    }
+  }
+  return swap_texture(target, replacement);
+}
+
+bool MetalDevice::swap_texture(const TextureHandle target,
+                               const TextureHandle replacement) noexcept {
   wait_idle();
+  MetalTexture *const held = m_state->textures.try_get(target);
+  MetalTexture *const fresh = m_state->textures.try_get(replacement);
+  if (held == nullptr || fresh == nullptr ||
+      device_status() == GpuDeviceStatus::Lost)
+    return false;
   std::swap(*held, *fresh);
   const u32 target_slot = bindless_index(target);
   const u32 replacement_slot = bindless_index(replacement);
@@ -968,6 +993,22 @@ bool MetalDevice::replace_texture(const TextureHandle target,
   write_texture_descriptor(*m_state, replacement_slot, nil);
   retire(*m_state, {.texture = replacement});
   return true;
+}
+
+void MetalDevice::apply_replacements() noexcept {
+  nx::vector<MetalDeviceState::PendingReplace> due;
+  {
+    const nx::scoped_lock<nx::mutex> locked(m_state->retire_lock);
+    auto &pending = m_state->pending_replaces;
+    while (!pending.empty() &&
+           pending.front().after <= m_state->retire_released) {
+      due.push_back(pending.front());
+      pending.erase(pending.begin());
+    }
+  }
+  for (const MetalDeviceState::PendingReplace &pending : due)
+    if (!swap_texture(pending.target, pending.replacement))
+      destroy_texture(pending.replacement);
 }
 
 bool MetalDevice::set_texture_view_base_mip(const TextureHandle, u32) {
