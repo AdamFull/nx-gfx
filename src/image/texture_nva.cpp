@@ -1,5 +1,6 @@
 #include "rendering/rhi/image/texture_nva.h"
 
+#include "core/foundation/serialization/asset_contract.h"
 #include "core/foundation/serialization/nva.h"
 
 #include <cstring>
@@ -538,9 +539,8 @@ bool decode_texture(const std::span<const u8> bytes, ImageData &out) {
 }
 
 nx::string cooked_texture_path(const nx::string_view source) {
-  nx::string out(source);
-  out += ".nxb";
-  return out;
+  return nx::asset_contract::cooked_path(source,
+                                         nx::asset_contract::TEXTURE_SUFFIX);
 }
 
 } // namespace nxe::rhi
