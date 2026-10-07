@@ -213,6 +213,10 @@ struct GraphicsPipelineDesc {
   CompareOp depth_compare = CompareOp::LessOrEqual;
 
   u32 sample_count = 1;
+  /// Runs the fragment shader once for each covered sample, at that sample,
+  /// where the device can (DeviceCaps::sample_shading); once a pixel
+  /// otherwise.
+  bool sample_shading = false;
 };
 
 struct ComputePipelineDesc {
@@ -311,6 +315,8 @@ struct DeviceCaps {
   bool buffer_int64_atomics = false;
   bool image_int64_atomics = false;
   bool fragment_barycentrics = false;
+  /// GraphicsPipelineDesc::sample_shading.
+  bool sample_shading = false;
   bool acceleration_structures = false;
   /// Implies acceleration_structures.
   bool ray_queries = false;

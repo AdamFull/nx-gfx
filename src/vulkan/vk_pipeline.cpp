@@ -29,6 +29,7 @@ struct VulkanGraphicsPipelineCompileJob {
   bool depth_write = false;
   CompareOp depth_compare = CompareOp::LessOrEqual;
   u32 sample_count = 1;
+  bool sample_shading = false;
 };
 
 struct VulkanComputePipelineCompileJob {
@@ -422,6 +423,8 @@ bool VulkanDevice::prepare_graphics_pipeline(
   job.depth_write = desc.depth_write;
   job.depth_compare = desc.depth_compare;
   job.sample_count = nx::max(desc.sample_count, 1u);
+  job.sample_shading =
+      desc.sample_shading && m_caps.sample_shading && job.sample_count > 1;
   out = std::move(job);
   return true;
 }
@@ -470,6 +473,8 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
       VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   multisample.rasterizationSamples =
       nx::cast<VkSampleCountFlagBits>(job.sample_count);
+  multisample.sampleShadingEnable = job.sample_shading ? VK_TRUE : VK_FALSE;
+  multisample.minSampleShading = job.sample_shading ? 1.f : 0.f;
 
   VkPipelineDepthStencilStateCreateInfo depth_stencil{
       VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};

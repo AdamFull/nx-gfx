@@ -339,6 +339,14 @@ public Texture3D<uint4> get_uint_texture_3d(uint index) {
     return g_textures[NonUniformResourceIndex(index)]
         .asOpaqueDescriptor<Texture3D<uint4>>();
 }
+public Texture2DMS<float4> get_texture_2d_ms(uint index) {
+    return g_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<Texture2DMS<float4>>();
+}
+public Texture2DMS<uint4> get_uint_texture_2d_ms(uint index) {
+    return g_textures[NonUniformResourceIndex(index)]
+        .asOpaqueDescriptor<Texture2DMS<uint4>>();
+}
 // A cube's storage view is a 2D array of its faces.
 public RWTexture2DArray<float4> get_rw_texture_2d_array(uint index) {
     return g_rw_textures[NonUniformResourceIndex(index)]
@@ -449,6 +457,30 @@ NX_DEFINE_TEXTURE_ELEMENT(uint4, .xyzw, get_uint_texture_cube,
                           get_uint_texture_2d_array, get_uint_texture_3d)
 
 #undef NX_DEFINE_TEXTURE_ELEMENT
+
+public interface INxTexture2DMSElement {
+    static This load_2d_ms(uint texture, int2 at, int sample);
+    static uint3 dimensions_2d_ms(uint texture);
+}
+
+#define NX_DEFINE_TEXTURE_2D_MS_ELEMENT(TYPE, SWIZZLE, MS)                 \
+    public extension TYPE : INxTexture2DMSElement {                        \
+        static TYPE load_2d_ms(uint t, int2 at, int sample) {              \
+            return MS(t).Load(at, sample)SWIZZLE;                          \
+        }                                                                  \
+        static uint3 dimensions_2d_ms(uint t) {                            \
+            uint3 dimensions;                                              \
+            MS(t).GetDimensions(dimensions.x, dimensions.y, dimensions.z); \
+            return dimensions;                                             \
+        }                                                                  \
+    }
+
+NX_DEFINE_TEXTURE_2D_MS_ELEMENT(float, .x, get_texture_2d_ms)
+NX_DEFINE_TEXTURE_2D_MS_ELEMENT(float4, .xyzw, get_texture_2d_ms)
+NX_DEFINE_TEXTURE_2D_MS_ELEMENT(uint, .x, get_uint_texture_2d_ms)
+NX_DEFINE_TEXTURE_2D_MS_ELEMENT(uint4, .xyzw, get_uint_texture_2d_ms)
+
+#undef NX_DEFINE_TEXTURE_2D_MS_ELEMENT
 
 public interface INxRWTextureElement {
     static This load_rw_2d_array(uint texture, uint3 at);

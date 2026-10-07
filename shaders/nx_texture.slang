@@ -150,6 +150,41 @@ public struct NxRWTexture2D<T>
 
 #if !defined(NX_TARGET_METAL)
 
+/// A multisampled 2D texture, read a sample at a time, in NxTexture2D's
+/// one-word ABI; its sampler bits are unused.
+public struct NxTexture2DMS<T>
+    where T : INxTexture2DMSElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTexture2DMS<T> from_packed(uint packed) {
+        NxTexture2DMS<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public static NxTexture2DMS<T> from_indices(uint texture, uint sampler,
+                                                uint flags = 0u) {
+        return from_packed(nx_texture_word(texture, sampler, flags));
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    /// Width, height and samples a pixel.
+    [ForceInline]
+    public uint3 dimensions() { return T.dimensions_2d_ms(texture_index()); }
+
+    [ForceInline]
+    public T load(int2 at, int sample) {
+        return T.load_2d_ms(texture_index(), at, sample);
+    }
+}
+
 /// Compact sampled cube texture, in NxTexture2D's one-word ABI.
 public struct NxTextureCube<T>
     where T : INxTextureElement {

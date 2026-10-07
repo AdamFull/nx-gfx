@@ -14,6 +14,7 @@ struct Tex2D;
 struct Cube;
 struct Array2D;
 struct Tex3D;
+struct Tex2DMS;
 } // namespace nx_texture_shape
 
 /// A sampled texture of @p Shape holding T texels: its bindless slot
@@ -85,6 +86,9 @@ template <typename T>
 using NxTexture2DArray = NxSampledTexture<nx_texture_shape::Array2D, T>;
 template <typename T>
 using NxTexture3D = NxSampledTexture<nx_texture_shape::Tex3D, T>;
+/// Multisampled, read a sample at a time; its sampler bits are unused.
+template <typename T>
+using NxTexture2DMS = NxSampledTexture<nx_texture_shape::Tex2DMS, T>;
 template <typename T>
 using NxRWTexture2D = NxStorageTexture<nx_texture_shape::Tex2D, T>;
 /// A storage 2D array, or a cube's faces as one.
