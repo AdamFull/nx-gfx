@@ -740,6 +740,46 @@ bool VulkanCommandContext::copy_texture_to_buffer(
   return true;
 }
 
+bool VulkanCommandContext::copy_buffer(const BufferHandle source_handle,
+                                       const u64 source_offset,
+                                       const BufferHandle destination_handle,
+                                       const u64 destination_offset,
+                                       const u64 size) {
+  if (m_device == nullptr || m_cmd == VK_NULL_HANDLE || m_in_render_pass)
+    return false;
+  const VulkanBuffer *source = m_device->buffer(source_handle);
+  const VulkanBuffer *destination = m_device->buffer(destination_handle);
+  if (source == nullptr || destination == nullptr || size == 0 ||
+      !(source->usage & BufferUsage::CopySrc) ||
+      !(destination->usage & BufferUsage::CopyDst) ||
+      source_offset > source->size || size > source->size - source_offset ||
+      destination_offset > destination->size ||
+      size > destination->size - destination_offset)
+    return false;
+
+  VkBufferCopy copy{};
+  copy.srcOffset = source_offset;
+  copy.dstOffset = destination_offset;
+  copy.size = size;
+  vkCmdCopyBuffer(m_cmd, source->buffer, destination->buffer, 1, &copy);
+
+  VkBufferMemoryBarrier2 host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+  host.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+  host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+  host.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  host.buffer = destination->buffer;
+  host.offset = destination_offset;
+  host.size = size;
+  VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dependency.bufferMemoryBarrierCount = 1;
+  dependency.pBufferMemoryBarriers = &host;
+  vkCmdPipelineBarrier2KHR(m_cmd, &dependency);
+  return true;
+}
+
 void VulkanCommandContext::barrier(const TextureBarrier *textures,
                                    const u32 texture_count,
                                    const BufferBarrier *buffers,

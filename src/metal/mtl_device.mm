@@ -1218,6 +1218,43 @@ bool MetalCommandContext::copy_texture_to_buffer(
   return true;
 }
 
+bool MetalCommandContext::copy_buffer(const BufferHandle source_handle,
+                                      const u64 source_offset,
+                                      const BufferHandle destination_handle,
+                                      const u64 destination_offset,
+                                      const u64 size) {
+  if (m_state == nullptr || m_in_render_pass)
+    return false;
+  MetalContextSlot &slot = ctx_slot();
+  if (slot.cmd == nil || slot.encoder != nil || slot.compute_encoder != nil)
+    return false;
+  const MetalBuffer *source = m_state->buffers.try_get(source_handle);
+  const MetalBuffer *destination =
+      m_state->buffers.try_get(destination_handle);
+  if (source == nullptr || source->buffer == nil || destination == nullptr ||
+      destination->buffer == nil || size == 0 ||
+      !(source->usage & BufferUsage::CopySrc) ||
+      !(destination->usage & BufferUsage::CopyDst) ||
+      source_offset > source->size || size > source->size - source_offset ||
+      destination_offset > destination->size ||
+      size > destination->size - destination_offset)
+    return false;
+
+  @autoreleasepool {
+    id<MTLBlitCommandEncoder> blit = [slot.cmd blitCommandEncoder];
+    if (blit == nil)
+      return false;
+    blit.label = @"nx2d buffer copy";
+    [blit copyFromBuffer:source->buffer
+             sourceOffset:source_offset
+                 toBuffer:destination->buffer
+        destinationOffset:destination_offset
+                     size:size];
+    [blit endEncoding];
+  }
+  return true;
+}
+
 u64 MetalDevice::buffer_address(const BufferHandle handle) const noexcept {
   if (m_state == nullptr)
     return 0;

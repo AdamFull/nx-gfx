@@ -156,6 +156,13 @@ public:
   [[nodiscard]] bool copy_texture_to_buffer(TextureHandle texture,
                                             BufferHandle buffer, u64 row_pitch,
                                             u32 mip = 0, u32 layer = 0);
+  /// Copies @p size bytes of @p source from @p source_offset into
+  /// @p destination at @p destination_offset, outside a render/compute pass,
+  /// and makes them visible to the host. The source must be CopySrc, the
+  /// destination CopyDst, both in usage and state.
+  [[nodiscard]] bool copy_buffer(BufferHandle source, u64 source_offset,
+                                 BufferHandle destination,
+                                 u64 destination_offset, u64 size);
 
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
                         f32 b = 1.f);
