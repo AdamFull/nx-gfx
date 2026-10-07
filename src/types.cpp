@@ -224,6 +224,47 @@ u32 format_texel_size(const Format format) noexcept {
   return info_of(format).texel_size;
 }
 
+u32 format_channels(const Format format) noexcept {
+  switch (format) {
+  case Format::Unknown:
+  case Format::Count:
+    return 0;
+  case Format::R8_UNORM:
+  case Format::R8_SNORM:
+  case Format::R8_UINT:
+  case Format::R8_SINT:
+  case Format::R16_UNORM:
+  case Format::R16_FLOAT:
+  case Format::R16_UINT:
+  case Format::R16_SINT:
+  case Format::R32_FLOAT:
+  case Format::R32_UINT:
+  case Format::R32_SINT:
+  case Format::D16_UNORM:
+  case Format::D32_FLOAT:
+  case Format::BC4_R_UNORM:
+    return 1;
+  case Format::RG8_UNORM:
+  case Format::RG8_UINT:
+  case Format::RG16_FLOAT:
+  case Format::RG16_UNORM:
+  case Format::RG32_FLOAT:
+  case Format::RG32_UINT:
+  case Format::D24_UNORM_S8_UINT:
+  case Format::D32_FLOAT_S8_UINT:
+  case Format::BC5_RG_UNORM:
+    return 2;
+  case Format::RG11B10_FLOAT:
+  case Format::BC1_RGB_UNORM:
+  case Format::BC1_RGB_SRGB:
+  case Format::BC6H_RGB_UFLOAT:
+  case Format::BC6H_RGB_SFLOAT:
+    return 3;
+  default:
+    return 4;
+  }
+}
+
 void format_block_extent(const Format format, u32 &width,
                          u32 &height) noexcept {
   const FormatInfo &info = info_of(format);

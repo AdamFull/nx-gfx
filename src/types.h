@@ -296,6 +296,10 @@ void format_block_extent(Format format, u32 &width, u32 &height) noexcept;
 [[nodiscard]] bool format_is_stencil(Format format) noexcept;
 [[nodiscard]] bool format_is_srgb(Format format) noexcept;
 [[nodiscard]] bool format_is_compressed(Format format) noexcept;
+/// The channels a texel of @p format holds, as a shader reads them: 1 for R
+/// and depth formats, 2 for RG (BC5 among them), 3 for RGB, else 4; 0 for
+/// Format::Unknown.
+[[nodiscard]] u32 format_channels(Format format) noexcept;
 
 [[nodiscard]] bool format_is_float(Format format) noexcept;
 
