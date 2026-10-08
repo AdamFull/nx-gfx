@@ -14,9 +14,11 @@ namespace nxe::rhi {
 /// until the worker finishes. No engine handle table is touched by the worker.
 struct VulkanGraphicsPipelineCompileJob {
   nx::string name;
-  nx::string vertex_entry;
+  /// The vertex or mesh stage.
+  VkShaderStageFlagBits primitive_stage = VK_SHADER_STAGE_VERTEX_BIT;
+  nx::string primitive_entry;
   nx::string fragment_entry;
-  VkShaderModule vertex = VK_NULL_HANDLE;
+  VkShaderModule primitive = VK_NULL_HANDLE;
   VkShaderModule fragment = VK_NULL_HANDLE;
   Format color_formats[MAX_COLOR_ATTACHMENTS] = {};
   u32 color_count = 0;
@@ -379,20 +381,35 @@ VulkanDevice::create_graphics_pipeline_async(nx::thread_pool &workers,
 bool VulkanDevice::prepare_graphics_pipeline(
     const GraphicsPipelineDesc &desc,
     VulkanGraphicsPipelineCompileJob &out) const {
-  const VulkanShader *vs = m_shaders.try_get(desc.vertex.shader);
-  if (vs == nullptr) {
-    nx::loge(nx::log::rhi, "create_graphics_pipeline('{}'): missing vertex shader",
+  const bool mesh = desc.mesh.shader.valid();
+  if (mesh && desc.vertex.shader.valid()) {
+    nx::loge(nx::log::rhi,
+             "create_graphics_pipeline('{}'): both a vertex and a mesh shader",
              desc.name);
-    return {};
+    return false;
+  }
+  if (mesh && !m_caps.mesh_shaders) {
+    nx::loge(nx::log::rhi,
+             "create_graphics_pipeline('{}'): the device has no mesh shaders",
+             desc.name);
+    return false;
+  }
+  const ShaderEntry &primitive = mesh ? desc.mesh : desc.vertex;
+  const nx::string_view stage_name = mesh ? "mesh" : "vertex";
+  const VulkanShader *ps = m_shaders.try_get(primitive.shader);
+  if (ps == nullptr) {
+    nx::loge(nx::log::rhi, "create_graphics_pipeline('{}'): missing {} shader",
+             desc.name, stage_name);
+    return false;
   }
 
   const VulkanShader *fs = m_shaders.try_get(desc.fragment.shader);
 
-  if (!declares_entry(*vs, desc.vertex.entry_point)) {
+  if (!declares_entry(*ps, primitive.entry_point)) {
     nx::loge(nx::log::rhi,
-             "create_graphics_pipeline('{}'): the vertex shader declares no "
+             "create_graphics_pipeline('{}'): the {} shader declares no "
              "entry point '{}'",
-             desc.name, desc.vertex.entry_point);
+             desc.name, stage_name, primitive.entry_point);
     return false;
   }
   if (fs != nullptr && !desc.fragment.entry_point.empty() &&
@@ -406,9 +423,11 @@ bool VulkanDevice::prepare_graphics_pipeline(
 
   VulkanGraphicsPipelineCompileJob job;
   job.name = nx::string(desc.name);
-  job.vertex_entry = nx::string(desc.vertex.entry_point);
+  job.primitive_stage =
+      mesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+  job.primitive_entry = nx::string(primitive.entry_point);
   job.fragment_entry = nx::string(desc.fragment.entry_point);
-  job.vertex = vs->module;
+  job.primitive = ps->module;
   job.fragment = fs != nullptr ? fs->module : VK_NULL_HANDLE;
   job.color_count = nx::min(desc.color_count, MAX_COLOR_ATTACHMENTS);
   for (u32 i = 0; i < job.color_count; ++i) {
@@ -431,14 +450,14 @@ bool VulkanDevice::prepare_graphics_pipeline(
 
 VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
     const VulkanGraphicsPipelineCompileJob &job) const {
-  if (job.vertex == VK_NULL_HANDLE)
+  if (job.primitive == VK_NULL_HANDLE)
     return {};
 
   VkPipelineShaderStageCreateInfo stages[2] = {};
   stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-  stages[0].module = job.vertex;
-  stages[0].pName = job.vertex_entry.c_str();
+  stages[0].stage = job.primitive_stage;
+  stages[0].module = job.primitive;
+  stages[0].pName = job.primitive_entry.c_str();
   u32 stage_count = 1;
   if (job.fragment != VK_NULL_HANDLE) {
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -762,6 +781,21 @@ void VulkanCommandContext::draw_indirect(const BufferHandle buffer,
   vkCmdDrawIndirect(m_cmd, buf->buffer, offset, draw_count,
                     stride != 0 ? stride
                                 : nx::cast<u32>(sizeof(DrawIndirectCommand)));
+}
+
+void VulkanCommandContext::draw_mesh_tasks_indirect(const BufferHandle buffer,
+                                                    const u64 offset,
+                                                    const u32 draw_count,
+                                                    const u32 stride) {
+  if (m_device == nullptr || !m_device->caps().mesh_shaders)
+    return;
+  const VulkanBuffer *buf = m_device->buffer(buffer);
+  if (buf == nullptr)
+    return;
+  vkCmdDrawMeshTasksIndirectEXT(
+      m_cmd, buf->buffer, offset, draw_count,
+      stride != 0 ? stride
+                  : nx::cast<u32>(sizeof(DrawMeshTasksIndirectCommand)));
 }
 
 void VulkanCommandContext::draw_indexed_indirect(const BufferHandle buffer,

@@ -801,8 +801,8 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
                                : desc.from == ResourceState::Undefined
                                    ? texture->state
                                    : desc.from;
-    VkStateInfo src = to_vk_state(from);
-    const VkStateInfo dst = to_vk_state(desc.to);
+    VkStateInfo src = m_device->state_info(from);
+    const VkStateInfo dst = m_device->state_info(desc.to);
     // A written state kept across the barrier still orders the writes before
     // it against the accesses after it.
     if (!desc.discard && from == desc.to && !is_write_state(from))
@@ -847,8 +847,8 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
     if (buffer == nullptr)
       continue;
 
-    const VkStateInfo src = to_vk_state(desc.from);
-    const VkStateInfo dst = to_vk_state(desc.to);
+    const VkStateInfo src = m_device->state_info(desc.from);
+    const VkStateInfo dst = m_device->state_info(desc.to);
 
     VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     barrier.srcStageMask = src.stage;

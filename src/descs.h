@@ -183,7 +183,11 @@ struct BlendState {
 
 struct GraphicsPipelineDesc {
   nx::string_view name = "pipeline";
+  /// Exactly one of vertex and mesh. A mesh pipeline has no vertex input or
+  /// topology of its own, needs DeviceCaps::mesh_shaders and draws only
+  /// through draw_mesh_tasks_indirect.
   ShaderEntry vertex;
+  ShaderEntry mesh;
   ShaderEntry fragment;
 
   /// Attachment formats, for dynamic rendering. Must match the render pass the
@@ -230,6 +234,12 @@ struct DrawIndirectCommand {
   u32 instance_count = 0;
   u32 first_vertex = 0;
   u32 first_instance = 0;
+};
+
+struct DrawMeshTasksIndirectCommand {
+  u32 groups_x = 0;
+  u32 groups_y = 0;
+  u32 groups_z = 0;
 };
 
 struct DrawIndexedIndirectCommand {

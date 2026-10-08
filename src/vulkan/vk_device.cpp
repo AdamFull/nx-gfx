@@ -1688,7 +1688,7 @@ VulkanDevice::native_texture(const TextureHandle handle) const noexcept {
 }
 
 u32 VulkanDevice::native_layout(const ResourceState state) const noexcept {
-  return nx::cast<u32>(to_vk_state(state).layout);
+  return nx::cast<u32>(state_info(state).layout);
 }
 
 bool VulkanDevice::native_extension(const nx::string_view name) const noexcept {

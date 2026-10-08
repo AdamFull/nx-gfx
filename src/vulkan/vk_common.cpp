@@ -319,11 +319,8 @@ VkAccessFlags2 to_buffer_access(const VkAccessFlags2 access) noexcept {
   return out;
 }
 
-VkStateInfo to_vk_state(const ResourceState state) noexcept {
-  constexpr VkPipelineStageFlags2 ALL_SHADERS =
-      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+VkStateInfo to_vk_state(const ResourceState state,
+                        const VkPipelineStageFlags2 shader_stages) noexcept {
   constexpr VkPipelineStageFlags2 DEPTH_STAGES =
       VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
       VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -346,16 +343,16 @@ VkStateInfo to_vk_state(const ResourceState state) noexcept {
             VK_ACCESS_2_TRANSFER_WRITE_BIT};
 
   case ResourceState::ShaderReadOnly:
-    return {VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, ALL_SHADERS,
+    return {VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, shader_stages,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
 
   case ResourceState::ShaderWriteOnly:
-    return {VK_IMAGE_LAYOUT_GENERAL, ALL_SHADERS,
+    return {VK_IMAGE_LAYOUT_GENERAL, shader_stages,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
 
   case ResourceState::ShaderReadWrite:
-    return {VK_IMAGE_LAYOUT_GENERAL, ALL_SHADERS,
+    return {VK_IMAGE_LAYOUT_GENERAL, shader_stages,
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
 
@@ -402,7 +399,7 @@ VkStateInfo to_vk_state(const ResourceState state) noexcept {
 
   case ResourceState::UniformBuffer:
     return {VK_IMAGE_LAYOUT_UNDEFINED,
-            ALL_SHADERS | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+            shader_stages | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
             VK_ACCESS_2_UNIFORM_READ_BIT};
 
   case ResourceState::HostRead:

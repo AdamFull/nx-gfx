@@ -531,7 +531,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     return {};
   }
 
-  const VkStateInfo from = to_vk_state(tex->state);
+  const VkStateInfo from = m_device->state_info(tex->state);
   // nothing is lost, since a stage mask cannot order work on another queue
   // anyway - the release/acquire pair carries that dependency.
   const bool copy_to_copy = tex->state == ResourceState::CopyDst;
@@ -554,7 +554,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
                          nx::cast<u32>(copies.size()), copies.data());
 
   if (!qfot) {
-    const VkStateInfo fin = to_vk_state(final_state);
+    const VkStateInfo fin = m_device->state_info(final_state);
     VkImageMemoryBarrier2 post = whole_image_barrier(tex->image, aspect);
     post.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     post.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -678,7 +678,7 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
     (void)pending_release(handle, buf->buffer, dst_offset, src.size(),
                           final_state);
   } else {
-    const VkStateInfo fin = to_vk_state(final_state);
+    const VkStateInfo fin = m_device->state_info(final_state);
     VkBufferMemoryBarrier2 bar{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     bar.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     bar.srcAccessMask = to_buffer_access(VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -745,7 +745,7 @@ UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
   if (qfot) {
     (void)pending_release(handle, buf->buffer, 0, buf->size, final_state);
   } else {
-    const VkStateInfo fin = to_vk_state(final_state);
+    const VkStateInfo fin = m_device->state_info(final_state);
     VkBufferMemoryBarrier2 after_fill{
         VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     after_fill.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
@@ -866,7 +866,7 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
     return {};
   m_device->copy_profiler().begin_zone(cmd, "read texture");
 
-  const VkStateInfo from = to_vk_state(tex->state);
+  const VkStateInfo from = m_device->state_info(tex->state);
   const bool qfot = needs_ownership_transfer();
   if (qfot && tex->owner == ImageOwner::Graphics) {
     nx::logw(log_up,
@@ -1020,8 +1020,8 @@ void VulkanUploader::record_releases() {
     if (tex == nullptr)
       continue;
 
-    const VkStateInfo from = to_vk_state(release.old_state);
-    const VkStateInfo to = to_vk_state(release.new_state);
+    const VkStateInfo from = m_device->state_info(release.old_state);
+    const VkStateInfo to = m_device->state_info(release.new_state);
     VkImageMemoryBarrier2 barrier =
         whole_image_barrier(release.image, release.aspect);
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -1114,8 +1114,8 @@ void VulkanUploader::replay_graphics_copies(const VkCommandBuffer cmd) {
     if (seen)
       continue;
 
-    const VkStateInfo from = to_vk_state(copy.old_state);
-    const VkStateInfo to = to_vk_state(copy.new_state);
+    const VkStateInfo from = m_device->state_info(copy.old_state);
+    const VkStateInfo to = m_device->state_info(copy.new_state);
     // Everything here is one family's, so no ownership changes hands. The
     // first scope reaches back over every graphics submit before this one,
     // which is what keeps an earlier frame's sampling off these texels.
@@ -1177,7 +1177,7 @@ u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
 
   nx::small_vector<VkImageMemoryBarrier2, 32> images;
   for (const ImageAcquire &acq : m_image_acquires) {
-    const VkStateInfo dst = to_vk_state(acq.new_state);
+    const VkStateInfo dst = m_device->state_info(acq.new_state);
     VkImageMemoryBarrier2 barrier = whole_image_barrier(acq.image, acq.aspect);
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
     barrier.srcAccessMask = VK_ACCESS_2_NONE;
@@ -1192,7 +1192,7 @@ u64 VulkanUploader::record_acquires(const VkCommandBuffer graphics_cmd) {
 
   nx::small_vector<VkBufferMemoryBarrier2, 16> buffers;
   for (const BufferAcquire &acq : m_buffer_acquires) {
-    const VkStateInfo dst = to_vk_state(acq.new_state);
+    const VkStateInfo dst = m_device->state_info(acq.new_state);
     VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
     barrier.srcAccessMask = VK_ACCESS_2_NONE;

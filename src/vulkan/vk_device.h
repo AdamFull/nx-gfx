@@ -218,6 +218,10 @@ public:
                      u32 stride = 0);
   void draw_indexed_indirect(BufferHandle buffer, u64 offset = 0,
                              u32 draw_count = 1, u32 stride = 0);
+  /// DrawMeshTasksIndirectCommand records, for a mesh pipeline; nothing where
+  /// the device has no mesh shaders.
+  void draw_mesh_tasks_indirect(BufferHandle buffer, u64 offset = 0,
+                                u32 draw_count = 1, u32 stride = 0);
   void dispatch_indirect(BufferHandle buffer, u64 offset = 0);
 
   void barrier(const TextureBarrier *textures, u32 texture_count,
@@ -353,6 +357,17 @@ public:
   }
 
   [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
+  [[nodiscard]] VkStateInfo
+  state_info(const ResourceState state) const noexcept {
+    VkPipelineStageFlags2 shaders = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    // Naming a stage of a feature the device did not enable is invalid.
+    if (m_caps.mesh_shaders)
+      shaders |= VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                 VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
+    return to_vk_state(state, shaders);
+  }
   [[nodiscard]] GpuDeviceStatus device_status() const noexcept {
     return m_gpu_crash.status();
   }

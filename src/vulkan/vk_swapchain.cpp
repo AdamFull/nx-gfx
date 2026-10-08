@@ -916,7 +916,7 @@ void VulkanDevice::finish_backbuffer(VulkanSwapchain &sc,
     // General first, then handed to D3D11: a release and the acquire that
     // matches it must describe the same layout transition, and this way both
     // describe none.
-    const VkStateInfo from = to_vk_state(image->state);
+    const VkStateInfo from = state_info(image->state);
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     barrier.srcStageMask = from.stage;
     barrier.srcAccessMask = from.access;
@@ -951,8 +951,8 @@ void VulkanDevice::finish_backbuffer(VulkanSwapchain &sc,
   // The image must be in PRESENT_SRC before handing it to the present engine.
   if (image->state == ResourceState::Present)
     return;
-  const VkStateInfo from = to_vk_state(image->state);
-  const VkStateInfo to = to_vk_state(ResourceState::Present);
+  const VkStateInfo from = state_info(image->state);
+  const VkStateInfo to = state_info(ResourceState::Present);
   VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   barrier.srcStageMask = from.stage;
   barrier.srcAccessMask = from.access;

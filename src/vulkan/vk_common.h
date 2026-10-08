@@ -77,7 +77,10 @@ struct VkStateInfo {
   VkAccessFlags2 access;
 };
 
-[[nodiscard]] VkStateInfo to_vk_state(ResourceState state) noexcept;
+/// @p shader_stages is every shader stage the device runs: a shader state
+/// orders all of them.
+[[nodiscard]] VkStateInfo
+to_vk_state(ResourceState state, VkPipelineStageFlags2 shader_stages) noexcept;
 
 [[nodiscard]] VkAccessFlags2 to_buffer_access(VkAccessFlags2 access) noexcept;
 

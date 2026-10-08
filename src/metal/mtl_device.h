@@ -147,6 +147,10 @@ public:
                      u32 stride = 0);
   void draw_indexed_indirect(BufferHandle buffer, u64 offset = 0,
                              u32 draw_count = 1, u32 stride = 0);
+  /// DrawMeshTasksIndirectCommand records, for a mesh pipeline; nothing where
+  /// the device has no mesh shaders.
+  void draw_mesh_tasks_indirect(BufferHandle buffer, u64 offset = 0,
+                                u32 draw_count = 1, u32 stride = 0);
   void dispatch_indirect(BufferHandle buffer, u64 offset = 0);
 
   void barrier(const TextureBarrier *textures, u32 texture_count,

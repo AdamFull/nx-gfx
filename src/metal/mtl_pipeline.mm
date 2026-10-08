@@ -762,6 +762,11 @@ void MetalCommandContext::draw_indirect(const BufferHandle handle,
   }
 }
 
+void MetalCommandContext::draw_mesh_tasks_indirect(BufferHandle, u64, u32,
+                                                   u32) {
+  nx::loge(log_rhi, "draw_mesh_tasks_indirect: Metal has no mesh pipelines");
+}
+
 void MetalCommandContext::draw_indexed_indirect(const BufferHandle handle,
                                                 const u64 offset,
                                                 const u32 draw_count,
