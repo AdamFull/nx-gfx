@@ -102,6 +102,16 @@ public extension NxPtr<uint>
         InterlockedAdd(*word, value, before);
         return before;
     }
+
+    /// Keeps the greater of word @p index and @p value in it, and returns
+    /// what it held before.
+    public uint atomic_max(uint index, uint value)
+    {
+        uint* word = (uint*)element_address(index);
+        uint before;
+        InterlockedMax(*word, value, before);
+        return before;
+    }
 }
 
 public extension NxPtr<int>
