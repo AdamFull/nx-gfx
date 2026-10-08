@@ -154,6 +154,7 @@ struct DeviceRoutes {
   bool image_int64_atomics = false;
   bool fragment_barycentrics = false;
   bool sample_rate_shading = false;
+  bool fragment_stores = false;
   bool subgroup_size_control = false;
   bool acceleration_structures = false;
   bool ray_queries = false;

@@ -329,6 +329,7 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   out.storage_image_extended_formats =
       features.features.shaderStorageImageExtendedFormats != 0;
   out.sample_rate_shading = features.features.sampleRateShading != 0;
+  out.fragment_stores = features.features.fragmentStoresAndAtomics != 0;
   if (ext_device_fault_khr && fault_khr.deviceFault) {
     out.device_fault = VulkanFaultRoute::Khr;
     out.device_fault_vendor_binary = fault_khr.deviceFaultVendorBinary != 0;
@@ -731,6 +732,7 @@ bool VulkanDevice::select_physical_device() {
   m_caps.image_int64_atomics = m_routes.image_int64_atomics;
   m_caps.fragment_barycentrics = m_routes.fragment_barycentrics;
   m_caps.sample_shading = m_routes.sample_rate_shading;
+  m_caps.fragment_stores = m_routes.fragment_stores;
   m_caps.acceleration_structures = m_routes.acceleration_structures;
   m_caps.ray_queries = m_routes.ray_queries;
   nx::logd(nx::log::rhi,
@@ -1020,6 +1022,8 @@ bool VulkanDevice::create_logical_device(
       m_routes.storage_image_extended_formats ? VK_TRUE : VK_FALSE;
   features.features.sampleRateShading =
       m_routes.sample_rate_shading ? VK_TRUE : VK_FALSE;
+  features.features.fragmentStoresAndAtomics =
+      m_routes.fragment_stores ? VK_TRUE : VK_FALSE;
 
   features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;

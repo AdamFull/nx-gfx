@@ -329,6 +329,8 @@ struct DeviceCaps {
   bool fragment_barycentrics = false;
   /// GraphicsPipelineDesc::sample_shading.
   bool sample_shading = false;
+  /// A fragment shader may store to and atomically update buffers.
+  bool fragment_stores = false;
   bool acceleration_structures = false;
   /// Implies acceleration_structures.
   bool ray_queries = false;
