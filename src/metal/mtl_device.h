@@ -8,6 +8,7 @@
 #include "rendering/rhi/gpu_crash.h"
 #include "rendering/rhi/handles.h"
 #include "rendering/rhi/image/image.h"
+#include "rendering/rhi/native.h"
 #include "rendering/rhi/native_driver.h"
 #include "rendering/rhi/pipeline_compiler.h"
 #include "rendering/rhi/shader_reflect.h"
@@ -35,6 +36,9 @@ struct DeviceDesc {
   nx::string_view pipeline_cache_path;
   NativeDriverView native_driver;
   u32 frames_in_flight = 2;
+  /// Asked what to enable before the device is made; Metal has nothing a
+  /// client must enable first, so none is asked yet.
+  std::span<NativeDeviceClient *const> native_clients{};
 };
 
 struct ReadbackResult {

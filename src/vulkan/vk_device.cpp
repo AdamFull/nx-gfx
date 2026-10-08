@@ -85,6 +85,23 @@ listed(const nx::small_vector<VkExtensionProperties, 128> &all,
   return false;
 }
 
+template <usize N>
+[[nodiscard]] bool named(const nx::small_vector<const char *, N> &names,
+                         const char *name) noexcept {
+  for (const char *const one : names)
+    if (std::strcmp(one, name) == 0)
+      return true;
+  return false;
+}
+
+/// The last link of a pNext chain a client may have added to.
+[[nodiscard]] void **chain_end(void **link) noexcept {
+  while (*link != nullptr)
+    link = reinterpret_cast<void **>(
+        &static_cast<VkBaseOutStructure *>(*link)->pNext);
+  return link;
+}
+
 } // namespace
 
 DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
@@ -446,6 +463,18 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
     }
   }
 
+  NativeNames requested;
+  for (NativeDeviceClient *const client : desc.native_clients)
+    client->instance_extensions(NativeApi::Vulkan, requested);
+  for (const nx::string &name : requested) {
+    if (named(extensions, name.c_str()))
+      continue;
+    if (has_extension(available, name.c_str()))
+      extensions.push_back(name.c_str());
+    else
+      nx::logd(nx::log::rhi, "instance extension {} is not available", name);
+  }
+
   VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
   info.pApplicationInfo = &app_info;
   info.enabledExtensionCount = nx::cast<u32>(extensions.size());
@@ -471,6 +500,9 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   }
 
   NX_VK_TRY(vkCreateInstance(&info, nullptr, &m_instance));
+  m_native_extensions.clear();
+  for (const char *const name : extensions)
+    m_native_extensions.emplace_back(name);
 
   // Loads every instance-level entry point; must precede any other vk* call.
   volkLoadInstance(m_instance);
@@ -739,7 +771,8 @@ bool VulkanDevice::select_physical_device() {
   return true;
 }
 
-bool VulkanDevice::create_logical_device() {
+bool VulkanDevice::create_logical_device(
+    const std::span<NativeDeviceClient *const> clients) {
   u32 family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &family_count,
                                            nullptr);
@@ -991,6 +1024,31 @@ bool VulkanDevice::create_logical_device() {
   features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
+  // After the device's own, before video decode's, which a retry cuts off.
+  NativeNames requested;
+  if (!clients.empty()) {
+    u32 count = 0;
+    vkEnumerateDeviceExtensionProperties(m_physical_device, nullptr, &count,
+                                         nullptr);
+    nx::small_vector<VkExtensionProperties, 128> available(count);
+    vkEnumerateDeviceExtensionProperties(m_physical_device, nullptr, &count,
+                                         available.data());
+    const NativeDevice adapter = native();
+    for (NativeDeviceClient *const client : clients)
+      client->device_extensions(adapter, requested);
+    for (const nx::string &name : requested) {
+      if (named(device_extensions, name.c_str()))
+        continue;
+      if (listed(available, name.c_str()))
+        device_extensions.push_back(name.c_str());
+      else
+        nx::logd(nx::log::rhi, "device extension {} is not available", name);
+    }
+    for (NativeDeviceClient *const client : clients)
+      client->device_features(adapter, &features);
+    tail = chain_end(&features.pNext);
+  }
+
   const u32 video_family = find_video_decode_family();
   const bool try_video = video_family != INVALID_FAMILY &&
                          video_family != graphics && video_family != compute &&
@@ -1040,10 +1098,19 @@ bool VulkanDevice::create_logical_device() {
     video_enabled = false;
     created = vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
   }
+  if (created != VK_SUCCESS && !clients.empty()) {
+    nx::logw(nx::log::rhi,
+             "the device cannot be made with what its native clients ask for "
+             "({}); it is made without",
+             vk_result_string(created));
+    return create_logical_device({});
+  }
   if (created != VK_SUCCESS) {
     nx::logc(nx::log::rhi, "vkCreateDevice failed: {}", nx::cast<i32>(created));
     return false;
   }
+  for (const char *const name : device_extensions)
+    m_native_extensions.emplace_back(name);
 
   volkLoadDevice(m_device);
   if (!route_promoted_entry_points())
@@ -1214,7 +1281,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
   }
 
   if (!create_instance(desc) || !select_physical_device() ||
-      !create_logical_device() || !create_allocator() ||
+      !create_logical_device(desc.native_clients) || !create_allocator() ||
       !create_bindless_heap() ||
       !create_pipeline_cache(desc.pipeline_cache_path)) {
     if (m_init_error.empty())
@@ -1588,6 +1655,65 @@ void VulkanDevice::collect_garbage(
 
     m_pending_deletes.erase(m_pending_deletes.begin() + nx::cast<isize>(i - 1));
   }
+}
+
+NativeDevice VulkanDevice::native() const noexcept {
+  return {
+      .api = NativeApi::Vulkan,
+      .instance = m_instance,
+      .adapter = m_physical_device,
+      .device = m_device,
+      .queue = m_queues[nx::cast<usize>(QueueType::Graphics)],
+      .queue_family = m_queue_families[nx::cast<usize>(QueueType::Graphics)],
+      .api_version = m_caps.api_version,
+      .get_instance_proc_addr = reinterpret_cast<void *>(vkGetInstanceProcAddr),
+      .get_device_proc_addr = reinterpret_cast<void *>(vkGetDeviceProcAddr),
+  };
+}
+
+NativeTexture
+VulkanDevice::native_texture(const TextureHandle handle) const noexcept {
+  const VulkanTexture *const texture = this->texture(handle);
+  if (texture == nullptr || texture->image == VK_NULL_HANDLE)
+    return {};
+  return {
+      .image = texture->image,
+      .view = texture->srv,
+      .format = nx::cast<u32>(to_vk_format(texture->format)),
+      .width = texture->width,
+      .height = texture->height,
+      .mip_levels = texture->mip_levels,
+      .layers = texture->layers,
+  };
+}
+
+u32 VulkanDevice::native_layout(const ResourceState state) const noexcept {
+  return nx::cast<u32>(to_vk_state(state).layout);
+}
+
+bool VulkanDevice::native_extension(const nx::string_view name) const noexcept {
+  for (const nx::string &one : m_native_extensions)
+    if (one == name)
+      return true;
+  return false;
+}
+
+void *VulkanCommandContext::begin_native() noexcept {
+  if (m_in_render_pass) {
+    nx::loge(nx::log::rhi, "begin_native: inside a render pass");
+    return nullptr;
+  }
+  return m_cmd;
+}
+
+void VulkanCommandContext::end_native() noexcept {
+  if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
+    return;
+  const VkDescriptorSet set = m_device->bindless_set();
+  for (const VkPipelineBindPoint point :
+       {VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_BIND_POINT_COMPUTE})
+    vkCmdBindDescriptorSets(m_cmd, point, m_device->pipeline_layout(),
+                            BINDLESS_SET, 1, &set, 0, nullptr);
 }
 
 } // namespace nxe::rhi

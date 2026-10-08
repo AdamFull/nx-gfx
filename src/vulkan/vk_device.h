@@ -11,6 +11,7 @@
 #include "rendering/rhi/bindless.h"
 #include "rendering/rhi/descs.h"
 #include "rendering/rhi/handles.h"
+#include "rendering/rhi/native.h"
 #include "rendering/rhi/native_driver.h"
 #include "rendering/rhi/pipeline_compiler.h"
 #include "rendering/rhi/shader_reflect.h"
@@ -45,6 +46,8 @@ struct DeviceDesc {
   nx::string_view pipeline_cache_path;
   NativeDriverView native_driver;
   u32 frames_in_flight = 2;
+  /// Asked what to enable before the device is made; only during init().
+  std::span<NativeDeviceClient *const> native_clients{};
 };
 
 /// Which queue family owns an image, as far as the uploader's dedicated-
@@ -239,6 +242,13 @@ public:
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
                         f32 b = 1.f);
   void pop_debug_group();
+
+  /// The command buffer itself (VkCommandBuffer), for a vendor library to
+  /// record into between here and end_native(); outside a render pass.
+  [[nodiscard]] void *begin_native() noexcept;
+  /// Takes the commands back: what the library bound in their place is
+  /// bound again.
+  void end_native() noexcept;
 
 private:
   friend class VulkanDevice;
@@ -544,6 +554,16 @@ public:
   }
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
+
+  /// The device's own objects (see native.h).
+  [[nodiscard]] NativeDevice native() const noexcept;
+  /// @p handle's own objects; empty where it is not live.
+  [[nodiscard]] NativeTexture
+  native_texture(TextureHandle handle) const noexcept;
+  /// The VkImageLayout a texture the graph left in @p state is in.
+  [[nodiscard]] u32 native_layout(ResourceState state) const noexcept;
+  /// Whether the instance or the device was made with extension @p name.
+  [[nodiscard]] bool native_extension(nx::string_view name) const noexcept;
   [[nodiscard]] VulkanTexture *texture_mut(TextureHandle handle) noexcept;
 
   [[nodiscard]] const ShaderReflection &
@@ -592,7 +612,7 @@ private:
   bool create_instance(const DeviceDesc &desc);
   bool rebuild_debug_messenger(bool address_bindings) noexcept;
   bool select_physical_device();
-  bool create_logical_device();
+  bool create_logical_device(std::span<NativeDeviceClient *const> clients);
   [[nodiscard]] u32 find_video_decode_family() const;
   [[nodiscard]] bool route_promoted_entry_points() noexcept;
   bool create_allocator();
@@ -656,6 +676,8 @@ private:
   DeviceInitReport m_init_report;
   bool m_debug_utils = false;
   bool m_sync_validation = false;
+  /// Every instance and device extension enabled, the clients' among them.
+  nx::small_vector<nx::string, 48> m_native_extensions;
   mutable VulkanGpuCrashReporter m_gpu_crash;
   VulkanGpuProfiler m_gpu_profiler;
   VulkanGpuProfiler m_copy_profiler;
