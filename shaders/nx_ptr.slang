@@ -114,6 +114,19 @@ public extension NxPtr<uint>
     }
 }
 
+public extension NxPtr<uint64_t>
+{
+    /// Keeps the greater of word @p index and @p value in it, and returns
+    /// what it held before.
+    public uint64_t atomic_max(uint index, uint64_t value)
+    {
+        uint64_t* word = (uint64_t*)element_address(index);
+        uint64_t before;
+        InterlockedMax(*word, value, before);
+        return before;
+    }
+}
+
 public extension NxPtr<int>
 {
     /// Adds @p value to word @p index and returns what it held before.
