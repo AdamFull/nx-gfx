@@ -183,9 +183,11 @@ struct BlendState {
 
 struct GraphicsPipelineDesc {
   nx::string_view name = "pipeline";
-  /// Exactly one of vertex and mesh. A mesh pipeline has no vertex input or
-  /// topology of its own, needs DeviceCaps::mesh_shaders and draws only
-  /// through draw_mesh_tasks_indirect.
+  /// Exactly one of vertex and mesh has a shader; a description without
+  /// shaders yet (GpuPipelineRuntime's) names a mesh pipeline by an empty
+  /// vertex entry. A mesh pipeline has no vertex input or topology of its
+  /// own, needs DeviceCaps::mesh_shaders and draws only through
+  /// draw_mesh_tasks_indirect.
   ShaderEntry vertex;
   ShaderEntry mesh;
   ShaderEntry fragment;
