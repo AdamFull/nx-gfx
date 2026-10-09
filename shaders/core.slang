@@ -8,6 +8,19 @@
 
 public static const uint kInvalidIndex = 0xFFFFFFFF;
 
+// A half float's bits as a float, by hand: f16tof32 makes a module declare
+// the SPIR-V Float16 capability, an optional device feature, and nothing
+// here needs half arithmetic, only half storage. Zero and subnormals read as
+// zero; infinities and NaN are not carried.
+public float nx_unpack_half(uint half_bits) {
+    const uint exponent = (half_bits >> 10u) & 0x1Fu;
+    if (exponent == 0u)
+        return 0.0;
+    return asfloat(((half_bits & 0x8000u) << 16u) |
+                   ((exponent + 127u - 15u) << 23u) |
+                   ((half_bits & 0x3FFu) << 13u));
+}
+
 #if defined(NX_TARGET_METAL)
 
 // Declaration order fixes the byte offsets the C++ side writes slots at, so it
