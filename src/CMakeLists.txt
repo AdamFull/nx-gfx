@@ -41,6 +41,8 @@ set(NX_RHI_HEADERS
         device.h
         gpu_crash.h
         handles.h
+        key_sort.h
+        key_sort_interop.h
         native_driver.h
         pipeline_compiler.h
         rhi.h
@@ -51,6 +53,7 @@ set(NX_RHI_HEADERS
 
 set(NX_RHI_SOURCES
         gpu_crash.cpp
+        key_sort.cpp
         shader_loading.cpp
         shader_reflect.cpp
         shader_reflect_json.cpp
@@ -109,7 +112,7 @@ add_library(nx::rhi ALIAS nx_rhi)
 
 target_link_libraries(nx_rhi
         PUBLIC nx::foundation nx::rhi_image
-        PRIVATE nx::compile_options)
+        PRIVATE nx::compile_options nx::glm)
 
 if (APPLE)
     target_compile_definitions(nx_rhi PUBLIC NX_RHI_METAL=1)
