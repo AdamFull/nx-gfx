@@ -21,6 +21,25 @@ public float nx_unpack_half(uint half_bits) {
                    ((half_bits & 0x3FFu) << 13u));
 }
 
+public uint nx_hash_u32(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+public float nx_rand01(uint seed) {
+    return float(nx_hash_u32(seed) & 0xFFFFFFu) * (1.0 / 16777216.0);
+}
+
+public float4 nx_unpack_rgba8(uint c) {
+    return float4(float((c >> 0) & 0xFFu), float((c >> 8) & 0xFFu),
+                  float((c >> 16) & 0xFFu), float((c >> 24) & 0xFFu)) *
+           (1.0 / 255.0);
+}
+
 #if defined(NX_TARGET_METAL)
 
 // Declaration order fixes the byte offsets the C++ side writes slots at, so it
