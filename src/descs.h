@@ -130,6 +130,10 @@ struct RenderAttachment {
   StoreOp store = StoreOp::Store;
   ClearValue clear = {};
   TextureHandle resolve_target;
+  /// A depth attachment the pass only tests, in its read-only state
+  /// (ResourceState::DepthStencilRead) and storing nothing; the pass's
+  /// pipelines must not write depth.
+  bool read_only = false;
 };
 
 inline constexpr u32 MAX_COLOR_ATTACHMENTS = 8;

@@ -920,9 +920,15 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     if (const VulkanTexture *texture =
             m_device->texture(desc.depth_stencil.texture)) {
       depth.imageView = texture->rtv;
-      depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+      // As the graph's barrier left it: a read-only attachment stays in the
+      // read-only layout, and storing would be a write.
+      const bool read_only = desc.depth_stencil.read_only;
+      depth.imageLayout =
+          read_only ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
       depth.loadOp = to_vk_load_op(desc.depth_stencil.load);
-      depth.storeOp = to_vk_store_op(desc.depth_stencil.store);
+      depth.storeOp = read_only ? VK_ATTACHMENT_STORE_OP_NONE
+                                : to_vk_store_op(desc.depth_stencil.store);
       depth.clearValue.depthStencil.depth =
           desc.depth_stencil.clear.depth_stencil.depth;
       depth.clearValue.depthStencil.stencil =
