@@ -12,6 +12,9 @@ inline constexpr u32 BINDLESS_BINDING_SAMPLERS = NX_BINDLESS_BINDING_SAMPLERS;
 inline constexpr u32 BINDLESS_BINDING_TEXTURES = NX_BINDLESS_BINDING_TEXTURES;
 inline constexpr u32 BINDLESS_BINDING_RW_TEXTURES =
     NX_BINDLESS_BINDING_RW_TEXTURES;
+inline constexpr u32 BINDLESS_BINDING_GLOBALS = NX_BINDLESS_BINDING_GLOBALS;
+
+inline constexpr u32 NULL_PAGE_BYTES = NX_NULL_PAGE_BYTES;
 
 /// Upper bounds on each array; the actual size is min(this, device limit).
 /// TEXTURES must exceed the peak count of simultaneously live textures because

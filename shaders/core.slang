@@ -50,9 +50,14 @@ public struct BindlessTables {
     public RWTexture2D<float4> rw_textures[NX_BINDLESS_MAX_RW_TEXTURES];
     public RWTexture2D<uint4> rw_uint_textures[NX_BINDLESS_MAX_RW_TEXTURES];
     public SamplerState samplers[NX_BINDLESS_MAX_SAMPLERS];
+    public uint64_t null_address;
 };
 
 public ParameterBlock<BindlessTables> g_bindless;
+
+public uint64_t nx_null_address() {
+    return g_bindless.null_address;
+}
 
 public Texture2D<float4> get_texture(uint index) {
     return g_bindless.textures[index];
@@ -81,6 +86,17 @@ __DynamicResource<__DynamicResourceKind.General> g_textures[];
 [[vk::binding(NX_BINDLESS_BINDING_RW_TEXTURES, NX_BINDLESS_SET)]]
 __DynamicResource<__DynamicResourceKind.General> g_rw_textures[];
 
+struct NxGlobals {
+    uint64_t null_address;
+};
+
+[[vk::binding(NX_BINDLESS_BINDING_GLOBALS, NX_BINDLESS_SET)]]
+ConstantBuffer<NxGlobals> g_globals;
+
+public uint64_t nx_null_address() {
+    return g_globals.null_address;
+}
+
 public Texture2D<float4> get_texture(uint index) {
     return g_textures[NonUniformResourceIndex(index)]
         .asOpaqueDescriptor<Texture2D<float4>>();
@@ -102,6 +118,13 @@ public SamplerState get_sampler(uint index) {
 }
 
 #endif
+
+// The address to read @p offset bytes past @p address from. Mali compilers
+// move device loads above the check that guards them, so a null address must
+// read the zeroed null page rather than fault.
+public uint64_t nx_readable(uint64_t address, uint64_t offset) {
+    return address != 0 ? address + offset : nx_null_address();
+}
 
 float nx_sample_2d(uint texture, uint sampler, float2 uv, float) {
     return get_texture(texture).Sample(get_sampler(sampler), uv).x;

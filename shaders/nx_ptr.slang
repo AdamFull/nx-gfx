@@ -14,6 +14,7 @@ F load_raw<F>(uint64_t address)
     // yields a physical pointer-to-struct; copying as uint words never forms
     // one. Do not "simplify" back to *(F*).
     static_assert(sizeof(F) % sizeof(uint) == 0, "type must be 32-bit-addressable");
+    static_assert(sizeof(F) <= NX_NULL_PAGE_BYTES, "a null read must stay inside the null page");
     static const uint word_count = sizeof(F) / sizeof(uint);
     static const uint vector_count = word_count / 4u;
     static const uint vector_words = vector_count * 4u;
@@ -60,7 +61,7 @@ public struct NxPtr<T>
     uint64_t element_address(uint index) { return value + uint64_t(index) * stride_of<T>(); }
     uint64_t field_address(uint index, uint field_offset) { return element_address(index) + uint64_t(field_offset); }
 
-    public T load(uint index) { return load_raw<T>(element_address(index)); }
+    public T load(uint index) { return load_raw<T>(nx_readable(value, uint64_t(index) * stride_of<T>())); }
     public void store(uint index, in T newValue) { store_raw<T>(element_address(index), newValue); }
 
     public __subscript(uint index) -> T
@@ -71,7 +72,10 @@ public struct NxPtr<T>
         [nonmutating] set { store(index, newValue); }
     }
 
-    public F get_field<F>(uint index, uint field_offset) { return load_raw<F>(field_address(index, field_offset)); }
+    public F get_field<F>(uint index, uint field_offset)
+    {
+        return load_raw<F>(nx_readable(value, uint64_t(index) * stride_of<T>() + uint64_t(field_offset)));
+    }
     public void set_field<F>(uint index, uint field_offset, in F fieldValue) { store_raw<F>(field_address(index, field_offset), fieldValue); }
 }
 

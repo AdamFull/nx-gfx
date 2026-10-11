@@ -3,6 +3,8 @@
 
 #include "core/foundation/diagnostics/log.h"
 
+#include <cstring>
+
 namespace nxe::rhi {
 namespace {
 
@@ -25,21 +27,23 @@ bool VulkanDevice::create_bindless_heap() {
   const VkDescriptorBindingFlags binding_flags =
       VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-  const VkDescriptorBindingFlags flags[3] = {binding_flags, binding_flags,
-                                             binding_flags};
+  const VkDescriptorBindingFlags flags[4] = {binding_flags, binding_flags,
+                                             binding_flags, 0};
 
-  const VkDescriptorSetLayoutBinding bindings[3] = {
+  const VkDescriptorSetLayoutBinding bindings[4] = {
       {BINDLESS_BINDING_SAMPLERS, VK_DESCRIPTOR_TYPE_SAMPLER,
        m_bindless.max_samplers, VK_SHADER_STAGE_ALL, nullptr},
       {BINDLESS_BINDING_TEXTURES, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
        m_bindless.max_textures, VK_SHADER_STAGE_ALL, nullptr},
       {BINDLESS_BINDING_RW_TEXTURES, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
        m_bindless.max_rw_textures, VK_SHADER_STAGE_ALL, nullptr},
+      {BINDLESS_BINDING_GLOBALS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+       VK_SHADER_STAGE_ALL, nullptr},
   };
 
   VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info{
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
-  flags_info.bindingCount = 3;
+  flags_info.bindingCount = 4;
   flags_info.pBindingFlags = flags;
 
   VkDescriptorSetLayoutCreateInfo layout_info{
@@ -47,7 +51,7 @@ bool VulkanDevice::create_bindless_heap() {
   layout_info.pNext = &flags_info;
   layout_info.flags =
       VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-  layout_info.bindingCount = 3;
+  layout_info.bindingCount = 4;
   layout_info.pBindings = bindings;
   NX_VK_DEVICE_TRY(*this,
                    vkCreateDescriptorSetLayout(m_device, &layout_info, nullptr,
@@ -56,17 +60,18 @@ bool VulkanDevice::create_bindless_heap() {
                   VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
                   "bindless descriptor layout");
 
-  const VkDescriptorPoolSize pool_sizes[3] = {
+  const VkDescriptorPoolSize pool_sizes[4] = {
       {VK_DESCRIPTOR_TYPE_SAMPLER, m_bindless.max_samplers},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, m_bindless.max_textures},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, m_bindless.max_rw_textures},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
   };
 
   VkDescriptorPoolCreateInfo pool_info{
       VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
   pool_info.maxSets = 1;
-  pool_info.poolSizeCount = 3;
+  pool_info.poolSizeCount = 4;
   pool_info.pPoolSizes = pool_sizes;
   NX_VK_DEVICE_TRY(*this, vkCreateDescriptorPool(m_device, &pool_info, nullptr,
                                                  &m_bindless.pool));
@@ -82,6 +87,8 @@ bool VulkanDevice::create_bindless_heap() {
                    vkAllocateDescriptorSets(m_device, &alloc, &m_bindless.set));
   set_object_name(vk_handle_value(m_bindless.set),
                   VK_OBJECT_TYPE_DESCRIPTOR_SET, "bindless set");
+  if (!create_bindless_globals())
+    return false;
 
   VkPushConstantRange push_range{};
   push_range.stageFlags = VK_SHADER_STAGE_ALL;
@@ -102,6 +109,53 @@ bool VulkanDevice::create_bindless_heap() {
   nx::logd(nx::log::rhi, "bindless heap: {} samplers, {} textures, {} rw-textures",
            m_bindless.max_samplers, m_bindless.max_textures,
            m_bindless.max_rw_textures);
+  return true;
+}
+
+bool VulkanDevice::create_bindless_globals() {
+  constexpr VkDeviceSize GLOBALS_BYTES = 16;
+  constexpr VkDeviceSize NULL_PAGE_OFFSET = 256;
+
+  VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  info.size = NULL_PAGE_OFFSET + NULL_PAGE_BYTES;
+  info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+  VmaAllocationInfo allocation{};
+  NX_VK_DEVICE_TRY(
+      *this, vmaCreateBuffer(m_allocator, &info, &alloc, &m_bindless.globals,
+                             &m_bindless.globals_allocation, &allocation));
+  vmaSetAllocationName(m_allocator, m_bindless.globals_allocation,
+                       "bindless globals");
+  set_object_name(vk_handle_value(m_bindless.globals), VK_OBJECT_TYPE_BUFFER,
+                  "bindless globals and null page");
+
+  VkBufferDeviceAddressInfo address_info{
+      VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+  address_info.buffer = m_bindless.globals;
+  const u64 null_address =
+      vkGetBufferDeviceAddressKHR(m_device, &address_info) + NULL_PAGE_OFFSET;
+  auto *bytes = static_cast<u8 *>(allocation.pMappedData);
+  std::memset(bytes, 0, nx::cast<usize>(info.size));
+  std::memcpy(bytes, &null_address, sizeof(null_address));
+  NX_VK_DEVICE_TRY(*this, vmaFlushAllocation(m_allocator,
+                                             m_bindless.globals_allocation, 0,
+                                             VK_WHOLE_SIZE));
+
+  const VkDescriptorBufferInfo buffer{m_bindless.globals, 0, GLOBALS_BYTES};
+  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  write.dstSet = m_bindless.set;
+  write.dstBinding = BINDLESS_BINDING_GLOBALS;
+  write.descriptorCount = 1;
+  write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  write.pBufferInfo = &buffer;
+  vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
   return true;
 }
 

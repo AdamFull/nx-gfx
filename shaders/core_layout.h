@@ -6,6 +6,11 @@
 #define NX_BINDLESS_BINDING_SAMPLERS 0u
 #define NX_BINDLESS_BINDING_TEXTURES 1u
 #define NX_BINDLESS_BINDING_RW_TEXTURES 2u
+#define NX_BINDLESS_BINDING_GLOBALS 3u
+
+// Zeroed bytes a read through a null device address lands on instead. Large
+// enough for the biggest single read: one geometry page.
+#define NX_NULL_PAGE_BYTES (128u * 1024u)
 
 // These are ABI capacities, not per-device advertised limits. Metal lays the
 // argument-buffer arrays out at these exact sizes; Vulkan clamps the number of

@@ -110,6 +110,9 @@ struct BindlessHeap {
   u64 rw_textures_offset = 0;
   u64 rw_uint_textures_offset = 0;
   u64 samplers_offset = 0;
+  u64 null_address_offset = 0;
+  /// Zeroed bytes a shader's read through a null device address lands on.
+  id<MTLBuffer> null_page = nil;
   u32 max_textures = 0;
   u32 max_rw_textures = 0;
   u32 max_samplers = 0;

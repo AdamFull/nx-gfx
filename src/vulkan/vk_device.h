@@ -136,6 +136,9 @@ struct BindlessHeap {
   VkDescriptorPool pool = VK_NULL_HANDLE;
   VkDescriptorSetLayout layout = VK_NULL_HANDLE;
   VkDescriptorSet set = VK_NULL_HANDLE;
+  /// The globals uniform, followed by the null page its address names.
+  VkBuffer globals = VK_NULL_HANDLE;
+  VmaAllocation globals_allocation = nullptr;
   u32 max_samplers = 0;
   u32 max_textures = 0;
   u32 max_rw_textures = 0;
@@ -633,6 +636,7 @@ private:
   [[nodiscard]] bool route_promoted_entry_points() noexcept;
   bool create_allocator();
   bool create_bindless_heap();
+  bool create_bindless_globals();
   bool create_pipeline_cache(nx::string_view path);
   void save_pipeline_cache() noexcept;
   bool create_frame_contexts(u32 frames_in_flight);

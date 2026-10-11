@@ -1409,6 +1409,9 @@ void VulkanDevice::shutdown() noexcept {
     vkDestroyDescriptorSetLayout(m_device, m_bindless.layout, nullptr);
   if (m_bindless.pool != VK_NULL_HANDLE)
     vkDestroyDescriptorPool(m_device, m_bindless.pool, nullptr);
+  if (m_bindless.globals != VK_NULL_HANDLE)
+    vmaDestroyBuffer(m_allocator, m_bindless.globals,
+                     m_bindless.globals_allocation);
   m_bindless = {};
 
   for (auto &frame : m_frames) {

@@ -82,8 +82,9 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
   heap.samplers_offset =
       heap.rw_uint_textures_offset +
       nx::cast<u64>(heap.max_rw_textures) * SLOT_SIZE;
-  const u64 total =
+  heap.null_address_offset =
       heap.samplers_offset + nx::cast<u64>(heap.max_samplers) * SLOT_SIZE;
+  const u64 total = heap.null_address_offset + sizeof(u64);
 
   @autoreleasepool {
     heap.argument_buffer =
@@ -96,6 +97,21 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
     }
     heap.argument_buffer.label = @"nx2d bindless";
     std::memset([heap.argument_buffer contents], 0, nx::cast<usize>(total));
+
+    heap.null_page =
+        [state.device newBufferWithLength:NULL_PAGE_BYTES
+                                  options:MTLResourceStorageModeShared];
+    if (heap.null_page == nil) {
+      nx::loge(log_rhi, "bindless: could not allocate the null page");
+      return false;
+    }
+    heap.null_page.label = @"nx2d null page";
+    std::memset([heap.null_page contents], 0, NULL_PAGE_BYTES);
+    const u64 null_address = [heap.null_page gpuAddress];
+    std::memcpy(static_cast<u8 *>([heap.argument_buffer contents]) +
+                    heap.null_address_offset,
+                &null_address, sizeof(null_address));
+    track_resident(state, heap.null_page);
   }
 
   nx::logd(log_rhi,
