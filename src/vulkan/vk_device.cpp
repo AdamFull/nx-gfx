@@ -686,14 +686,15 @@ bool VulkanDevice::select_physical_device() {
       props.properties.limits.maxComputeWorkGroupCount[1],
       props.properties.limits.maxComputeWorkGroupCount[2],
   };
-  const VkSampleCountFlags color_samples =
-      props.properties.limits.framebufferColorSampleCounts &
-      props.properties.limits.sampledImageColorSampleCounts;
-  for (u32 sample_count = 64; sample_count >= 1; sample_count >>= 1)
-    if ((color_samples & nx::cast<VkSampleCountFlags>(sample_count)) != 0) {
-      m_caps.max_msaa_samples = sample_count;
-      break;
-    }
+  const VkPhysicalDeviceLimits &limits = props.properties.limits;
+  // VkSampleCountFlagBits are the counts themselves, bit N for N samples.
+  m_caps.msaa_sample_counts = (limits.framebufferColorSampleCounts &
+                               limits.framebufferDepthSampleCounts &
+                               limits.framebufferStencilSampleCounts &
+                               limits.sampledImageColorSampleCounts &
+                               limits.sampledImageIntegerSampleCounts &
+                               limits.sampledImageDepthSampleCounts) |
+                              VK_SAMPLE_COUNT_1_BIT;
   m_caps.max_push_constant_size = props.properties.limits.maxPushConstantsSize;
   m_caps.timestamp_period_ns = props.properties.limits.timestampPeriod;
   m_caps.timestamps = m_caps.timestamp_period_ns > 0.f &&

@@ -323,7 +323,10 @@ struct DeviceCaps {
   /// split_frame and begin_recording.
   bool parallel_recording = false;
 
-  u32 max_msaa_samples = 1;
+  /// The sample counts a multisampled target may have in every attachment
+  /// format, colour, integer and depth alike: bit N set where N samples
+  /// work. A device may skip one between its largest and 1 (Mali has no 2).
+  u32 msaa_sample_counts = 1;
 
   /// What 3D may use where the device has it, each enabled at device
   /// creation when present. Metal reports none of them until its 3D track.
@@ -357,6 +360,24 @@ struct DeviceCaps {
   u64 device_local_memory = 0;
   f32 timestamp_period_ns = 0.f;
 };
+
+/// The most samples a target may have in @p counts (DeviceCaps::
+/// msaa_sample_counts); 1 at least.
+[[nodiscard]] constexpr u32 max_samples(const u32 counts) noexcept {
+  for (u32 samples = 64; samples > 1; samples >>= 1)
+    if ((counts & samples) != 0)
+      return samples;
+  return 1;
+}
+
+/// The most samples in @p counts that are at most @p wanted; 1 at least.
+[[nodiscard]] constexpr u32 samples_at_most(const u32 counts,
+                                            const u32 wanted) noexcept {
+  for (u32 samples = 64; samples > 1; samples >>= 1)
+    if (samples <= wanted && (counts & samples) != 0)
+      return samples;
+  return 1;
+}
 
 /// Classifies device startup without leaking a backend-specific error model to
 /// the application. Unsupported means that the available system graphics
