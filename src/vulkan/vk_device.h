@@ -731,12 +731,12 @@ private:
   bool m_frame_active = false;
 
   nx::sync_slot_map<VulkanTexture, TextureHandle> m_textures;
-  nx::slot_map<VulkanBuffer, BufferHandle> m_buffers;
+  nx::sync_slot_map<VulkanBuffer, BufferHandle> m_buffers;
   nx::slot_map<VulkanSampler, SamplerHandle> m_samplers;
   nx::slot_map<VulkanQueryPool, QueryPoolHandle> m_query_pools;
   nx::slot_map<VulkanHeap, HeapHandle> m_heaps;
   nx::slot_map<VulkanShader, ShaderHandle> m_shaders;
-  nx::slot_map<VulkanPipeline, PipelineHandle> m_pipelines;
+  nx::sync_slot_map<VulkanPipeline, PipelineHandle> m_pipelines;
 
   VulkanUploader m_uploader;
   /// Copy-timeline value the current frame's graphics submit must wait on so

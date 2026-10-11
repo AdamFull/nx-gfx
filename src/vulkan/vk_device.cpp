@@ -1371,9 +1371,10 @@ void VulkanDevice::shutdown() noexcept {
   m_textures.for_each(
       [this](VulkanTexture &texture) { destroy_texture_now(texture); });
   m_textures.clear();
-  for (VulkanBuffer &buf : m_buffers)
+  m_buffers.for_each([this](VulkanBuffer &buf) {
     if (buf.buffer != VK_NULL_HANDLE)
       vmaDestroyBuffer(m_allocator, buf.buffer, buf.allocation);
+  });
   m_buffers.clear();
   for (VulkanSampler &sampler : m_samplers)
     if (sampler.sampler != VK_NULL_HANDLE)
@@ -1387,9 +1388,10 @@ void VulkanDevice::shutdown() noexcept {
     if (shader.module != VK_NULL_HANDLE)
       vkDestroyShaderModule(m_device, shader.module, nullptr);
   m_shaders.clear();
-  for (VulkanPipeline &pipeline : m_pipelines)
+  m_pipelines.for_each([this](VulkanPipeline &pipeline) {
     if (pipeline.pipeline != VK_NULL_HANDLE)
       vkDestroyPipeline(m_device, pipeline.pipeline, nullptr);
+  });
   m_pipelines.clear();
 
   save_pipeline_cache();

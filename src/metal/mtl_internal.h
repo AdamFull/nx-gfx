@@ -253,11 +253,11 @@ struct MetalDeviceState {
   nx::mutex pipeline_archive_lock;
 
   nx::sync_slot_map<MetalTexture, TextureHandle> textures;
-  nx::slot_map<MetalBuffer, BufferHandle> buffers;
+  nx::sync_slot_map<MetalBuffer, BufferHandle> buffers;
   nx::slot_map<MetalSampler, SamplerHandle> samplers;
   nx::slot_map<MetalHeap, HeapHandle> heaps;
   nx::slot_map<MetalShader, ShaderHandle> shaders;
-  nx::slot_map<MetalPipeline, PipelineHandle> pipelines;
+  nx::sync_slot_map<MetalPipeline, PipelineHandle> pipelines;
 
   /// A resource freed during frame N stays alive - handle and bindless slot
   /// included - until the GPU passes N, so a recycled index cannot stomp a slot

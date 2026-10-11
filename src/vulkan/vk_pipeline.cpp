@@ -688,7 +688,7 @@ PipelineHandle VulkanDevice::publish_pipeline(CompiledPipeline &&opaque) {
   PipelineHandle handle;
   {
     const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
-    handle = m_pipelines.insert(pipeline);
+    handle = m_pipelines.insert(VulkanPipeline(pipeline));
   }
   if (!handle.valid()) {
     vkDestroyPipeline(m_device, pipeline.pipeline, nullptr);

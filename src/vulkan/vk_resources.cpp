@@ -531,7 +531,7 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
   BufferHandle handle;
   {
     const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
-    handle = m_buffers.insert(buffer);
+    handle = m_buffers.insert(VulkanBuffer(buffer));
   }
   set_object_name(vk_handle_value(buffer.buffer), VK_OBJECT_TYPE_BUFFER,
                   desc.name);

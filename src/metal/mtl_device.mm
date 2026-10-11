@@ -1071,7 +1071,7 @@ BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
   if (!handle.valid())
     return {};
 
-  MetalBuffer &stored = m_state->buffers[handle];
+  MetalBuffer &stored = *m_state->buffers.try_get(handle);
   if (stored.bindless_visible && !stored.heap_backed)
     track_resident(*m_state, stored.buffer);
 
