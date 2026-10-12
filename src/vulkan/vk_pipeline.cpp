@@ -241,7 +241,7 @@ void VulkanDevice::save_pipeline_cache() noexcept {
     return;
 
   const auto written =
-      nx::fs::file_write(m_pipeline_cache_path, {data.data(), size});
+      nx::fs::file_write_atomic(m_pipeline_cache_path, {data.data(), size});
   if (written)
     nx::logd(nx::log::rhi, "pipeline cache: saved {} bytes", size);
   else
@@ -551,7 +551,8 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
   compiled.m_device = m_device;
   compiled.m_bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
   compiled.m_name = job.name;
-  const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
+  // The cache is created without EXTERNALLY_SYNCHRONIZED, so the driver
+  // guards it: a lock here would run every compile one at a time.
   if (NX_VK_DEVICE_CHECK(
           *this, vkCreateGraphicsPipelines(m_device, m_pipeline_cache, 1, &info,
                                            nullptr, &compiled.m_pipeline)) !=
@@ -663,7 +664,6 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
   compiled.m_device = m_device;
   compiled.m_bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
   compiled.m_name = job.name;
-  const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
   if (NX_VK_DEVICE_CHECK(
           *this, vkCreateComputePipelines(m_device, m_pipeline_cache, 1, &info,
                                           nullptr, &compiled.m_pipeline)) !=

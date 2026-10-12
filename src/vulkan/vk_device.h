@@ -458,6 +458,8 @@ public:
   current_backbuffer(SwapchainHandle swapchain) const noexcept;
 
   void wait_idle() noexcept;
+  /// Writes the driver's pipeline cache now, from any thread.
+  void save_pipeline_cache() noexcept;
 
   /// Frame work up to @p serial may name resources and has not reached this
   /// device: whatever is destroyed from now on outlives it, however idle the
@@ -639,7 +641,6 @@ private:
   bool create_bindless_heap();
   bool create_bindless_globals();
   bool create_pipeline_cache(nx::string_view path);
-  void save_pipeline_cache() noexcept;
   bool create_frame_contexts(u32 frames_in_flight);
 
   bool m_headless_frame = false;

@@ -262,6 +262,9 @@ public:
   current_backbuffer(SwapchainHandle swapchain) const noexcept;
 
   void wait_idle() noexcept;
+  /// Metal keeps no pipeline cache of the engine's; the system caches
+  /// compiled shaders itself.
+  void save_pipeline_cache() noexcept {}
 
   /// See VulkanDevice::hold_retirements.
   void hold_retirements(u64 serial) noexcept;
