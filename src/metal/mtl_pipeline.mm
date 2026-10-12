@@ -621,6 +621,16 @@ void MetalCommandContext::bind_pipeline(const PipelineHandle handle) {
   ctx_slot().has_bound_pipeline = true;
 }
 
+void MetalCommandContext::set_cull_mode(const CullMode cull) {
+  if (m_state != nullptr && ctx_slot().encoder != nil)
+    [ctx_slot().encoder setCullMode:to_mtl_cull(cull)];
+}
+
+void MetalCommandContext::set_front_face(const FrontFace face) {
+  if (m_state != nullptr && ctx_slot().encoder != nil)
+    [ctx_slot().encoder setFrontFacingWinding:to_mtl_winding(face)];
+}
+
 void MetalCommandContext::push_constants(const void *data, const u32 size,
                                          const u32 offset) {
   if (m_state == nullptr || data == nullptr || size == 0)

@@ -140,6 +140,8 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       listed(available, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
   const bool ext_depth_stencil_resolve =
       listed(available, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+  const bool ext_extended_dynamic_state =
+      listed(available, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
   const bool ext_device_fault_khr =
       listed(available, VK_KHR_DEVICE_FAULT_EXTENSION_NAME);
   const bool ext_device_fault_ext =
@@ -185,6 +187,8 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
   VkPhysicalDeviceSynchronization2Features sync2{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
+  VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
   VkPhysicalDeviceScalarBlockLayoutFeatures scalar{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES};
   VkPhysicalDeviceShaderDrawParametersFeatures draw_params{
@@ -228,6 +232,8 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       chain(dynamic);
     if (ext_synchronization2)
       chain(sync2);
+    if (ext_extended_dynamic_state)
+      chain(extended_dynamic);
   }
 
   if (ext_device_fault_khr)
@@ -288,6 +294,9 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   const bool has_sync2 =
       out.core_13 ? features13.synchronization2 != 0
                   : ext_synchronization2 && sync2.synchronization2 != 0;
+  const bool has_extended_dynamic =
+      out.core_13 || (ext_extended_dynamic_state &&
+                      extended_dynamic.extendedDynamicState != 0);
 
   const auto require = [&out](const bool have, const nx::string_view what) {
     if (!have)
@@ -300,6 +309,7 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   require(has_scalar_layout, "scalar block layout");
   require(has_dynamic, "dynamic rendering");
   require(has_sync2, "synchronization2");
+  require(has_extended_dynamic, "extended dynamic state");
   require(draw_params.shaderDrawParameters != 0, "shader draw parameters");
   require(features.features.samplerAnisotropy != 0, "sampler anisotropy");
   require(features.features.multiDrawIndirect != 0, "multi-draw indirect");
@@ -632,9 +642,10 @@ bool VulkanDevice::select_physical_device() {
     }
     nx::logc(nx::log::rhi,
              "no usable Vulkan device. The floor is {}.{} with dynamic "
-             "rendering, synchronization2, timeline semaphores, buffer device "
-             "address, descriptor indexing and scalar block layout - by core "
-             "feature or by extension, whichever the device offers",
+             "rendering, synchronization2, extended dynamic state, timeline "
+             "semaphores, buffer device address, descriptor indexing and "
+             "scalar block layout - by core feature or by extension, "
+             "whichever the device offers",
              VK_API_VERSION_MAJOR(REQUIRED_API_VERSION),
              VK_API_VERSION_MINOR(REQUIRED_API_VERSION));
     for (const nx::string &why : rejected)
@@ -770,8 +781,9 @@ bool VulkanDevice::select_physical_device() {
            m_caps.device_local_memory / (1024 * 1024));
   nx::logd(nx::log::rhi, "features: {}",
            m_routes.core_13   ? "core 1.3"
-           : m_routes.core_12 ? "core 1.2, dynamic rendering and "
-                                "synchronization2 by extension"
+           : m_routes.core_12 ? "core 1.2, dynamic rendering, "
+                                "synchronization2 and extended dynamic state "
+                                "by extension"
                               : "1.1, everything above it by extension");
   return true;
 }
@@ -861,6 +873,8 @@ bool VulkanDevice::create_logical_device(
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
   VkPhysicalDeviceSynchronization2Features sync2{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
+  VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
   VkPhysicalDeviceFaultFeaturesKHR fault_khr{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_KHR};
   VkPhysicalDeviceFaultFeaturesEXT fault_ext{
@@ -939,10 +953,13 @@ bool VulkanDevice::create_logical_device(
   } else {
     dynamic.dynamicRendering = VK_TRUE;
     sync2.synchronization2 = VK_TRUE;
+    extended_dynamic.extendedDynamicState = VK_TRUE;
     chain(dynamic);
     chain(sync2);
+    chain(extended_dynamic);
     device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+    device_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
   }
 
   if (m_gpu_crash.enabled()) {
@@ -1178,6 +1195,10 @@ bool VulkanDevice::route_promoted_entry_points() noexcept {
     vkCmdWriteTimestamp2KHR =
         reinterpret_cast<PFN_vkCmdWriteTimestamp2KHR>(vkCmdWriteTimestamp2);
     vkQueueSubmit2KHR = reinterpret_cast<PFN_vkQueueSubmit2KHR>(vkQueueSubmit2);
+    vkCmdSetCullModeEXT =
+        reinterpret_cast<PFN_vkCmdSetCullModeEXT>(vkCmdSetCullMode);
+    vkCmdSetFrontFaceEXT =
+        reinterpret_cast<PFN_vkCmdSetFrontFaceEXT>(vkCmdSetFrontFace);
   }
 
   nx::small_vector<nx::string_view, 8> missing;
@@ -1194,6 +1215,8 @@ bool VulkanDevice::route_promoted_entry_points() noexcept {
   require(vkCmdPipelineBarrier2KHR, "vkCmdPipelineBarrier2KHR");
   require(vkCmdWriteTimestamp2KHR, "vkCmdWriteTimestamp2KHR");
   require(vkQueueSubmit2KHR, "vkQueueSubmit2KHR");
+  require(vkCmdSetCullModeEXT, "vkCmdSetCullModeEXT");
+  require(vkCmdSetFrontFaceEXT, "vkCmdSetFrontFaceEXT");
   if (missing.empty())
     return true;
 

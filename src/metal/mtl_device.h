@@ -122,6 +122,9 @@ public:
 
   void set_viewport(const Viewport &viewport);
   void set_scissor(const Rect2D &rect);
+  /// Override the bound render pipeline's own until the next bind.
+  void set_cull_mode(CullMode cull);
+  void set_front_face(FrontFace face);
 
   void reset_queries(QueryPoolHandle, u32, u32) {}
   void write_timestamp(QueryPoolHandle, u32) {}

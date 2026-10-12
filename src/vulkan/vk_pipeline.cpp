@@ -5,6 +5,7 @@
 #include "core/foundation/platform/filesystem.h"
 
 #include <cstring>
+#include <iterator>
 #include <span>
 
 namespace nxe::rhi {
@@ -52,7 +53,8 @@ public:
 
   VulkanCompiledPipeline(VulkanCompiledPipeline &&other) noexcept
       : m_device(other.m_device), m_pipeline(other.m_pipeline),
-        m_bind_point(other.m_bind_point), m_name(std::move(other.m_name)) {
+        m_bind_point(other.m_bind_point), m_cull(other.m_cull),
+        m_front_face(other.m_front_face), m_name(std::move(other.m_name)) {
     other.m_device = VK_NULL_HANDLE;
     other.m_pipeline = VK_NULL_HANDLE;
   }
@@ -63,6 +65,8 @@ public:
       m_device = other.m_device;
       m_pipeline = other.m_pipeline;
       m_bind_point = other.m_bind_point;
+      m_cull = other.m_cull;
+      m_front_face = other.m_front_face;
       m_name = std::move(other.m_name);
       other.m_device = VK_NULL_HANDLE;
       other.m_pipeline = VK_NULL_HANDLE;
@@ -88,6 +92,8 @@ private:
   VkDevice m_device = VK_NULL_HANDLE;
   VkPipeline m_pipeline = VK_NULL_HANDLE;
   VkPipelineBindPoint m_bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  VkCullModeFlags m_cull = VK_CULL_MODE_NONE;
+  VkFrontFace m_front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
   nx::string m_name;
 };
 
@@ -117,6 +123,11 @@ VkCullModeFlags to_vk_cull(const CullMode cull) noexcept {
   default:
     return VK_CULL_MODE_NONE;
   }
+}
+
+VkFrontFace to_vk_front_face(const FrontFace face) noexcept {
+  return face == FrontFace::Clockwise ? VK_FRONT_FACE_CLOCKWISE
+                                      : VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
 
 VkPipelineColorBlendAttachmentState
@@ -483,9 +494,7 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
       VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
   raster.polygonMode = VK_POLYGON_MODE_FILL;
   raster.cullMode = to_vk_cull(job.cull);
-  raster.frontFace = job.front_face == FrontFace::Clockwise
-                         ? VK_FRONT_FACE_CLOCKWISE
-                         : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  raster.frontFace = to_vk_front_face(job.front_face);
   raster.lineWidth = 1.f;
 
   VkPipelineMultisampleStateCreateInfo multisample{
@@ -511,11 +520,14 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
   color_blend.attachmentCount = job.color_count;
   color_blend.pAttachments = blend_states;
 
-  const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                           VK_DYNAMIC_STATE_SCISSOR};
+  // Culling is dynamic so that draws differing only in it, such as mirrored
+  // and two-sided instances, share one pipeline.
+  const VkDynamicState dynamic_states[] = {
+      VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+      VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE};
   VkPipelineDynamicStateCreateInfo dynamic{
       VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-  dynamic.dynamicStateCount = 2;
+  dynamic.dynamicStateCount = nx::cast<u32>(std::size(dynamic_states));
   dynamic.pDynamicStates = dynamic_states;
 
   VkFormat color_formats[MAX_COLOR_ATTACHMENTS] = {};
@@ -550,6 +562,8 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
   VulkanCompiledPipeline compiled;
   compiled.m_device = m_device;
   compiled.m_bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  compiled.m_cull = raster.cullMode;
+  compiled.m_front_face = raster.frontFace;
   compiled.m_name = job.name;
   // The cache is created without EXTERNALLY_SYNCHRONIZED, so the driver
   // guards it: a lock here would run every compile one at a time.
@@ -682,6 +696,8 @@ PipelineHandle VulkanDevice::publish_pipeline(CompiledPipeline &&opaque) {
   VulkanPipeline pipeline;
   pipeline.pipeline = compiled.m_pipeline;
   pipeline.bind_point = compiled.m_bind_point;
+  pipeline.cull = compiled.m_cull;
+  pipeline.front_face = compiled.m_front_face;
   const nx::string name = std::move(compiled.m_name);
   compiled.m_device = VK_NULL_HANDLE;
   compiled.m_pipeline = VK_NULL_HANDLE;
@@ -718,6 +734,20 @@ void VulkanCommandContext::bind_pipeline(const PipelineHandle handle) {
   if (pipeline == nullptr)
     return;
   vkCmdBindPipeline(m_cmd, pipeline->bind_point, pipeline->pipeline);
+  if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+    vkCmdSetCullModeEXT(m_cmd, pipeline->cull);
+    vkCmdSetFrontFaceEXT(m_cmd, pipeline->front_face);
+  }
+}
+
+void VulkanCommandContext::set_cull_mode(const CullMode cull) {
+  if (m_cmd != VK_NULL_HANDLE)
+    vkCmdSetCullModeEXT(m_cmd, to_vk_cull(cull));
+}
+
+void VulkanCommandContext::set_front_face(const FrontFace face) {
+  if (m_cmd != VK_NULL_HANDLE)
+    vkCmdSetFrontFaceEXT(m_cmd, to_vk_front_face(face));
 }
 
 void VulkanCommandContext::push_constants(const void *data, const u32 size,

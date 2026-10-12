@@ -126,6 +126,9 @@ struct VulkanShader {
 struct VulkanPipeline {
   VkPipeline pipeline = VK_NULL_HANDLE;
   VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  /// Dynamic in every graphics pipeline; binding one restores its own.
+  VkCullModeFlags cull = VK_CULL_MODE_NONE;
+  VkFrontFace front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 };
 
 struct VulkanGraphicsPipelineCompileJob;
@@ -193,6 +196,9 @@ public:
 
   void set_viewport(const Viewport &viewport);
   void set_scissor(const Rect2D &rect);
+  /// Override the bound graphics pipeline's own until the next bind.
+  void set_cull_mode(CullMode cull);
+  void set_front_face(FrontFace face);
 
   /// Clears @p count slots. Every slot written must be reset first, and a reset
   /// is invalid inside a render pass - so this belongs at the top of a frame.
