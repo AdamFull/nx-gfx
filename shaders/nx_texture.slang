@@ -113,6 +113,17 @@ public extension NxTexture2D<uint4> {
     }
 }
 
+public extension NxTexture2D<float> {
+    /// The four texels bilinear filtering at @p uv would blend, unfiltered,
+    /// through this handle's sampler's addressing: x the one at the lesser x
+    /// and greater y, then y, z and w round counter-clockwise, w at the
+    /// lesser of both.
+    public float4 gather(float2 uv) {
+        return get_texture(texture_index())
+            .GatherRed(get_sampler(sampler_index()), uv);
+    }
+}
+
 public struct NxRWTexture2D<T>
     where T : INxRWTexture2DElement {
     public uint index;
