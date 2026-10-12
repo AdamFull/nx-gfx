@@ -349,7 +349,7 @@ private:
   DeviceInitReport m_init_report;
   MetalDeviceState *m_state = nullptr;
   MetalUploader m_uploader;
-  nx::workload_tracker m_pipeline_compile_workload;
+  nx::workload_tracker m_pipeline_compile_workload{"pipeline::compile"};
 
   // Neither takes retire_lock on entry; each waits for the GPU first.
   bool swap_texture(TextureHandle target, TextureHandle replacement) noexcept;

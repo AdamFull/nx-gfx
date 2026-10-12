@@ -717,7 +717,7 @@ private:
   VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
   VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
   mutable nx::mutex m_pipeline_cache_lock;
-  nx::workload_tracker m_pipeline_compile_workload;
+  nx::workload_tracker m_pipeline_compile_workload{"pipeline::compile"};
   nx::string m_pipeline_cache_path;
 
   VkSemaphore m_timeline = VK_NULL_HANDLE;
