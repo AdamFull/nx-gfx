@@ -333,6 +333,8 @@ struct DeviceCaps {
   bool mesh_shaders = false;
   bool buffer_int64_atomics = false;
   bool image_int64_atomics = false;
+  /// Half-precision arithmetic in shaders (SPIR-V Float16).
+  bool shader_float16 = false;
   bool fragment_barycentrics = false;
   /// GraphicsPipelineDesc::sample_shading.
   bool sample_shading = false;

@@ -155,6 +155,7 @@ struct DeviceRoutes {
   bool mesh_shaders = false;
   bool buffer_int64_atomics = false;
   bool image_int64_atomics = false;
+  bool shader_float16 = false;
   bool fragment_barycentrics = false;
   bool sample_rate_shading = false;
   bool fragment_stores = false;

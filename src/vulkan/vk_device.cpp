@@ -316,6 +316,7 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   out.draw_indirect_count = out.core_12 || ext_draw_indirect_count;
   out.mesh_shaders = ext_mesh_shader && mesh.meshShader && mesh.taskShader;
   out.buffer_int64_atomics = out.core_12 && features12.shaderBufferInt64Atomics;
+  out.shader_float16 = out.core_12 && features12.shaderFloat16;
   out.image_int64_atomics =
       ext_image_atomic_int64 && image_atomic_int64.shaderImageInt64Atomics;
   out.fragment_barycentrics =
@@ -731,6 +732,7 @@ bool VulkanDevice::select_physical_device() {
   m_caps.mesh_shaders = m_routes.mesh_shaders;
   m_caps.buffer_int64_atomics = m_routes.buffer_int64_atomics;
   m_caps.image_int64_atomics = m_routes.image_int64_atomics;
+  m_caps.shader_float16 = m_routes.shader_float16;
   m_caps.fragment_barycentrics = m_routes.fragment_barycentrics;
   m_caps.sample_shading = m_routes.sample_rate_shading;
   m_caps.fragment_stores = m_routes.fragment_stores;
@@ -897,6 +899,7 @@ bool VulkanDevice::create_logical_device(
     features12.scalarBlockLayout = VK_TRUE;
     features12.shaderBufferInt64Atomics =
         m_routes.buffer_int64_atomics ? VK_TRUE : VK_FALSE;
+    features12.shaderFloat16 = m_routes.shader_float16 ? VK_TRUE : VK_FALSE;
     chain(features12);
   } else {
     indexing.runtimeDescriptorArray = VK_TRUE;
