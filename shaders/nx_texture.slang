@@ -124,6 +124,14 @@ public extension NxTexture2D<float> {
     }
 }
 
+public extension NxTexture2D<uint> {
+    /// The four texels at @p uv, as NxTexture2D<float>::gather orders them.
+    public uint4 gather(float2 uv) {
+        return get_uint_texture(texture_index())
+            .GatherRed(get_sampler(sampler_index()), uv);
+    }
+}
+
 public struct NxRWTexture2D<T>
     where T : INxRWTexture2DElement {
     public uint index;
