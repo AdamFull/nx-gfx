@@ -7,8 +7,11 @@ namespace nxe::rhi {
 namespace {
 
 constexpr u64 LEGACY_VERSION = 1;
-constexpr u64 PROFILE_VERSION = 2;
-constexpr u64 IMPORT_VERSION = 2;
+/// Version 3 adds maxSize, and to `.meta` blocks per-profile overrides; 2
+/// stays readable.
+constexpr u64 PROFILE_VERSION = 3;
+constexpr u64 IMPORT_VERSION = 3;
+constexpr u32 MAX_TEXTURE_SIZE = 16384;
 
 [[nodiscard]] bool portable_name(const nx::string_view name) noexcept {
   if (name.empty() || name.size() > 64 || name.front() < 'a' ||
@@ -101,6 +104,19 @@ storage_from_string(const nx::string_view name) noexcept {
     return false;
   }
   out = nx::cast<i32>(value.get_i64());
+  return true;
+}
+
+[[nodiscard]] bool read_max_size(const nx::json::value &value, u32 &out,
+                                 const nx::string_view owner,
+                                 nx::string &error) {
+  if (!value.fits<i64>() || value.get_i64() < 1 ||
+      value.get_i64() > MAX_TEXTURE_SIZE) {
+    error = nx::format("{}.maxSize must be an integer from 1 to {}", owner,
+                       MAX_TEXTURE_SIZE);
+    return false;
+  }
+  out = nx::cast<u32>(value.get_i64());
   return true;
 }
 
@@ -219,6 +235,8 @@ bool read_texture_profile(const nx::string_view json, TextureProfile &out,
                                                          "quality"};
   static constexpr nx::string_view PRESET_FIELDS_V2[] = {
       "storage", "format", "mipmaps", "quality", "zstdLevel"};
+  static constexpr nx::string_view PRESET_FIELDS_V3[] = {
+      "storage", "format", "mipmaps", "quality", "zstdLevel", "maxSize"};
   error.clear();
 
   const auto parsed = nx::json::parse(
@@ -230,9 +248,9 @@ bool read_texture_profile(const nx::string_view json, TextureProfile &out,
   const nx::json::value &root = *parsed;
   const nx::json::value *const version_value = root.find("version");
   if (version_value == nullptr || !version_value->fits<u64>() ||
-      (version_value->get_u64() != LEGACY_VERSION &&
-       version_value->get_u64() != PROFILE_VERSION)) {
-    error = nx::format("texture profile version must be {} or {}",
+      version_value->get_u64() < LEGACY_VERSION ||
+      version_value->get_u64() > PROFILE_VERSION) {
+    error = nx::format("texture profile version must be from {} to {}",
                        LEGACY_VERSION, PROFILE_VERSION);
     return false;
   }
@@ -285,12 +303,13 @@ bool read_texture_profile(const nx::string_view json, TextureProfile &out,
       error = nx::format("{} is not a portable lower-case name", owner.view());
       return false;
     }
+    const std::span<const nx::string_view> preset_fields =
+        version == LEGACY_VERSION
+            ? std::span<const nx::string_view>(PRESET_FIELDS_V1)
+        : version == 2 ? std::span<const nx::string_view>(PRESET_FIELDS_V2)
+                       : std::span<const nx::string_view>(PRESET_FIELDS_V3);
     if (!member.val.is_object() ||
-        !known_fields(member.val,
-                      version == LEGACY_VERSION
-                          ? std::span<const nx::string_view>(PRESET_FIELDS_V1)
-                          : std::span<const nx::string_view>(PRESET_FIELDS_V2),
-                      owner.view(), error)) {
+        !known_fields(member.val, preset_fields, owner.view(), error)) {
       if (error.empty())
         error = nx::format("{} must be an object", owner.view());
       return false;
@@ -300,9 +319,13 @@ bool read_texture_profile(const nx::string_view json, TextureProfile &out,
     const nx::json::value *const quality = member.val.find("quality");
     const nx::json::value *const storage = member.val.find("storage");
     const nx::json::value *const zstd_level = member.val.find("zstdLevel");
+    const nx::json::value *const max_size = member.val.find("maxSize");
     TexturePreset preset;
     preset.name = nx::string(preset_name);
-    if (version == PROFILE_VERSION) {
+    if (max_size != nullptr &&
+        !read_max_size(*max_size, preset.max_size, owner.view(), error))
+      return false;
+    if (version != LEGACY_VERSION) {
       if (storage == nullptr ||
           !read_storage(*storage, preset.storage, owner.view(), error))
         return false;
@@ -359,6 +382,69 @@ bool read_texture_profile(const nx::string_view json, TextureProfile &out,
   return true;
 }
 
+namespace {
+
+/// Reads the fields @p object sets into @p out; the caller has checked that
+/// it holds no others.
+[[nodiscard]] bool read_import_fields(const nx::json::value &object,
+                                      const nx::string_view owner,
+                                      TextureImportFields &out,
+                                      nx::string &error) {
+  if (const nx::json::value *preset = object.find("preset")) {
+    if (!preset->is_string() || !portable_name(preset->get_string())) {
+      error = nx::format("{}.preset must be a portable preset name", owner);
+      return false;
+    }
+    out.preset = nx::string(preset->get_string());
+  }
+  if (const nx::json::value *storage = object.find("storage")) {
+    TextureStorage parsed_storage{};
+    if (!read_storage(*storage, parsed_storage, owner, error))
+      return false;
+    out.storage = parsed_storage;
+  }
+  if (const nx::json::value *format = object.find("format")) {
+    Format parsed_format = Format::Unknown;
+    if (!read_target_format(*format, parsed_format, owner, error))
+      return false;
+    out.format = parsed_format;
+  }
+  if (const nx::json::value *mipmaps = object.find("mipmaps")) {
+    if (!mipmaps->is_bool()) {
+      error = nx::format("{}.mipmaps must be true or false", owner);
+      return false;
+    }
+    out.mipmaps = mipmaps->as_bool();
+  }
+  if (const nx::json::value *quality = object.find("quality")) {
+    TextureCookQuality parsed_quality{};
+    if (!read_quality(*quality, parsed_quality, owner, error))
+      return false;
+    out.quality = parsed_quality;
+  }
+  if (const nx::json::value *zstd_level = object.find("zstdLevel")) {
+    i32 parsed_level = 0;
+    if (!read_zstd_level(*zstd_level, parsed_level, owner, error))
+      return false;
+    out.zstd_level = parsed_level;
+  }
+  if (const nx::json::value *max_size = object.find("maxSize")) {
+    u32 parsed_size = 0;
+    if (!read_max_size(*max_size, parsed_size, owner, error))
+      return false;
+    out.max_size = parsed_size;
+  }
+  return true;
+}
+
+template <class T>
+void overlay(std::optional<T> &field, const std::optional<T> &over) {
+  if (over.has_value())
+    field = over;
+}
+
+} // namespace
+
 bool read_texture_import(const nx::string_view asset_meta_json,
                          TextureImport &out, nx::string &error) {
   static constexpr nx::string_view FIELDS_V1[] = {"version", "preset", "format",
@@ -366,6 +452,12 @@ bool read_texture_import(const nx::string_view asset_meta_json,
   static constexpr nx::string_view FIELDS_V2[] = {
       "version", "preset",  "storage",  "format",
       "mipmaps", "quality", "zstdLevel"};
+  static constexpr nx::string_view FIELDS_V3[] = {
+      "version", "preset",    "storage", "format",  "mipmaps",
+      "quality", "zstdLevel", "maxSize", "profiles"};
+  static constexpr nx::string_view PROFILE_FIELDS[] = {
+      "preset",  "storage",   "format", "mipmaps",
+      "quality", "zstdLevel", "maxSize"};
   error.clear();
   const auto parsed = nx::json::parse(
       asset_meta_json, {.reject_duplicate_keys = true, .validate_utf8 = true});
@@ -385,9 +477,9 @@ bool read_texture_import(const nx::string_view asset_meta_json,
   }
   const nx::json::value *const version_value = texture->find("version");
   if (version_value == nullptr || !version_value->fits<u64>() ||
-      (version_value->get_u64() != LEGACY_VERSION &&
-       version_value->get_u64() != IMPORT_VERSION)) {
-    error = nx::format("asset metadata.texture version must be {} or {}",
+      version_value->get_u64() < LEGACY_VERSION ||
+      version_value->get_u64() > IMPORT_VERSION) {
+    error = nx::format("asset metadata.texture version must be from {} to {}",
                        LEGACY_VERSION, IMPORT_VERSION);
     return false;
   }
@@ -395,52 +487,38 @@ bool read_texture_import(const nx::string_view asset_meta_json,
   if (!known_fields(*texture,
                     version == LEGACY_VERSION
                         ? std::span<const nx::string_view>(FIELDS_V1)
-                        : std::span<const nx::string_view>(FIELDS_V2),
+                    : version == 2
+                        ? std::span<const nx::string_view>(FIELDS_V2)
+                        : std::span<const nx::string_view>(FIELDS_V3),
                     "asset metadata.texture", error))
     return false;
 
   TextureImport built;
-  if (const nx::json::value *preset = texture->find("preset")) {
-    if (!preset->is_string() || !portable_name(preset->get_string())) {
-      error = "asset metadata.texture.preset must be a portable preset name";
+  if (!read_import_fields(*texture, "asset metadata.texture", built, error))
+    return false;
+  if (const nx::json::value *profiles = texture->find("profiles")) {
+    if (!profiles->is_object()) {
+      error = "asset metadata.texture.profiles must be an object of profiles";
       return false;
     }
-    built.preset = nx::string(preset->get_string());
-  }
-  if (const nx::json::value *storage = texture->find("storage")) {
-    TextureStorage parsed_storage{};
-    if (!read_storage(*storage, parsed_storage, "asset metadata.texture",
-                      error))
-      return false;
-    built.storage = parsed_storage;
-  }
-  if (const nx::json::value *format = texture->find("format")) {
-    Format parsed_format = Format::Unknown;
-    if (!read_target_format(*format, parsed_format, "asset metadata.texture",
-                            error))
-      return false;
-    built.format = parsed_format;
-  }
-  if (const nx::json::value *mipmaps = texture->find("mipmaps")) {
-    if (!mipmaps->is_bool()) {
-      error = "asset metadata.texture.mipmaps must be true or false";
-      return false;
+    built.profiles.reserve(profiles->size());
+    for (const nx::json::member &member : profiles->as_object()) {
+      const nx::string owner =
+          nx::format("asset metadata.texture.profiles.{}", member.key.view());
+      if (!portable_name(member.key.view())) {
+        error = nx::format("{} is not a portable profile name", owner.view());
+        return false;
+      }
+      if (!member.val.is_object()) {
+        error = nx::format("{} must be an object", owner.view());
+        return false;
+      }
+      TextureProfileOverride entry{.profile = nx::string(member.key.view())};
+      if (!known_fields(member.val, PROFILE_FIELDS, owner.view(), error) ||
+          !read_import_fields(member.val, owner.view(), entry.fields, error))
+        return false;
+      built.profiles.push_back(std::move(entry));
     }
-    built.mipmaps = mipmaps->as_bool();
-  }
-  if (const nx::json::value *quality = texture->find("quality")) {
-    TextureCookQuality parsed_quality{};
-    if (!read_quality(*quality, parsed_quality, "asset metadata.texture",
-                      error))
-      return false;
-    built.quality = parsed_quality;
-  }
-  if (const nx::json::value *zstd_level = texture->find("zstdLevel")) {
-    i32 parsed_level = 0;
-    if (!read_zstd_level(*zstd_level, parsed_level, "asset metadata.texture",
-                         error))
-      return false;
-    built.zstd_level = parsed_level;
   }
   out = std::move(built);
   error.clear();
@@ -451,23 +529,37 @@ bool resolve_texture_settings(const TextureProfile &profile,
                               const TextureImport &import,
                               TextureCookSettings &out, nx::string &error) {
   error.clear();
-  const nx::string_view name = import.preset.empty()
+  TextureImportFields fields = import;
+  for (const TextureProfileOverride &entry : import.profiles) {
+    if (entry.profile != profile.name)
+      continue;
+    if (!entry.fields.preset.empty())
+      fields.preset = entry.fields.preset;
+    overlay(fields.storage, entry.fields.storage);
+    overlay(fields.format, entry.fields.format);
+    overlay(fields.mipmaps, entry.fields.mipmaps);
+    overlay(fields.quality, entry.fields.quality);
+    overlay(fields.zstd_level, entry.fields.zstd_level);
+    overlay(fields.max_size, entry.fields.max_size);
+  }
+  const nx::string_view name = fields.preset.empty()
                                    ? profile.default_preset.view()
-                                   : import.preset.view();
+                                   : fields.preset.view();
   const TexturePreset *const preset = profile.find(name);
   if (preset == nullptr) {
     error = nx::format("texture preset '{}' does not exist in profile '{}'",
                        name, profile.name.view());
     return false;
   }
-  TextureCookSettings built{.container = profile.container,
-                            .storage = import.storage.value_or(preset->storage),
-                            .format = import.format.value_or(preset->format),
-                            .mipmaps = import.mipmaps.value_or(preset->mipmaps),
-                            .quality = import.quality.value_or(preset->quality),
-                            .zstd_level =
-                                import.zstd_level.value_or(preset->zstd_level),
-                            .preset = nx::string(name)};
+  TextureCookSettings built{
+      .container = profile.container,
+      .storage = fields.storage.value_or(preset->storage),
+      .format = fields.format.value_or(preset->format),
+      .mipmaps = fields.mipmaps.value_or(preset->mipmaps),
+      .quality = fields.quality.value_or(preset->quality),
+      .zstd_level = fields.zstd_level.value_or(preset->zstd_level),
+      .max_size = fields.max_size.value_or(preset->max_size),
+      .preset = nx::string(name)};
   if (built.storage != TextureStorage::Native &&
       built.format != Format::Unknown) {
     error = "Basis storage selects its GPU format at runtime; remove the "
@@ -475,7 +567,7 @@ bool resolve_texture_settings(const TextureProfile &profile,
     return false;
   }
   if (built.storage != TextureStorage::BasisUastc &&
-      import.zstd_level.has_value()) {
+      fields.zstd_level.has_value()) {
     error = "zstdLevel is only valid for basis_uastc storage";
     return false;
   }

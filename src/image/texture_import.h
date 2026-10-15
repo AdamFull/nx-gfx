@@ -22,6 +22,9 @@ struct TexturePreset {
   bool mipmaps = true;
   TextureCookQuality quality = TextureCookQuality::Balanced;
   i32 zstd_level = 10;
+  /// The longest side a cook keeps, scaling larger sources down; 0 keeps the
+  /// source's size.
+  u32 max_size = 0;
 };
 
 /// One selected, platform-specific profile. A project may point Windows and
@@ -36,16 +39,29 @@ struct TextureProfile {
   find(nx::string_view preset) const noexcept;
 };
 
-/// Optional per-texture overrides read from the `texture` block in .meta.
-/// Missing values inherit from the selected profile and an absent block is a
-/// completely valid default import.
-struct TextureImport {
+/// What a `.meta` texture block may set, for every profile or for one.
+struct TextureImportFields {
   nx::string preset;
   std::optional<TextureStorage> storage;
   std::optional<Format> format;
   std::optional<bool> mipmaps;
   std::optional<TextureCookQuality> quality;
   std::optional<i32> zstd_level;
+  std::optional<u32> max_size;
+};
+
+/// The fields a texture sets for one profile, over its others.
+struct TextureProfileOverride {
+  nx::string profile;
+  TextureImportFields fields;
+};
+
+/// Optional per-texture overrides read from the `texture` block in .meta.
+/// Missing values inherit from the selected profile and an absent block is a
+/// completely valid default import.
+struct TextureImport : TextureImportFields {
+  /// By profile name, so platforms that share a profile cook alike.
+  nx::vector<TextureProfileOverride> profiles;
 };
 
 struct TextureCookSettings {
@@ -55,6 +71,7 @@ struct TextureCookSettings {
   bool mipmaps = true;
   TextureCookQuality quality = TextureCookQuality::Balanced;
   i32 zstd_level = 10;
+  u32 max_size = 0;
   nx::string preset;
 };
 
