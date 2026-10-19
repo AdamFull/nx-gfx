@@ -264,6 +264,9 @@ public:
   [[nodiscard]] TextureHandle
   current_backbuffer(SwapchainHandle swapchain) const noexcept;
 
+  /// Waits for the GPU, then frees every retired resource. Never while
+  /// another thread records or submits a frame: that frame may hold what this
+  /// frees (an engine waits for its render job first, Engine::wait_gpu_idle).
   void wait_idle() noexcept;
   /// Metal keeps no pipeline cache of the engine's; the system caches
   /// compiled shaders itself.
