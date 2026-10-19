@@ -1484,6 +1484,12 @@ void VulkanDevice::wait_idle() noexcept {
   }
 }
 
+void VulkanDevice::wait_submitted() noexcept {
+  if (m_device == VK_NULL_HANDLE || device_status() == GpuDeviceStatus::Lost)
+    return;
+  (void)NX_VK_DEVICE_CHECK(*this, wait_timeline(m_timeline_value));
+}
+
 VkResult VulkanDevice::check_result(const VkResult result,
                                     const char *const call,
                                     const char *const file,

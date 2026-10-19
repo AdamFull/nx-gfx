@@ -357,14 +357,18 @@ void MetalDevice::release_retirements(const u64 serial) noexcept {
     }
 }
 
-void MetalDevice::wait_idle() noexcept {
+void MetalDevice::wait_idle() noexcept { wait_submitted(); }
+
+// The queue runs command buffers in the order they were committed, and the
+// frame being recorded has not been.
+void MetalDevice::wait_submitted() noexcept {
   if (m_state == nullptr || m_state->queue == nil ||
       device_status() == GpuDeviceStatus::Lost)
     return;
 
   @autoreleasepool {
-    id<MTLCommandBuffer> cmd =
-        make_command_buffer(*m_state, "wait_idle", m_state->frames_submitted);
+    id<MTLCommandBuffer> cmd = make_command_buffer(*m_state, "wait_submitted",
+                                                   m_state->frames_submitted);
     [cmd commit];
     [cmd waitUntilCompleted];
   }

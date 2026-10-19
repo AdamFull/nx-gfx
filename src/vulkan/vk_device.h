@@ -467,6 +467,10 @@ public:
   /// another thread records or submits a frame: that frame may hold what this
   /// frees (an engine waits for its render job first, Engine::wait_gpu_idle).
   void wait_idle() noexcept;
+  /// Waits for the GPU to finish the frames submitted so far, freeing nothing
+  /// and touching no queue, so the render job may call it while it records a
+  /// frame.
+  void wait_submitted() noexcept;
   /// Writes the driver's pipeline cache now, from any thread.
   void save_pipeline_cache() noexcept;
 
