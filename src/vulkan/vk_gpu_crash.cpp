@@ -265,7 +265,8 @@ void VulkanGpuCrashReporter::report_device_lost(const char *const call,
   }
   append_objects_and_bindings(report);
   if (!report_gpu_crash(report))
-    nx::loge(nx::log::rhi, "GPU crash report could not be persisted");
+    nx::loge(nx::log::rhi, "GPU crash report could not be persisted: {}",
+             gpu_crash_json(report));
 }
 
 void VulkanGpuCrashReporter::collect_khr(GpuCrashReport &out) {
