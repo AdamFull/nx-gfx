@@ -568,6 +568,13 @@ public:
   [[nodiscard]] VkPhysicalDevice vk_physical_device() const noexcept {
     return m_physical_device;
   }
+  /// Held around every submit and present to @p queue's VkQueue, which the
+  /// host must synchronize: the frame, the uploader and native code all
+  /// submit, and queues of different types may be one VkQueue. Never held
+  /// across a wait.
+  [[nodiscard]] nx::mutex &queue_lock(const QueueType queue) noexcept {
+    return m_queue_locks[m_queue_lock_of[nx::cast<usize>(queue)]];
+  }
   [[nodiscard]] VkQueue graphics_queue() const noexcept {
     return m_queues[nx::cast<usize>(QueueType::Graphics)];
   }
@@ -711,6 +718,9 @@ private:
 
   VkQueue m_queues[nx::cast<usize>(QueueType::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(QueueType::Count)] = {};
+  nx::mutex m_queue_locks[nx::cast<usize>(QueueType::Count)];
+  /// Which lock each queue type takes: the first type with the same VkQueue.
+  u8 m_queue_lock_of[nx::cast<usize>(QueueType::Count)] = {0, 1, 2};
 
   struct ClientQueue {
     const NativeDeviceClient *client = nullptr;

@@ -1136,8 +1136,15 @@ bool VulkanDevice::create_logical_device(
                                                             : "basic",
            address_tracking ? "on" : "off");
 
-  for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i)
+  for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i) {
     vkGetDeviceQueue(m_device, m_queue_families[i], 0, &m_queues[i]);
+    m_queue_lock_of[i] = nx::cast<u8>(i);
+    for (usize j = 0; j < i; ++j)
+      if (m_queues[j] == m_queues[i]) {
+        m_queue_lock_of[i] = m_queue_lock_of[j];
+        break;
+      }
+  }
 
   for (ClientQueue &made : client_queues) {
     VkQueue queue = VK_NULL_HANDLE;
@@ -1547,10 +1554,14 @@ void VulkanDevice::flush_uploads() noexcept {
   submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal;
-  if (NX_VK_DEVICE_CHECK(
-          *this,
-          vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
-                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS) {
+  VkResult submitted = VK_SUCCESS;
+  {
+    const nx::scoped_lock<nx::mutex> held(queue_lock(QueueType::Graphics));
+    submitted = NX_VK_DEVICE_CHECK(
+        *this, vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
+                                 1, &submit, VK_NULL_HANDLE));
+  }
+  if (submitted != VK_SUCCESS) {
     vkDestroyCommandPool(m_device, pool, nullptr);
     return;
   }

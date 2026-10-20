@@ -230,8 +230,12 @@ void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value) {
   submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal;
-  NX_VK_DEVICE_CHECK(*m_device,
-                     vkQueueSubmit2KHR(m_queue, 1, &submit, VK_NULL_HANDLE));
+  {
+    const nx::scoped_lock<nx::mutex> held(
+        m_device->queue_lock(QueueType::Copy));
+    (void)NX_VK_DEVICE_CHECK(
+        *m_device, vkQueueSubmit2KHR(m_queue, 1, &submit, VK_NULL_HANDLE));
+  }
 
   m_inflight.push_back({cmd, value});
 }

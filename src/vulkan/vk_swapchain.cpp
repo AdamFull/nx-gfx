@@ -889,10 +889,14 @@ bool VulkanDevice::submit_without_present() {
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal_info;
 
-  if (NX_VK_DEVICE_CHECK(
-          *this,
-          vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
-                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS)
+  VkResult submitted = VK_SUCCESS;
+  {
+    const nx::scoped_lock<nx::mutex> held(queue_lock(QueueType::Graphics));
+    submitted = NX_VK_DEVICE_CHECK(
+        *this, vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
+                                 1, &submit, VK_NULL_HANDLE));
+  }
+  if (submitted != VK_SUCCESS)
     return false;
 
   if (NX_VK_DEVICE_CHECK(*this, wait_timeline(m_timeline_value)) != VK_SUCCESS)
@@ -1048,10 +1052,14 @@ bool VulkanDevice::end_frame() {
   submit.pCommandBufferInfos = cmd_infos.data();
   submit.signalSemaphoreInfoCount = nx::cast<u32>(signals.size());
   submit.pSignalSemaphoreInfos = signals.data();
-  if (NX_VK_DEVICE_CHECK(
-          *this,
-          vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)], 1,
-                            &submit, VK_NULL_HANDLE)) != VK_SUCCESS) {
+  VkResult submitted = VK_SUCCESS;
+  {
+    const nx::scoped_lock<nx::mutex> held(queue_lock(QueueType::Graphics));
+    submitted = NX_VK_DEVICE_CHECK(
+        *this, vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
+                                 1, &submit, VK_NULL_HANDLE));
+  }
+  if (submitted != VK_SUCCESS) {
     let_go();
     return false;
   }
@@ -1082,6 +1090,7 @@ bool VulkanDevice::end_frame() {
     {
       NX_PROFILE_ZONE("vk::present");
       nx::fiber::run_blocking([&] {
+        const nx::scoped_lock<nx::mutex> held(queue_lock(QueueType::Graphics));
         (void)vkQueuePresentKHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
                                 &present);
       });
