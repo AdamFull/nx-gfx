@@ -468,10 +468,8 @@ ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {
     shader.library.label = to_ns_string(desc.name);
   }
 
-  if (!desc.reflection_json.empty() &&
-      !reflect_from_json(desc.reflection_json, shader.reflection))
-    nx::logw(log_rhi, "create_shader('{}'): reflection sidecar unusable",
-             desc.name);
+  if (desc.reflection != nullptr)
+    shader.reflection = *desc.reflection;
 
   return m_state->shaders.insert(std::move(shader));
 }

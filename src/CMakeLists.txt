@@ -5,7 +5,10 @@ add_library(nx_rhi_types STATIC
         types.h
         types.cpp
         texture_data.h
-        texture_data.cpp)
+        texture_data.cpp
+        shader_reflect.h
+        shader_reflect.cpp
+        shader_reflect_json.cpp)
 add_library(nx::rhi_types ALIAS nx_rhi_types)
 target_include_directories(nx_rhi_types PUBLIC "${NX_ENGINE_ROOT}/engine")
 target_link_libraries(nx_rhi_types
@@ -22,13 +25,10 @@ set(NX_RHI_HEADERS
         native_driver.h
         pipeline_compiler.h
         rhi.h
-        shader_reflect.h
         upload.h)
 
 set(NX_RHI_SOURCES
-        gpu_crash.cpp
-        shader_reflect.cpp
-        shader_reflect_json.cpp)
+        gpu_crash.cpp)
 
 if (APPLE)
     set(NX_RHI_BACKEND "Metal")

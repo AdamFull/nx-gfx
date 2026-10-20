@@ -343,10 +343,8 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
 
   collect_entry_points(desc.code, desc.code_size, shader.entry_points);
 
-  if (!desc.reflection_json.empty() &&
-      !reflect_from_json(desc.reflection_json, shader.reflection))
-    nx::logw(nx::log::rhi, "create_shader('{}'): reflection sidecar unusable",
-             desc.name);
+  if (desc.reflection != nullptr)
+    shader.reflection = *desc.reflection;
 
   for (const ReflectComputeEntry &e : shader.reflection.compute_entries) {
     VulkanShader::ComputeEntry entry;

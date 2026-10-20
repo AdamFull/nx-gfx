@@ -168,13 +168,17 @@ inline constexpr nx::string_view SHADER_BINARY_EXT = ".metallib";
 inline constexpr nx::string_view SHADER_BINARY_EXT = ".spv";
 #endif
 
+struct ShaderReflection;
+
 /// A compiled shader blob (SPIR-V on Vulkan, metallib on Metal). One blob may
 /// hold several entry points; a pipeline names the one it wants.
 struct ShaderDesc {
   nx::string_view name = "shader";
   const void *code = nullptr;
   usize code_size = 0;
-  nx::string_view reflection_json;
+  /// Its interface, already parsed (reflect_from_json, a cooked container);
+  /// copied. Null for a shader with none.
+  const ShaderReflection *reflection = nullptr;
 };
 
 struct ShaderEntry {
