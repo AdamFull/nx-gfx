@@ -11,17 +11,9 @@ namespace nx::gfx {
 
 nx::result<device *, device_init_error> create_device(const device_desc &desc) {
   nx::unique_ptr<device> dev = nx::make_unique<device>();
-  if (!dev->init(desc)) {
-    const device_init_report &report = dev->init_report();
-    return nx::err(device_init_error{
-        .failure = report.failure == device_init_failure::None
-                       ? device_init_failure::Failed
-                       : report.failure,
-        .message = nx::string(dev->init_error()),
-        .vendor_id = report.vendor_id,
-        .device_id = report.device_id,
-    });
-  }
+  if (!dev->init(desc))
+    return nx::err(device_init_error{.report = dev->init_report(),
+                                     .message = nx::string(dev->init_error())});
   return dev.release();
 }
 

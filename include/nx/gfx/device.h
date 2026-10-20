@@ -137,11 +137,9 @@ struct device_init_report {
 };
 
 struct device_init_error {
-  device_init_failure failure = device_init_failure::Failed;
+  device_init_report report;
   /// What is missing, or what failed.
   nx::string message;
-  u32 vendor_id = 0;
-  u32 device_id = 0;
 };
 
 /// Makes a device on the calling thread, which owns it from then on.
