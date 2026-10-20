@@ -63,6 +63,7 @@ if (APPLE)
 else ()
     set(NX_RHI_BACKEND "Vulkan")
     list(APPEND NX_RHI_HEADERS
+            include/nx/gfx/vulkan.h
             vulkan/vk_common.h
             vulkan/vk_gpu_crash.h
             vulkan/vk_gpu_profiler.h
@@ -74,6 +75,7 @@ else ()
             vulkan/vk_gpu_crash.cpp
             vulkan/vk_gpu_profiler.cpp
             vulkan/vk_device.cpp
+            vulkan/vk_gfx.cpp
             vulkan/vk_pipeline.cpp
             vulkan/vk_resources.cpp
             vulkan/vk_swapchain.cpp
