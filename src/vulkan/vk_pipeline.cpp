@@ -1,6 +1,7 @@
 
 #include "rendering/rhi/vulkan/vk_device.h"
 
+#include "core/foundation/core/scope_guard.h"
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/platform/filesystem.h"
 
@@ -248,30 +249,31 @@ bool VulkanDevice::save_pipeline_cache() noexcept {
 
   const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
 
-  // Compiles do not take the lock, so the cache can grow between the size
-  // query and the copy; the copy then answers VK_INCOMPLETE with partial data.
-  constexpr u32 ATTEMPTS = 8;
-  nx::blob<u8> data;
-  usize size = 0;
-  VkResult copied = VK_INCOMPLETE;
-  for (u32 attempt = 0; attempt < ATTEMPTS && copied == VK_INCOMPLETE;
-       ++attempt) {
-    if (NX_VK_DEVICE_CHECK(
-            *this, vkGetPipelineCacheData(m_device, m_pipeline_cache, &size,
-                                          nullptr)) != VK_SUCCESS ||
-        size == 0)
-      return false;
-    data = nx::blob<u8>(size);
-    copied =
-        vkGetPipelineCacheData(m_device, m_pipeline_cache, &size, data.data());
-  }
-  if (copied == VK_INCOMPLETE) {
-    nx::logw(nx::log::rhi,
-             "pipeline cache: still growing after {} reads, not saved",
-             ATTEMPTS);
+  // Compiles do not take the lock and keep growing the device's cache, so its
+  // size can change between the size query and the copy as often as they
+  // finish. A merge takes a snapshot into a cache no compile touches.
+  const VkPipelineCacheCreateInfo info{
+      VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+  VkPipelineCache snapshot = VK_NULL_HANDLE;
+  if (NX_VK_DEVICE_CHECK(*this, vkCreatePipelineCache(m_device, &info, nullptr,
+                                                      &snapshot)) != VK_SUCCESS)
     return false;
-  }
-  if (NX_VK_DEVICE_CHECK(*this, copied) != VK_SUCCESS)
+  const nx::scope_guard destroy_snapshot([this, snapshot] {
+    vkDestroyPipelineCache(m_device, snapshot, nullptr);
+  });
+  usize size = 0;
+  if (NX_VK_DEVICE_CHECK(*this, vkMergePipelineCaches(m_device, snapshot, 1,
+                                                      &m_pipeline_cache)) !=
+          VK_SUCCESS ||
+      NX_VK_DEVICE_CHECK(
+          *this, vkGetPipelineCacheData(m_device, snapshot, &size, nullptr)) !=
+          VK_SUCCESS ||
+      size == 0)
+    return false;
+  nx::blob<u8> data(size);
+  if (NX_VK_DEVICE_CHECK(*this, vkGetPipelineCacheData(m_device, snapshot,
+                                                       &size, data.data())) !=
+      VK_SUCCESS)
     return false;
 
   if (!nx::fs::file_write_atomic(m_pipeline_cache_path, {data.data(), size})) {
