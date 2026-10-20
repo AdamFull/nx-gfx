@@ -57,14 +57,6 @@ struct ImageReader {
   return true;
 }
 
-[[nodiscard]] inline bool checked_mul(const u64 a, const u64 b,
-                                      u64 &result) noexcept {
-  if (a != 0 && b > std::numeric_limits<u64>::max() / a)
-    return false;
-  result = a * b;
-  return true;
-}
-
 [[nodiscard]] inline bool checked_align4(const u64 value,
                                          u64 &aligned) noexcept {
   return checked_add(value, (4u - (value & 3u)) & 3u, aligned);

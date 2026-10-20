@@ -1,7 +1,19 @@
 
-add_library(nx_rhi_image STATIC
+# Formats and texel layouts: what the RHI and the asset tools share, with no
+# backend behind it.
+add_library(nx_rhi_types STATIC
         types.h
         types.cpp
+        texture_data.h
+        texture_data.cpp)
+add_library(nx::rhi_types ALIAS nx_rhi_types)
+target_include_directories(nx_rhi_types PUBLIC "${NX_ENGINE_ROOT}/engine")
+target_link_libraries(nx_rhi_types
+        PUBLIC nx::foundation
+        PRIVATE nx::compile_options)
+set_target_properties(nx_rhi_types PROPERTIES FOLDER "engine")
+
+add_library(nx_rhi_image STATIC
         image/image.h
         image/image.cpp
         image/image_decode.h
@@ -19,11 +31,13 @@ add_library(nx_rhi_image STATIC
         image/texture_nva.h
         image/texture_nva.cpp
         shader_nva.h
-        shader_nva.cpp)
+        shader_nva.cpp
+        shader_loading.h
+        shader_loading.cpp)
 add_library(nx::rhi_image ALIAS nx_rhi_image)
 target_include_directories(nx_rhi_image PUBLIC "${NX_ENGINE_ROOT}/engine")
 target_link_libraries(nx_rhi_image
-        PUBLIC nx::foundation
+        PUBLIC nx::foundation nx::rhi_types
         PRIVATE nx::compile_options nx::stb nx::webp_decoder
                 nx::basisu_transcoder nx::zstd)
 
@@ -47,14 +61,12 @@ set(NX_RHI_HEADERS
         pipeline_compiler.h
         rhi.h
         shader_reflect.h
-        shader_loading.h
         upload.h
         upload_ring.h)
 
 set(NX_RHI_SOURCES
         gpu_crash.cpp
         key_sort.cpp
-        shader_loading.cpp
         shader_reflect.cpp
         shader_reflect_json.cpp
         upload_ring.cpp)
@@ -111,7 +123,7 @@ add_library(nx_rhi STATIC ${NX_RHI_SOURCES} ${NX_RHI_HEADERS})
 add_library(nx::rhi ALIAS nx_rhi)
 
 target_link_libraries(nx_rhi
-        PUBLIC nx::foundation nx::rhi_image
+        PUBLIC nx::foundation nx::rhi_types
         PRIVATE nx::compile_options nx::glm)
 
 if (APPLE)

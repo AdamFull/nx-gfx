@@ -588,18 +588,14 @@ VulkanUploader::upload_texture(const TextureHandle handle,
 }
 
 UploadTicket VulkanUploader::upload_texture(const TextureHandle handle,
-                                            const ImageData &image,
+                                            const TextureData &data,
                                             const ResourceState final_state) {
   const VulkanTexture *const texture = m_device->m_textures.try_get(handle);
-  if (texture == nullptr || image.format != texture->format) {
-    nx::loge(log_up, "upload_texture: image format does not match texture");
+  if (texture == nullptr || data.format != texture->format) {
+    nx::loge(log_up, "upload_texture: data format does not match texture");
     return UploadTicket::failure();
   }
-  return upload_texture(
-      handle, std::span<const u8>(image.pixels.data(), image.pixels.size()),
-      std::span<const ImageSubresource>(image.subresources.data(),
-                                        image.subresources.size()),
-      final_state);
+  return upload_texture(handle, data.bytes, data.subresources, final_state);
 }
 
 UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,

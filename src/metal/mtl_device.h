@@ -7,11 +7,11 @@
 #include "rendering/rhi/descs.h"
 #include "rendering/rhi/gpu_crash.h"
 #include "rendering/rhi/handles.h"
-#include "rendering/rhi/image/image.h"
 #include "rendering/rhi/native.h"
 #include "rendering/rhi/native_driver.h"
 #include "rendering/rhi/pipeline_compiler.h"
 #include "rendering/rhi/shader_reflect.h"
+#include "rendering/rhi/texture_data.h"
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/upload.h"
 
@@ -75,7 +75,7 @@ public:
                  std::span<const ImageSubresource> layout,
                  ResourceState final_state = ResourceState::ShaderReadOnly);
   [[nodiscard]] UploadTicket
-  upload_texture(TextureHandle handle, const ImageData &image,
+  upload_texture(TextureHandle handle, const TextureData &data,
                  ResourceState final_state = ResourceState::ShaderReadOnly);
   [[nodiscard]] UploadTicket
   upload_buffer(BufferHandle handle, u64 dst_offset, std::span<const u8> src,

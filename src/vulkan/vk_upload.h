@@ -4,7 +4,7 @@
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/threading/sync.h"
 #include "rendering/rhi/handles.h"
-#include "rendering/rhi/image/image.h"
+#include "rendering/rhi/texture_data.h"
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/upload.h"
 #include "rendering/rhi/vulkan/vk_common.h"
@@ -55,7 +55,7 @@ public:
                  ResourceState final_state = ResourceState::ShaderReadOnly);
 
   [[nodiscard]] UploadTicket
-  upload_texture(TextureHandle handle, const ImageData &image,
+  upload_texture(TextureHandle handle, const TextureData &data,
                  ResourceState final_state = ResourceState::ShaderReadOnly);
 
   [[nodiscard]] UploadTicket

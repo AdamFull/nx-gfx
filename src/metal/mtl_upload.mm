@@ -250,19 +250,15 @@ UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
 }
 
 UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
-                                           const ImageData &image,
+                                           const TextureData &data,
                                            const ResourceState final_state) {
   const MetalTexture *const texture =
       m_state != nullptr ? m_state->textures.try_get(handle) : nullptr;
-  if (texture == nullptr || image.format != texture->format) {
-    nx::loge(log_rhi, "upload_texture: image format does not match texture");
+  if (texture == nullptr || data.format != texture->format) {
+    nx::loge(log_rhi, "upload_texture: data format does not match texture");
     return UploadTicket::failure();
   }
-  return upload_texture(
-      handle, std::span<const u8>(image.pixels.data(), image.pixels.size()),
-      std::span<const ImageSubresource>(image.subresources.data(),
-                                        image.subresources.size()),
-      final_state);
+  return upload_texture(handle, data.bytes, data.subresources, final_state);
 }
 
 UploadTicket MetalUploader::upload_buffer(const BufferHandle handle,
