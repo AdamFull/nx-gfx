@@ -97,6 +97,16 @@ private:
   nx::string m_name;
 };
 
+/// A PipelineJob's payload: the snapshot to compile and, once compiled, the
+/// native pipeline it made.
+struct VulkanPipelineJob {
+  const VulkanDevice *device = nullptr;
+  bool compute = false;
+  VulkanGraphicsPipelineCompileJob graphics;
+  VulkanComputePipelineCompileJob compute_work;
+  VulkanCompiledPipeline compiled;
+};
+
 namespace {
 
 VkPrimitiveTopology to_vk_topology(const PrimitiveTopology topology) noexcept {
@@ -366,40 +376,28 @@ void VulkanDevice::destroy_shader(const ShaderHandle handle) noexcept {
   }
 }
 
-PipelineHandle
-VulkanDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
-  VulkanGraphicsPipelineCompileJob job;
-  if (!prepare_graphics_pipeline(desc, job))
+PipelineJob VulkanDevice::prepare_pipeline(const GraphicsPipelineDesc &desc) {
+  VulkanPipelineJob job{.device = this};
+  if (!prepare_graphics_pipeline(desc, job.graphics))
     return {};
-  VulkanCompiledPipeline native = compile_graphics_pipeline(job);
-  if (!native.valid())
-    return {};
-  return publish_pipeline(
-      detail::CompiledPipelineAccess::adopt(std::move(native)));
+  return detail::PipelineJobAccess::adopt(
+      std::move(job), &VulkanDevice::compile_job, &m_pipeline_compile_workload);
 }
 
-nx::future<CompiledPipeline>
-VulkanDevice::create_graphics_pipeline_async(nx::thread_pool &workers,
-                                             const GraphicsPipelineDesc &desc,
-                                             const nx::task_priority priority) {
-  VulkanGraphicsPipelineCompileJob job;
-  if (!prepare_graphics_pipeline(desc, job))
+PipelineJob VulkanDevice::prepare_pipeline(const ComputePipelineDesc &desc) {
+  VulkanPipelineJob job{.device = this, .compute = true};
+  if (!prepare_compute_pipeline(desc, job.compute_work))
     return {};
-  const nx::workload_ticket ticket = m_pipeline_compile_workload.submit();
-  nx::future<CompiledPipeline> future =
-      workers.async(priority, [this, ticket, job = std::move(job)]() mutable {
-        return nx::measure_workload(
-            m_pipeline_compile_workload, ticket, nx::cancellation_token{},
-            [this, &job] {
-              VulkanCompiledPipeline native = compile_graphics_pipeline(job);
-              if (!native.valid())
-                return CompiledPipeline{};
-              return detail::CompiledPipelineAccess::adopt(std::move(native));
-            });
-      });
-  if (!future.valid())
-    m_pipeline_compile_workload.reject(ticket);
-  return future;
+  return detail::PipelineJobAccess::adopt(
+      std::move(job), &VulkanDevice::compile_job, &m_pipeline_compile_workload);
+}
+
+bool VulkanDevice::compile_job(void *const payload) {
+  VulkanPipelineJob &job = *static_cast<VulkanPipelineJob *>(payload);
+  job.compiled = job.compute
+                     ? job.device->compile_compute_pipeline(job.compute_work)
+                     : job.device->compile_graphics_pipeline(job.graphics);
+  return job.compiled.valid();
 }
 
 bool VulkanDevice::prepare_graphics_pipeline(
@@ -590,42 +588,6 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
   return compiled;
 }
 
-PipelineHandle
-VulkanDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
-  VulkanComputePipelineCompileJob job;
-  if (!prepare_compute_pipeline(desc, job))
-    return {};
-  VulkanCompiledPipeline native = compile_compute_pipeline(job);
-  if (!native.valid())
-    return {};
-  return publish_pipeline(
-      detail::CompiledPipelineAccess::adopt(std::move(native)));
-}
-
-nx::future<CompiledPipeline>
-VulkanDevice::create_compute_pipeline_async(nx::thread_pool &workers,
-                                            const ComputePipelineDesc &desc,
-                                            const nx::task_priority priority) {
-  VulkanComputePipelineCompileJob job;
-  if (!prepare_compute_pipeline(desc, job))
-    return {};
-  const nx::workload_ticket ticket = m_pipeline_compile_workload.submit();
-  nx::future<CompiledPipeline> future =
-      workers.async(priority, [this, ticket, job = std::move(job)]() mutable {
-        return nx::measure_workload(
-            m_pipeline_compile_workload, ticket, nx::cancellation_token{},
-            [this, &job] {
-              VulkanCompiledPipeline native = compile_compute_pipeline(job);
-              if (!native.valid())
-                return CompiledPipeline{};
-              return detail::CompiledPipelineAccess::adopt(std::move(native));
-            });
-      });
-  if (!future.valid())
-    m_pipeline_compile_workload.reject(ticket);
-  return future;
-}
-
 bool VulkanDevice::prepare_compute_pipeline(
     const ComputePipelineDesc &desc,
     VulkanComputePipelineCompileJob &out) const {
@@ -701,10 +663,11 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
   return compiled;
 }
 
-PipelineHandle VulkanDevice::publish_pipeline(CompiledPipeline &&opaque) {
-  VulkanCompiledPipeline compiled =
-      detail::CompiledPipelineAccess::take<VulkanCompiledPipeline>(opaque);
-  if (!compiled.valid())
+PipelineHandle VulkanDevice::publish_pipeline(PipelineJob &&opaque) {
+  VulkanPipelineJob job =
+      detail::PipelineJobAccess::take<VulkanPipelineJob>(opaque);
+  VulkanCompiledPipeline &compiled = job.compiled;
+  if (job.device != this || !compiled.valid())
     return {};
   VulkanPipeline pipeline;
   pipeline.pipeline = compiled.m_pipeline;

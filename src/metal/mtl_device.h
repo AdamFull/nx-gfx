@@ -315,21 +315,10 @@ public:
   [[nodiscard]] ShaderHandle create_shader(const ShaderDesc &desc);
   void destroy_shader(ShaderHandle handle) noexcept;
 
-  [[nodiscard]] NX_DEPRECATED_MSG(
-      "use create_graphics_pipeline_async and publish_pipeline") PipelineHandle
-      create_graphics_pipeline(const GraphicsPipelineDesc &desc);
-  [[nodiscard]] NX_DEPRECATED_MSG(
-      "use create_compute_pipeline_async and publish_pipeline") PipelineHandle
-      create_compute_pipeline(const ComputePipelineDesc &desc);
-  /// Copies descriptor inputs on the owner, then performs native compilation
-  /// on a worker. Only publication of the opaque result touches handle tables.
-  [[nodiscard]] nx::future<CompiledPipeline> create_graphics_pipeline_async(
-      nx::thread_pool &workers, const GraphicsPipelineDesc &desc,
-      nx::task_priority priority = nx::task_priority::Normal);
-  [[nodiscard]] nx::future<CompiledPipeline> create_compute_pipeline_async(
-      nx::thread_pool &workers, const ComputePipelineDesc &desc,
-      nx::task_priority priority = nx::task_priority::Normal);
-  [[nodiscard]] PipelineHandle publish_pipeline(CompiledPipeline &&compiled);
+  /// See VulkanDevice::prepare_pipeline.
+  [[nodiscard]] PipelineJob prepare_pipeline(const GraphicsPipelineDesc &desc);
+  [[nodiscard]] PipelineJob prepare_pipeline(const ComputePipelineDesc &desc);
+  [[nodiscard]] PipelineHandle publish_pipeline(PipelineJob &&job);
   [[nodiscard]] nx::workload_statistics
   pipeline_compile_statistics() const noexcept {
     return m_pipeline_compile_workload.statistics();

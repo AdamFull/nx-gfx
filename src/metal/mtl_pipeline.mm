@@ -491,88 +491,55 @@ void MetalDevice::destroy_shader(const ShaderHandle handle) noexcept {
   retire(*m_state, {.shader = handle});
 }
 
-PipelineHandle
-MetalDevice::create_graphics_pipeline(const GraphicsPipelineDesc &desc) {
-  if (m_state == nullptr)
-    return {};
-  MetalGraphicsPipelineJob job;
-  if (!prepare_graphics_pipeline(*m_state, desc, job))
-    return {};
-  MetalPipeline pipeline = compile_graphics_pipeline(job);
-  if (pipeline.render == nil)
-    return {};
-  return m_state->pipelines.insert(std::move(pipeline));
+namespace {
+
+/// A PipelineJob's payload: the snapshot to compile and, once compiled, the
+/// pipeline it made.
+struct MetalPipelineJob {
+  const MetalDeviceState *state = nullptr;
+  bool compute = false;
+  MetalGraphicsPipelineJob graphics;
+  MetalComputePipelineJob compute_work;
+  MetalPipeline compiled;
+};
+
+bool compile_job(void *const payload) {
+  MetalPipelineJob &job = *static_cast<MetalPipelineJob *>(payload);
+  job.compiled = job.compute ? compile_compute_pipeline(job.compute_work)
+                             : compile_graphics_pipeline(job.graphics);
+  return job.compute ? job.compiled.compute != nil
+                     : job.compiled.render != nil;
 }
 
-nx::future<CompiledPipeline> MetalDevice::create_graphics_pipeline_async(
-    nx::thread_pool &workers, const GraphicsPipelineDesc &desc,
-    const nx::task_priority priority) {
+} // namespace
+
+PipelineJob MetalDevice::prepare_pipeline(const GraphicsPipelineDesc &desc) {
   if (m_state == nullptr)
     return {};
-  MetalGraphicsPipelineJob job;
-  if (!prepare_graphics_pipeline(*m_state, desc, job))
+  MetalPipelineJob job{.state = m_state};
+  if (!prepare_graphics_pipeline(*m_state, desc, job.graphics))
     return {};
-  const nx::workload_ticket ticket = m_pipeline_compile_workload.submit();
-  nx::future<CompiledPipeline> future = workers.async(
-      priority, [this, ticket, job = std::move(job)]() mutable {
-        return nx::measure_workload(
-            m_pipeline_compile_workload, ticket, nx::cancellation_token{},
-            [&job] {
-              MetalPipeline native = compile_graphics_pipeline(job);
-              if (native.render == nil)
-                return CompiledPipeline{};
-              return detail::CompiledPipelineAccess::adopt(std::move(native));
-            });
-      });
-  if (!future.valid())
-    m_pipeline_compile_workload.reject(ticket);
-  return future;
+  return detail::PipelineJobAccess::adopt(std::move(job), &compile_job,
+                                          &m_pipeline_compile_workload);
 }
 
-PipelineHandle
-MetalDevice::create_compute_pipeline(const ComputePipelineDesc &desc) {
+PipelineJob MetalDevice::prepare_pipeline(const ComputePipelineDesc &desc) {
   if (m_state == nullptr)
     return {};
-  MetalComputePipelineJob job;
-  if (!prepare_compute_pipeline(*m_state, desc, job))
+  MetalPipelineJob job{.state = m_state, .compute = true};
+  if (!prepare_compute_pipeline(*m_state, desc, job.compute_work))
     return {};
-  MetalPipeline pipeline = compile_compute_pipeline(job);
-  if (pipeline.compute == nil)
-    return {};
-  return m_state->pipelines.insert(std::move(pipeline));
+  return detail::PipelineJobAccess::adopt(std::move(job), &compile_job,
+                                          &m_pipeline_compile_workload);
 }
 
-nx::future<CompiledPipeline> MetalDevice::create_compute_pipeline_async(
-    nx::thread_pool &workers, const ComputePipelineDesc &desc,
-    const nx::task_priority priority) {
+PipelineHandle MetalDevice::publish_pipeline(PipelineJob &&opaque) {
   if (m_state == nullptr)
     return {};
-  MetalComputePipelineJob job;
-  if (!prepare_compute_pipeline(*m_state, desc, job))
-    return {};
-  const nx::workload_ticket ticket = m_pipeline_compile_workload.submit();
-  nx::future<CompiledPipeline> future = workers.async(
-      priority, [this, ticket, job = std::move(job)]() mutable {
-        return nx::measure_workload(
-            m_pipeline_compile_workload, ticket, nx::cancellation_token{},
-            [&job] {
-              MetalPipeline native = compile_compute_pipeline(job);
-              if (native.compute == nil)
-                return CompiledPipeline{};
-              return detail::CompiledPipelineAccess::adopt(std::move(native));
-            });
-      });
-  if (!future.valid())
-    m_pipeline_compile_workload.reject(ticket);
-  return future;
-}
-
-PipelineHandle MetalDevice::publish_pipeline(CompiledPipeline &&compiled) {
-  if (m_state == nullptr)
-    return {};
-  MetalPipeline native =
-      detail::CompiledPipelineAccess::take<MetalPipeline>(compiled);
-  if ((!native.is_compute && native.render == nil) ||
+  MetalPipelineJob job =
+      detail::PipelineJobAccess::take<MetalPipelineJob>(opaque);
+  MetalPipeline &native = job.compiled;
+  if (job.state != m_state || (!native.is_compute && native.render == nil) ||
       (native.is_compute && native.compute == nil))
     return {};
   return m_state->pipelines.insert(std::move(native));
