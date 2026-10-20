@@ -1314,7 +1314,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
 
   if (!create_instance(desc) || !select_physical_device() ||
       !create_logical_device(desc.native_clients) || !create_allocator() ||
-      !create_bindless_heap() ||
+      !create_bindless_heap() || !create_default_sampler() ||
       !create_pipeline_cache(desc.pipeline_cache_path)) {
     if (m_init_error.empty())
       m_init_error =

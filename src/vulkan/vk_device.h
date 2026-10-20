@@ -656,6 +656,7 @@ private:
   [[nodiscard]] bool route_promoted_entry_points() noexcept;
   bool create_allocator();
   bool create_bindless_heap();
+  bool create_default_sampler();
   bool create_bindless_globals();
   bool create_pipeline_cache(nx::string_view path);
   bool create_frame_contexts(u32 frames_in_flight);

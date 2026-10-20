@@ -16,6 +16,15 @@ u32 clamp_count(const u32 desired, const u32 device_limit) noexcept {
 
 } // namespace
 
+bool VulkanDevice::create_default_sampler() {
+  const SamplerHandle sampler = create_sampler(DEFAULT_SAMPLER_DESC);
+  if (sampler_index(sampler) == DEFAULT_SAMPLER)
+    return true;
+  nx::loge(nx::log::rhi, "the default sampler did not take slot {}",
+           DEFAULT_SAMPLER);
+  return false;
+}
+
 bool VulkanDevice::create_bindless_heap() {
   m_bindless.max_samplers =
       clamp_count(MAX_BINDLESS_SAMPLERS, m_caps.max_bindless_samplers);

@@ -303,6 +303,14 @@ bool MetalDevice::init(const DeviceDesc &desc) {
       nx::logi(log_rhi, "metal api validation requested");
   }
 
+  if (sampler_index(create_sampler(DEFAULT_SAMPLER_DESC)) != DEFAULT_SAMPLER) {
+    nx::loge(log_rhi, "the default sampler did not take slot {}",
+             DEFAULT_SAMPLER);
+    m_init_error = "The Metal graphics device could not be initialized.";
+    shutdown();
+    return false;
+  }
+
   m_init_report.failure = DeviceInitFailure::None;
   return true;
 }

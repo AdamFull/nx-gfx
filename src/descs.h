@@ -122,6 +122,13 @@ struct SamplerDesc {
   CompareOp compare = CompareOp::Never;
 };
 
+/// The sampler at bindless slot DEFAULT_SAMPLER.
+inline constexpr SamplerDesc DEFAULT_SAMPLER_DESC{
+    .name = "default sampler",
+    .min_filter = FilterMode::Nearest,
+    .mag_filter = FilterMode::Nearest,
+    .mip_filter = FilterMode::Nearest};
+
 struct RenderAttachment {
   TextureHandle texture;
   u32 mip_level = 0;

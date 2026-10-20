@@ -27,4 +27,9 @@ inline constexpr u32 PUSH_CONSTANT_SIZE = 128;
 
 inline constexpr u32 BINDLESS_INVALID_INDEX = ~0u;
 
+/// The sampler slot every device fills first, before any sampler it is asked
+/// for (DEFAULT_SAMPLER_DESC): what a texture made with sampler 0 samples and
+/// gathers through. An unwritten slot would be read as undefined.
+inline constexpr u32 DEFAULT_SAMPLER = 0;
+
 } // namespace nxe::rhi
