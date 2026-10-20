@@ -13,42 +13,6 @@ target_link_libraries(nx_rhi_types
         PRIVATE nx::compile_options)
 set_target_properties(nx_rhi_types PROPERTIES FOLDER "engine")
 
-add_library(nx_rhi_image STATIC
-        image/image.h
-        image/image.cpp
-        image/image_decode.h
-        image/dds.h
-        image/dds.cpp
-        image/ktx.h
-        image/ktx.cpp
-        image/ktx2.h
-        image/ktx2.cpp
-        image/basis_texture.h
-        image/basis_texture.cpp
-        image/stb_image_impl.cpp
-        image/texture_import.h
-        image/texture_import.cpp
-        image/texture_nva.h
-        image/texture_nva.cpp
-        shader_nva.h
-        shader_nva.cpp
-        shader_loading.h
-        shader_loading.cpp)
-add_library(nx::rhi_image ALIAS nx_rhi_image)
-target_include_directories(nx_rhi_image PUBLIC "${NX_ENGINE_ROOT}/engine")
-target_link_libraries(nx_rhi_image
-        PUBLIC nx::foundation nx::rhi_types
-        PRIVATE nx::compile_options nx::stb nx::webp_decoder
-                nx::basisu_transcoder nx::zstd)
-
-set_target_properties(nx_rhi_image PROPERTIES FOLDER "engine")
-
-if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    set_source_files_properties(
-            image/stb_image_impl.cpp
-            PROPERTIES COMPILE_OPTIONS "-w")
-endif ()
-
 set(NX_RHI_HEADERS
         bindless.h
         descs.h
