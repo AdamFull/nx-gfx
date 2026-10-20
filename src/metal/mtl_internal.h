@@ -327,7 +327,7 @@ void bind_bindless_compute(MetalDeviceState &state,
                            id<MTLComputeCommandEncoder> encoder) noexcept;
 
 void create_pipeline_archive(MetalDeviceState &state, nx::string_view path);
-void save_pipeline_archive(MetalDeviceState &state) noexcept;
+bool save_pipeline_archive(MetalDeviceState &state) noexcept;
 
 // Pass-granularity ordering within one command buffer (mtl_bindless.mm). A fence cannot reach
 // across command buffers. Cross-encoder hazards are left to Metal's own tracking, which is why the

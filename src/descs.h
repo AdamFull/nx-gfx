@@ -391,6 +391,12 @@ enum class DeviceInitFailure : u8 {
   Failed,
 };
 
+/// A version as the graphics API packs it (Vulkan's VK_MAKE_VERSION layout).
+[[nodiscard]] constexpr u32 make_version(const u32 major, const u32 minor,
+                                         const u32 patch) noexcept {
+  return (major << 22u) | (minor << 12u) | patch;
+}
+
 struct DeviceInitReport {
   DeviceInitFailure failure = DeviceInitFailure::None;
   u32 vendor_id = 0;

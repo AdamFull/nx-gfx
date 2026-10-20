@@ -231,33 +231,46 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
   return true;
 }
 
-void VulkanDevice::save_pipeline_cache() noexcept {
+bool VulkanDevice::save_pipeline_cache() noexcept {
   if (device_status() == GpuDeviceStatus::Lost ||
       m_pipeline_cache == VK_NULL_HANDLE || m_pipeline_cache_path.empty())
-    return;
+    return false;
 
   const nx::scoped_lock<nx::mutex> held(m_pipeline_cache_lock);
 
+  // Compiles do not take the lock, so the cache can grow between the size
+  // query and the copy; the copy then answers VK_INCOMPLETE with partial data.
+  constexpr u32 ATTEMPTS = 8;
+  nx::blob<u8> data;
   usize size = 0;
-  if (NX_VK_DEVICE_CHECK(
-          *this, vkGetPipelineCacheData(m_device, m_pipeline_cache, &size,
-                                        nullptr)) != VK_SUCCESS ||
-      size == 0)
-    return;
+  VkResult copied = VK_INCOMPLETE;
+  for (u32 attempt = 0; attempt < ATTEMPTS && copied == VK_INCOMPLETE;
+       ++attempt) {
+    if (NX_VK_DEVICE_CHECK(
+            *this, vkGetPipelineCacheData(m_device, m_pipeline_cache, &size,
+                                          nullptr)) != VK_SUCCESS ||
+        size == 0)
+      return false;
+    data = nx::blob<u8>(size);
+    copied =
+        vkGetPipelineCacheData(m_device, m_pipeline_cache, &size, data.data());
+  }
+  if (copied == VK_INCOMPLETE) {
+    nx::logw(nx::log::rhi,
+             "pipeline cache: still growing after {} reads, not saved",
+             ATTEMPTS);
+    return false;
+  }
+  if (NX_VK_DEVICE_CHECK(*this, copied) != VK_SUCCESS)
+    return false;
 
-  nx::blob<u8> data(size);
-  if (NX_VK_DEVICE_CHECK(
-          *this, vkGetPipelineCacheData(m_device, m_pipeline_cache, &size,
-                                        data.data())) != VK_SUCCESS)
-    return;
-
-  const auto written =
-      nx::fs::file_write_atomic(m_pipeline_cache_path, {data.data(), size});
-  if (written)
-    nx::logd(nx::log::rhi, "pipeline cache: saved {} bytes", size);
-  else
+  if (!nx::fs::file_write_atomic(m_pipeline_cache_path, {data.data(), size})) {
     nx::logw(nx::log::rhi, "pipeline cache: could not write {}",
              m_pipeline_cache_path);
+    return false;
+  }
+  nx::logd(nx::log::rhi, "pipeline cache: saved {} bytes", size);
+  return true;
 }
 
 namespace {

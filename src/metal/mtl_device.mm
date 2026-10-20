@@ -183,7 +183,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
       nx::loge(log_rhi, "init: newCommandQueue failed");
       return false;
     }
-    queue.label = @"nx2d graphics";
+    queue.label = @"graphics";
 
     auto *state = new MetalDeviceState();
     state->device = device;
@@ -247,8 +247,8 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     if (!metal3) {
       m_init_report.failure = DeviceInitFailure::Unsupported;
       m_init_error = nx::format(
-          "{} does not support Metal 3. NX2D requires macOS 13 or iOS 16 "
-          "and a Metal 3-capable graphics device.",
+          "{} does not support Metal 3, which needs macOS 13 or iOS 16 and "
+          "a Metal 3-capable graphics device.",
           m_device_name);
       nx::loge(log_rhi, "the Metal backend needs Metal 3 (macOS 13 / iOS 16) "
                         "for resource IDs in argument buffers");
@@ -278,8 +278,8 @@ bool MetalDevice::init(const DeviceDesc &desc) {
       m_device_name.clear();
       return false;
     }
-    state->pass_fence.label = @"nx2d pass";
-    state->upload_event.label = @"nx2d uploads";
+    state->pass_fence.label = @"pass";
+    state->upload_event.label = @"uploads";
 
     create_pipeline_archive(*state, desc.pipeline_cache_path);
 
@@ -305,6 +305,10 @@ bool MetalDevice::init(const DeviceDesc &desc) {
 
   m_init_report.failure = DeviceInitFailure::None;
   return true;
+}
+
+bool MetalDevice::save_pipeline_cache() noexcept {
+  return m_state != nullptr && save_pipeline_archive(*m_state);
 }
 
 void MetalDevice::shutdown() noexcept {
@@ -414,7 +418,7 @@ bool MetalDevice::begin_frame(MetalCommandContext &out_context) {
 
     MetalContextSlot &slot = s->contexts[0];
     slot = MetalContextSlot{};
-    slot.cmd = make_command_buffer(*s, "nx2d frame", s->frames_submitted);
+    slot.cmd = make_command_buffer(*s, "frame", s->frames_submitted);
     if (slot.cmd == nil) {
       dispatch_semaphore_signal(s->frame_semaphore);
       return false;
@@ -584,7 +588,7 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
     MetalContextSlot &slot = s->contexts[0];
     slot = MetalContextSlot{};
     slot.cmd =
-        make_command_buffer(*s, "nx2d headless frame", s->frames_submitted);
+        make_command_buffer(*s, "headless frame", s->frames_submitted);
     if (slot.cmd == nil) {
       dispatch_semaphore_signal(s->frame_semaphore);
       return false;
@@ -1207,7 +1211,7 @@ bool MetalCommandContext::copy_texture_to_buffer(
     id<MTLBlitCommandEncoder> blit = [slot.cmd blitCommandEncoder];
     if (blit == nil)
       return false;
-    blit.label = @"nx2d frame capture";
+    blit.label = @"frame capture";
     [blit copyFromTexture:texture->texture
               sourceSlice:layer
               sourceLevel:mip
@@ -1248,7 +1252,7 @@ bool MetalCommandContext::copy_buffer(const BufferHandle source_handle,
     id<MTLBlitCommandEncoder> blit = [slot.cmd blitCommandEncoder];
     if (blit == nil)
       return false;
-    blit.label = @"nx2d buffer copy";
+    blit.label = @"buffer copy";
     [blit copyFromBuffer:source->buffer
              sourceOffset:source_offset
                  toBuffer:destination->buffer

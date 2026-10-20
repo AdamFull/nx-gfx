@@ -57,7 +57,7 @@ Staging acquire_staging(MetalDeviceState &state, const u64 bytes,
       staging.capacity = 0;
       return staging;
     }
-    staging.buffer.label = host_read ? @"nx2d readback" : @"nx2d staging";
+    staging.buffer.label = host_read ? @"readback" : @"staging";
   }
   return staging;
 }
@@ -70,7 +70,7 @@ bool ensure_batch(MetalDeviceState &state) {
     return false;
 
   @autoreleasepool {
-    up.batch = make_command_buffer(state, "nx2d uploads", up.submitted + 1);
+    up.batch = make_command_buffer(state, "uploads", up.submitted + 1);
     if (up.batch == nil)
       return false;
     begin_command_buffer(up.batch_slot);
@@ -80,7 +80,7 @@ bool ensure_batch(MetalDeviceState &state) {
       up.batch = nil;
       return false;
     }
-    up.blit.label = @"nx2d uploads";
+    up.blit.label = @"uploads";
     encoder_wait_fence(state, up.batch_slot, up.blit);
   }
   return true;

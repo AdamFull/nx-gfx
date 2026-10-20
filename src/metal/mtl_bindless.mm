@@ -33,7 +33,7 @@ id<MTLHeap> grow_heaps(MetalDeviceState &state, const u64 required) noexcept {
              info.size >> 20);
     return nil;
   }
-  heap.label = @"nx2d bindless";
+  heap.label = @"bindless";
 
   state.bindless.heaps.push_back(heap);
   state.bindless.heap_bytes += info.size;
@@ -95,7 +95,7 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
                total);
       return false;
     }
-    heap.argument_buffer.label = @"nx2d bindless";
+    heap.argument_buffer.label = @"bindless";
     std::memset([heap.argument_buffer contents], 0, nx::cast<usize>(total));
 
     heap.null_page =
@@ -105,7 +105,7 @@ bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
       nx::loge(log_rhi, "bindless: could not allocate the null page");
       return false;
     }
-    heap.null_page.label = @"nx2d null page";
+    heap.null_page.label = @"null page";
     std::memset([heap.null_page contents], 0, NULL_PAGE_BYTES);
     const u64 null_address = [heap.null_page gpuAddress];
     std::memcpy(static_cast<u8 *>([heap.argument_buffer contents]) +

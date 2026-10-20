@@ -32,8 +32,11 @@ namespace nxe::rhi {
 class VulkanDevice;
 
 struct DeviceDesc {
-  nx::string_view application_name = "nx2d";
+  nx::string_view application_name;
   u32 application_version = 0;
+  /// What drivers key application profiles on; make_version() packs it.
+  nx::string_view engine_name;
+  u32 engine_version = 0;
 #if NX_DEBUG
   bool enable_validation = true;
   bool enable_sync_validation = true;
@@ -471,8 +474,9 @@ public:
   /// and touching no queue, so the render job may call it while it records a
   /// frame.
   void wait_submitted() noexcept;
-  /// Writes the driver's pipeline cache now, from any thread.
-  void save_pipeline_cache() noexcept;
+  /// Writes the driver's pipeline cache now, from any thread, while compiles
+  /// continue. False when nothing was written.
+  bool save_pipeline_cache() noexcept;
 
   /// Frame work up to @p serial may name resources and has not reached this
   /// device: whatever is destroyed from now on outlives it, however idle the

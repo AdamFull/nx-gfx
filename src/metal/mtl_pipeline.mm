@@ -406,16 +406,16 @@ void create_pipeline_archive(MetalDeviceState &state,
                             : "unknown error");
       return;
     }
-    state.pipeline_archive.label = @"nx2d pipelines";
+    state.pipeline_archive.label = @"pipelines";
 
     if (have_existing && info.url != nil)
       nx::logd(log_rhi, "pipeline archive: loaded {}", path);
   }
 }
 
-void save_pipeline_archive(MetalDeviceState &state) noexcept {
+bool save_pipeline_archive(MetalDeviceState &state) noexcept {
   if (state.pipeline_archive == nil || state.pipeline_archive_path.empty())
-    return;
+    return false;
 
   const nx::scoped_lock<nx::mutex> held(state.pipeline_archive_lock);
 
@@ -432,10 +432,11 @@ void save_pipeline_archive(MetalDeviceState &state) noexcept {
       nx::logd(log_rhi, "pipeline archive not written: {}",
                error != nil ? [[error localizedDescription] UTF8String]
                             : "unknown error");
-      return;
+      return false;
     }
   }
   nx::logd(log_rhi, "pipeline archive: saved {}", state.pipeline_archive_path);
+  return true;
 }
 
 ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {

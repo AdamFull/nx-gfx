@@ -408,12 +408,13 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   m_instance_api_version = available_version;
 
   const nx::string app_name(desc.application_name);
+  const nx::string engine_name(desc.engine_name);
 
   VkApplicationInfo app_info{VK_STRUCTURE_TYPE_APPLICATION_INFO};
   app_info.pApplicationName = app_name.c_str();
   app_info.applicationVersion = desc.application_version;
-  app_info.pEngineName = "nx2d";
-  app_info.engineVersion = VK_MAKE_VERSION(0, 1, 0);
+  app_info.pEngineName = engine_name.c_str();
+  app_info.engineVersion = desc.engine_version;
   app_info.apiVersion = available_version;
 
   u32 ext_count = 0;

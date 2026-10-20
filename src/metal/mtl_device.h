@@ -24,8 +24,11 @@ class MetalDevice;
 struct MetalDeviceState;
 
 struct DeviceDesc {
-  nx::string_view application_name = "nx2d";
+  nx::string_view application_name;
   u32 application_version = 0;
+  /// See VulkanDevice's DeviceDesc; Metal has nothing to pass them to.
+  nx::string_view engine_name;
+  u32 engine_version = 0;
 #if NX_DEBUG
   bool enable_validation = true;
 #else
@@ -270,9 +273,8 @@ public:
   void wait_idle() noexcept;
   /// See VulkanDevice::wait_submitted.
   void wait_submitted() noexcept;
-  /// Metal keeps no pipeline cache of the engine's; the system caches
-  /// compiled shaders itself.
-  void save_pipeline_cache() noexcept {}
+  /// See VulkanDevice::save_pipeline_cache; writes the binary archive.
+  bool save_pipeline_cache() noexcept;
 
   /// See VulkanDevice::hold_retirements.
   void hold_retirements(u64 serial) noexcept;
