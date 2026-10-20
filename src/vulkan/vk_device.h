@@ -565,17 +565,8 @@ public:
   void invalidate_buffer(BufferHandle handle, u64 offset = 0,
                          u64 size = ~0ull) noexcept;
 
-  [[nodiscard]] bool video_decode_available() const noexcept {
-    return m_video_decode.available;
-  }
   [[nodiscard]] VkPhysicalDevice vk_physical_device() const noexcept {
     return m_physical_device;
-  }
-  [[nodiscard]] u32 video_decode_family() const noexcept {
-    return m_video_decode.family;
-  }
-  [[nodiscard]] VkQueue video_decode_queue() const noexcept {
-    return m_video_decode.queue;
   }
   [[nodiscard]] VkQueue graphics_queue() const noexcept {
     return m_queues[nx::cast<usize>(QueueType::Graphics)];
@@ -595,6 +586,9 @@ public:
   [[nodiscard]] u32 native_layout(ResourceState state) const noexcept;
   /// Whether the instance or the device was made with extension @p name.
   [[nodiscard]] bool native_extension(nx::string_view name) const noexcept;
+  /// The queue made for @p client (NativeDeviceClient::queue_family), or none.
+  [[nodiscard]] NativeQueue
+  native_queue(const NativeDeviceClient &client) const noexcept;
   [[nodiscard]] VulkanTexture *texture_mut(TextureHandle handle) noexcept;
 
   [[nodiscard]] const ShaderReflection &
@@ -646,7 +640,6 @@ private:
   bool rebuild_debug_messenger(bool address_bindings) noexcept;
   bool select_physical_device();
   bool create_logical_device(std::span<NativeDeviceClient *const> clients);
-  [[nodiscard]] u32 find_video_decode_family() const;
   [[nodiscard]] bool route_promoted_entry_points() noexcept;
   bool create_allocator();
   bool create_bindless_heap();
@@ -719,12 +712,11 @@ private:
   VkQueue m_queues[nx::cast<usize>(QueueType::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(QueueType::Count)] = {};
 
-  struct VideoDecode {
-    bool available = false;
-    u32 family = ~0u;
-    VkQueue queue = VK_NULL_HANDLE;
+  struct ClientQueue {
+    const NativeDeviceClient *client = nullptr;
+    NativeQueue queue;
   };
-  VideoDecode m_video_decode;
+  nx::small_vector<ClientQueue, 2> m_client_queues;
 
   BindlessHeap m_bindless;
   VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;

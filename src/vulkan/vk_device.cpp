@@ -13,9 +13,7 @@ namespace {
 constexpr u32 REQUIRED_API_VERSION = VK_API_VERSION_1_1;
 
 /// Links a pNext feature-struct chain one block at a time. Holds `tail` by
-/// reference rather than by value: create_logical_device reads the caller's
-/// own `tail` variable after the last chain() call to remember where the
-/// video feature block was spliced in, for the retry-without-video path.
+/// reference, so the caller's own `tail` always names the chain's end.
 struct PNextChainer {
   void **&tail;
   template <typename T> void operator()(T &block) const noexcept {
@@ -1050,8 +1048,8 @@ bool VulkanDevice::create_logical_device(
   features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
-  // After the device's own, before video decode's, which a retry cuts off.
   NativeNames requested;
+  nx::small_vector<ClientQueue, 2> client_queues;
   if (!clients.empty()) {
     u32 count = 0;
     vkEnumerateDeviceExtensionProperties(m_physical_device, nullptr, &count,
@@ -1073,30 +1071,28 @@ bool VulkanDevice::create_logical_device(
     for (NativeDeviceClient *const client : clients)
       client->device_features(adapter, &features);
     tail = chain_end(&features.pNext);
-  }
 
-  const u32 video_family = find_video_decode_family();
-  const bool try_video = video_family != INVALID_FAMILY &&
-                         video_family != graphics && video_family != compute &&
-                         video_family != copy;
-  const usize base_extensions = device_extensions.size();
-  const usize base_queues = queue_infos.size();
-  VkPhysicalDeviceVideoDecodeVP9FeaturesKHR vp9_feature{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_DECODE_VP9_FEATURES_KHR};
-  void **video_link = nullptr;
-  if (try_video) {
-    device_extensions.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME);
-    VkDeviceQueueCreateInfo video_queue{
-        VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-    video_queue.queueFamilyIndex = video_family;
-    video_queue.queueCount = 1;
-    video_queue.pQueuePriorities = &priority;
-    queue_infos.push_back(video_queue);
-    vp9_feature.videoDecodeVP9 = VK_TRUE;
-    video_link = tail;
-    chain(vp9_feature);
+    for (NativeDeviceClient *const client : clients) {
+      const u32 family = client->queue_family(adapter);
+      if (family == INVALID_FAMILY)
+        continue;
+      bool taken = family >= family_count;
+      for (const VkDeviceQueueCreateInfo &existing : queue_infos)
+        taken = taken || existing.queueFamilyIndex == family;
+      if (taken) {
+        nx::logw(nx::log::rhi,
+                 "a native client asked for a queue in family {}, which the "
+                 "device's own queues use or which does not exist",
+                 family);
+        continue;
+      }
+      VkDeviceQueueCreateInfo queue{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+      queue.queueFamilyIndex = family;
+      queue.queueCount = 1;
+      queue.pQueuePriorities = &priority;
+      queue_infos.push_back(queue);
+      client_queues.push_back({.client = client, .queue = {.family = family}});
+    }
   }
 
   VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
@@ -1106,24 +1102,8 @@ bool VulkanDevice::create_logical_device(
   info.enabledExtensionCount = nx::cast<u32>(device_extensions.size());
   info.ppEnabledExtensionNames = device_extensions.data();
 
-  bool video_enabled = try_video;
-  VkResult created =
+  const VkResult created =
       vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
-  if (created != VK_SUCCESS && video_enabled) {
-    nx::logw(nx::log::rhi,
-             "driver rejected the video-decode setup; the device comes "
-             "up without hardware decode");
-    device_extensions.resize(base_extensions);
-    queue_infos.resize(base_queues);
-    if (video_link != nullptr)
-      *video_link = nullptr;
-    info.queueCreateInfoCount = nx::cast<u32>(queue_infos.size());
-    info.pQueueCreateInfos = queue_infos.data();
-    info.enabledExtensionCount = nx::cast<u32>(device_extensions.size());
-    info.ppEnabledExtensionNames = device_extensions.data();
-    video_enabled = false;
-    created = vkCreateDevice(m_physical_device, &info, nullptr, &m_device);
-  }
   if (created != VK_SUCCESS && !clients.empty()) {
     nx::logw(nx::log::rhi,
              "the device cannot be made with what its native clients ask for "
@@ -1159,13 +1139,14 @@ bool VulkanDevice::create_logical_device(
   for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i)
     vkGetDeviceQueue(m_device, m_queue_families[i], 0, &m_queues[i]);
 
-  if (video_enabled) {
-    m_video_decode.available = true;
-    m_video_decode.family = video_family;
-    vkGetDeviceQueue(m_device, video_family, 0, &m_video_decode.queue);
-    nx::logd(nx::log::rhi, "video: hardware VP9 decode on queue family {}",
-             video_family);
+  for (ClientQueue &made : client_queues) {
+    VkQueue queue = VK_NULL_HANDLE;
+    vkGetDeviceQueue(m_device, made.queue.family, 0, &queue);
+    made.queue.queue = queue;
+    nx::logd(nx::log::rhi, "a native client's queue: family {}",
+             made.queue.family);
   }
+  m_client_queues = std::move(client_queues);
 
   m_caps.draw_indirect_count = m_routes.draw_indirect_count;
 
@@ -1739,6 +1720,14 @@ bool VulkanDevice::native_extension(const nx::string_view name) const noexcept {
     if (one == name)
       return true;
   return false;
+}
+
+NativeQueue
+VulkanDevice::native_queue(const NativeDeviceClient &client) const noexcept {
+  for (const ClientQueue &made : m_client_queues)
+    if (made.client == &client)
+      return made.queue;
+  return {};
 }
 
 void *VulkanCommandContext::begin_native() noexcept {

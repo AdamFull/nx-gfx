@@ -42,6 +42,15 @@ struct NativeTexture {
 
 using NativeNames = nx::small_vector<nx::string, 8>;
 
+/// A queue the device made for a client, beside its own. Vulkan: the
+/// VkQueue and its family.
+struct NativeQueue {
+  void *queue = nullptr;
+  u32 family = ~0u;
+
+  [[nodiscard]] bool valid() const noexcept { return queue != nullptr; }
+};
+
 /// What a vendor library asks of a device before it is made, on the thread
 /// making it. The device enables the extensions it has and leaves out the
 /// rest; where it cannot be made with every client's features, it is made
@@ -56,6 +65,10 @@ public:
   /// Patches what the device is made with. Vulkan: @p features is the
   /// VkPhysicalDeviceFeatures2 heading the device's pNext chain.
   virtual void device_features(const NativeDevice &, void *) {}
+  /// A queue family of @p adapter to make one queue of the client's own in,
+  /// read back through Device::native_queue; none by default. It is made
+  /// only in a family none of the device's own queues use.
+  virtual u32 queue_family(const NativeDevice &) { return ~0u; }
 };
 
 } // namespace nxe::rhi

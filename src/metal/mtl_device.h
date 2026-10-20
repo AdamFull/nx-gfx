@@ -275,6 +275,12 @@ public:
   void wait_submitted() noexcept;
   /// See VulkanDevice::save_pipeline_cache; writes the binary archive.
   bool save_pipeline_cache() noexcept;
+  /// Metal asks no client before the device exists, so it makes no queue of
+  /// a client's.
+  [[nodiscard]] NativeQueue
+  native_queue(const NativeDeviceClient &) const noexcept {
+    return {};
+  }
 
   /// See VulkanDevice::hold_retirements.
   void hold_retirements(u64 serial) noexcept;
