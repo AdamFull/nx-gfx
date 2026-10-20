@@ -2,6 +2,8 @@
 
 #include "nx/gfx/types.h"
 
+#include <span>
+
 namespace nx::gfx {
 
 struct texture_desc {
@@ -68,5 +70,65 @@ struct sampler_desc {
 /// The sampler at bindless slot DEFAULT_SAMPLER: sampler_desc's defaults,
 /// bilinear and clamped to the edge.
 inline constexpr sampler_desc DEFAULT_SAMPLER_DESC{.name = "default sampler"};
+
+// Any thread. An invalid handle on failure, which is logged.
+[[nodiscard]] texture_handle create_texture(device &dev,
+                                            const texture_desc &desc);
+void destroy_texture(device &dev, texture_handle texture) noexcept;
+/// @p target takes @p replacement's image under its own handle and bindless
+/// slot, and owns it. Honours retirement holds.
+[[nodiscard]] bool replace_texture(device &dev, texture_handle target,
+                                   texture_handle replacement);
+/// Moves the first mip the sampled view shows (mip streaming).
+[[nodiscard]] bool
+set_texture_view_base_mip(device &dev, texture_handle texture, u32 base_mip);
+[[nodiscard]] bool supports_mip_streaming(const device &dev) noexcept;
+[[nodiscard]] texture_usage_flags usage(const device &dev,
+                                        texture_handle texture) noexcept;
+/// What the last barrier left the texture in.
+[[nodiscard]] resource_state texture_state(const device &dev,
+                                           texture_handle texture) noexcept;
+void set_texture_state(device &dev, texture_handle texture,
+                       resource_state state) noexcept;
+
+[[nodiscard]] buffer_handle create_buffer(device &dev, const buffer_desc &desc);
+void destroy_buffer(device &dev, buffer_handle buffer) noexcept;
+
+[[nodiscard]] sampler_handle create_sampler(device &dev,
+                                            const sampler_desc &desc);
+void destroy_sampler(device &dev, sampler_handle sampler) noexcept;
+
+// Placed resources: a heap the caller sub-allocates, for transient aliasing.
+[[nodiscard]] memory_requirements
+texture_requirements(const device &dev, const texture_desc &desc);
+[[nodiscard]] heap_handle create_heap(device &dev, const heap_desc &desc);
+void destroy_heap(device &dev, heap_handle heap) noexcept;
+[[nodiscard]] texture_handle create_texture_in_heap(device &dev,
+                                                    const texture_desc &desc,
+                                                    heap_handle heap,
+                                                    u64 offset);
+
+[[nodiscard]] query_pool_handle create_timestamp_pool(device &dev, u32 count);
+void destroy_query_pool(device &dev, query_pool_handle pool) noexcept;
+[[nodiscard]] bool read_timestamps(const device &dev, query_pool_handle pool,
+                                   std::span<u64> out);
+
+// What shaders see: a texture's sampled slot is its handle index.
+[[nodiscard]] u32 texture_index(const device &dev,
+                                texture_handle texture) noexcept;
+[[nodiscard]] u32 rw_texture_index(const device &dev, texture_handle texture,
+                                   u32 mip = 0) noexcept;
+[[nodiscard]] u32 sampler_index(const device &dev,
+                                sampler_handle sampler) noexcept;
+[[nodiscard]] u64 buffer_address(const device &dev,
+                                 buffer_handle buffer) noexcept;
+
+// Host access to a buffer made in upload or readback memory.
+[[nodiscard]] void *buffer_mapped(const device &dev,
+                                  buffer_handle buffer) noexcept;
+void flush_buffer(device &dev, buffer_handle buffer, u64 offset = 0,
+                  u64 size = ~0ull) noexcept;
+void invalidate_buffer(device &dev, buffer_handle buffer, u64 offset = 0,
+                       u64 size = ~0ull) noexcept;
 
 } // namespace nx::gfx

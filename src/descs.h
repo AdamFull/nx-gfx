@@ -42,6 +42,7 @@ using RecordingSplit = nx::gfx::recording_split;
 using DeviceCaps = nx::gfx::device_caps;
 using DeviceInitFailure = nx::gfx::device_init_failure;
 using DeviceInitReport = nx::gfx::device_init_report;
+using DeviceDesc = nx::gfx::device_desc;
 
 using nx::gfx::clear_color;
 using nx::gfx::clear_depth;

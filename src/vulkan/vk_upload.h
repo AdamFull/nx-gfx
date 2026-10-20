@@ -16,28 +16,6 @@ namespace nxe::rhi {
 
 class VulkanDevice;
 
-/// Handle to an in-flight readback. `data` is valid once is_complete(ticket)
-/// (or after wait(ticket)) and stays valid until a later read_* call reuses the
-/// same staging - copy it out promptly.
-struct ReadbackResult {
-  UploadTicket ticket;
-  const u8 *data = nullptr;
-  u64 size = 0;
-
-  [[nodiscard]] std::span<const u8> bytes() const noexcept {
-    return {data, nx::cast<usize>(size)};
-  }
-};
-
-struct UploaderStats {
-  u64 total_submits = 0; ///< Lifetime queue submissions (one per batch).
-  u64 completed_submits = 0;
-  u64 ring_used = 0; ///< Staging-ring bytes not yet reclaimed.
-  u64 ring_capacity = 0;
-  usize extra_buffers = 0;
-  usize inflight_submits = 0;
-};
-
 class VulkanUploader {
 public:
   VulkanUploader() = default;

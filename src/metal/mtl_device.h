@@ -23,46 +23,6 @@ class MetalDevice;
 
 struct MetalDeviceState;
 
-struct DeviceDesc {
-  nx::string_view application_name;
-  u32 application_version = 0;
-  /// See VulkanDevice's DeviceDesc; Metal has nothing to pass them to.
-  nx::string_view engine_name;
-  u32 engine_version = 0;
-#if NX_DEBUG
-  bool enable_validation = true;
-#else
-  bool enable_validation = false;
-#endif
-  bool break_on_validation_error = false;
-  GpuCrashMode gpu_crash_mode = GpuCrashMode::Basic;
-  nx::string_view pipeline_cache_path;
-  NativeDriverView native_driver;
-  u32 frames_in_flight = 2;
-  /// Asked what to enable before the device is made; Metal has nothing a
-  /// client must enable first, so none is asked yet.
-  std::span<NativeDeviceClient *const> native_clients{};
-};
-
-struct ReadbackResult {
-  UploadTicket ticket;
-  const u8 *data = nullptr;
-  u64 size = 0;
-
-  [[nodiscard]] std::span<const u8> bytes() const noexcept {
-    return {data, nx::cast<usize>(size)};
-  }
-};
-
-struct UploaderStats {
-  u64 total_submits = 0; ///< Lifetime batch submissions.
-  u64 completed_submits = 0;
-  u64 ring_used = 0; ///< Bytes staged into the batch still open.
-  u64 ring_capacity = 0;
-  usize extra_buffers = 0;
-  usize inflight_submits = 0;
-};
-
 /// Asynchronous GPU upload and readback. Uploads are
 /// batched: a call records a blit and returns a ticket, but nothing is
 /// committed until the batch flushes (once per frame, or on flush()/wait()).

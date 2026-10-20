@@ -71,4 +71,56 @@ namespace detail {
 
 } // namespace detail
 
+/// Handle to an in-flight readback. `data` is valid once upload_complete()
+/// (or after wait_upload()) and stays valid until a later read_* call reuses
+/// the same staging - copy it out promptly.
+struct readback_result {
+  upload_ticket ticket;
+  const u8 *data = nullptr;
+  u64 size = 0;
+
+  [[nodiscard]] std::span<const u8> bytes() const noexcept {
+    return {data, nx::cast<usize>(size)};
+  }
+};
+
+struct uploader_stats {
+  u64 total_submits = 0; ///< Lifetime queue submissions (one per batch).
+  u64 completed_submits = 0;
+  u64 ring_used = 0; ///< Staging-ring bytes not yet reclaimed.
+  u64 ring_capacity = 0;
+  usize extra_buffers = 0;
+  usize inflight_submits = 0;
+};
+
+// Any thread. Staging, the copy queue and queue-family transfers are the
+// device's; a frame waits on what was uploaded before it began.
+[[nodiscard]] upload_ticket
+upload_texture(device &dev, texture_handle texture, std::span<const u8> src,
+               std::span<const image_subresource> layout,
+               resource_state final_state = resource_state::ShaderReadOnly);
+[[nodiscard]] upload_ticket
+upload_texture(device &dev, texture_handle texture, const texture_data &data,
+               resource_state final_state = resource_state::ShaderReadOnly);
+[[nodiscard]] upload_ticket
+upload_buffer(device &dev, buffer_handle buffer, u64 dst_offset,
+              std::span<const u8> src,
+              resource_state final_state = resource_state::ShaderReadOnly);
+[[nodiscard]] upload_ticket
+clear_buffer(device &dev, buffer_handle buffer,
+             resource_state final_state = resource_state::ShaderReadOnly);
+
+// The source must not be in use on the graphics queue: read after
+// wait_idle(), or from a resource only uploads touch.
+[[nodiscard]] readback_result read_buffer(device &dev, buffer_handle buffer,
+                                          u64 offset, u64 size);
+[[nodiscard]] readback_result read_texture(device &dev, texture_handle texture,
+                                           u32 mip = 0, u32 layer = 0);
+
+[[nodiscard]] bool upload_complete(device &dev, upload_ticket ticket) noexcept;
+void wait_upload(device &dev, upload_ticket ticket) noexcept;
+/// Submits every queued upload and waits for all of them.
+void wait_uploads(device &dev) noexcept;
+[[nodiscard]] uploader_stats upload_stats(device &dev) noexcept;
+
 } // namespace nx::gfx

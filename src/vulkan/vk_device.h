@@ -31,28 +31,6 @@ namespace nxe::rhi {
 
 class VulkanDevice;
 
-struct DeviceDesc {
-  nx::string_view application_name;
-  u32 application_version = 0;
-  /// What drivers key application profiles on; make_version() packs it.
-  nx::string_view engine_name;
-  u32 engine_version = 0;
-#if NX_DEBUG
-  bool enable_validation = true;
-  bool enable_sync_validation = true;
-#else
-  bool enable_validation = false;
-  bool enable_sync_validation = false;
-#endif
-  bool break_on_validation_error = false;
-  GpuCrashMode gpu_crash_mode = GpuCrashMode::Basic;
-  nx::string_view pipeline_cache_path;
-  NativeDriverView native_driver;
-  u32 frames_in_flight = 2;
-  /// Asked what to enable before the device is made; only during init().
-  std::span<NativeDeviceClient *const> native_clients{};
-};
-
 /// Which queue family owns an image, as far as the uploader's dedicated-
 /// transfer path is concerned.
 enum class ImageOwner : u8 {

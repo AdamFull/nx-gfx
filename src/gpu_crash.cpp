@@ -1,4 +1,4 @@
-#include "rendering/rhi/gpu_crash.h"
+#include "nx/gfx/crash.h"
 
 #include "core/foundation/diagnostics/crash.h"
 #include "core/foundation/diagnostics/log.h"
@@ -7,11 +7,11 @@
 
 #include <utility>
 
-namespace nxe::rhi {
+namespace nx::gfx {
 namespace {
 
-nx::string_view backend_name(const GpuBackend backend) noexcept {
-  return backend == GpuBackend::Metal ? "Metal" : "Vulkan";
+nx::string_view backend_name(const gpu_backend backend) noexcept {
+  return backend == gpu_backend::Metal ? "Metal" : "Vulkan";
 }
 
 nx::string hex(const u64 value) { return nx::format("0x{:016x}", value); }
@@ -26,7 +26,7 @@ nx::json::value string_array(const nx::vector<nx::string> &values) {
 
 } // namespace
 
-nx::string gpu_crash_json(const GpuCrashReport &report) {
+nx::string gpu_crash_json(const gpu_crash_report &report) {
   nx::json::value root = nx::json::value::make_object();
   root.insert("schema_version", nx::json::value(1u));
   root.insert("kind", nx::json::value("gpu_crash"));
@@ -39,7 +39,7 @@ nx::string gpu_crash_json(const GpuCrashReport &report) {
 
   nx::json::value addresses = nx::json::value::make_array();
   addresses.reserve(report.addresses.size());
-  for (const GpuFaultAddress &fault : report.addresses) {
+  for (const gpu_fault_address &fault : report.addresses) {
     nx::json::value entry = nx::json::value::make_object();
     entry.insert("kind", nx::json::value(fault.kind));
     entry.insert("address", nx::json::value(hex(fault.address)));
@@ -50,7 +50,7 @@ nx::string gpu_crash_json(const GpuCrashReport &report) {
 
   nx::json::value objects = nx::json::value::make_array();
   objects.reserve(report.objects.size());
-  for (const GpuObjectIdentity &object : report.objects) {
+  for (const gpu_object_identity &object : report.objects) {
     nx::json::value entry = nx::json::value::make_object();
     entry.insert("object_type", nx::json::value(object.object_type));
     entry.insert("object_name", nx::json::value(object.object_name));
@@ -61,7 +61,7 @@ nx::string gpu_crash_json(const GpuCrashReport &report) {
 
   nx::json::value bindings = nx::json::value::make_array();
   bindings.reserve(report.bindings.size());
-  for (const GpuAddressBinding &binding : report.bindings) {
+  for (const gpu_address_binding &binding : report.bindings) {
     nx::json::value entry = nx::json::value::make_object();
     entry.insert("operation",
                  nx::json::value(binding.bound ? "bind" : "unbind"));
@@ -77,7 +77,7 @@ nx::string gpu_crash_json(const GpuCrashReport &report) {
 
   nx::json::value vendor_faults = nx::json::value::make_array();
   vendor_faults.reserve(report.vendor_faults.size());
-  for (const GpuVendorFault &fault : report.vendor_faults) {
+  for (const gpu_vendor_fault &fault : report.vendor_faults) {
     nx::json::value entry = nx::json::value::make_object();
     entry.insert("description", nx::json::value(fault.description));
     entry.insert("code", nx::json::value(hex(fault.code)));
@@ -88,7 +88,7 @@ nx::string gpu_crash_json(const GpuCrashReport &report) {
 
   nx::json::value encoders = nx::json::value::make_array();
   encoders.reserve(report.encoders.size());
-  for (const GpuEncoderFault &encoder : report.encoders) {
+  for (const gpu_encoder_fault &encoder : report.encoders) {
     nx::json::value entry = nx::json::value::make_object();
     entry.insert("label", nx::json::value(encoder.label));
     entry.insert("state", nx::json::value(encoder.state));
@@ -103,7 +103,7 @@ nx::string gpu_crash_json(const GpuCrashReport &report) {
   return nx::json::write(root, {.indent = 2});
 }
 
-bool report_gpu_crash(const GpuCrashReport &report) noexcept {
+bool report_gpu_crash(const gpu_crash_report &report) noexcept {
   try {
     const nx::string json = gpu_crash_json(report);
     nx::crash::Attachment attachments[2];
@@ -131,4 +131,4 @@ bool report_gpu_crash(const GpuCrashReport &report) noexcept {
   }
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx

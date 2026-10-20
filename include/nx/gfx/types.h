@@ -6,6 +6,11 @@
 
 namespace nx::gfx {
 
+/// Defined by the backend linked in: a device, and one recording of commands
+/// into it. Both are reached through the free functions of these headers.
+class device;
+class command_list;
+
 enum class format : u16 {
   Unknown = 0,
 

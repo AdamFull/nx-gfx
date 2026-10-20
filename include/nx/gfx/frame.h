@@ -24,4 +24,50 @@ struct recording_split {
   u32 count = 0;
 };
 
+// The device's owner thread. Every swapchain shares one format, chosen by
+// the first.
+[[nodiscard]] swapchain_handle create_swapchain(device &dev,
+                                                const swapchain_desc &desc);
+/// A swapchain with no surface: images of its own that nothing presents.
+[[nodiscard]] swapchain_handle
+create_offscreen_swapchain(device &dev, u32 width, u32 height, format fmt);
+[[nodiscard]] bool resize_swapchain(device &dev, swapchain_handle swapchain,
+                                    u32 width, u32 height);
+void destroy_swapchain(device &dev, swapchain_handle swapchain) noexcept;
+[[nodiscard]] bool offscreen_swapchain(const device &dev,
+                                       swapchain_handle swapchain);
+[[nodiscard]] format swapchain_format(const device &dev) noexcept;
+[[nodiscard]] extent2d swapchain_extent(const device &dev,
+                                        swapchain_handle swapchain);
+/// What the surface granted of swapchain_desc::alpha.
+[[nodiscard]] surface_alpha swapchain_alpha(const device &dev,
+                                            swapchain_handle swapchain);
+/// The last present found the surface changed.
+[[nodiscard]] bool swapchain_stale(const device &dev,
+                                   swapchain_handle swapchain);
+
+/// Begins the next frame: waits for its slot, frees what it can and flushes
+/// uploads. The frame's list belongs to the device until end_frame; null when
+/// no frame could begin. Swapchains are acquired separately, once each.
+[[nodiscard]] command_list *begin_frame(device &dev);
+[[nodiscard]] acquire_result acquire(device &dev, swapchain_handle swapchain);
+[[nodiscard]] texture_handle
+current_backbuffer(const device &dev, swapchain_handle swapchain) noexcept;
+/// One submit; presents every acquired swapchain together.
+[[nodiscard]] bool end_frame(device &dev);
+
+/// A frame with no swapchain that waits for itself (tests, tools).
+[[nodiscard]] command_list *begin_headless_frame(device &dev);
+[[nodiscard]] bool end_headless_frame(device &dev);
+
+/// Ends what @p frame recorded so far and reserves @p count lists submitted
+/// in index order after it; @p frame continues once every one has ended.
+/// None where the device cannot record in parallel.
+[[nodiscard]] recording_split split_frame(device &dev, command_list &frame,
+                                          u32 count);
+/// One list of @p split, for one thread; null when it could not begin.
+[[nodiscard]] command_list *begin_recording(device &dev, recording_split split,
+                                            u32 index);
+void end_recording(device &dev, command_list &list);
+
 } // namespace nx::gfx

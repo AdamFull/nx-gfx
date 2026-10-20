@@ -4,8 +4,11 @@
 add_library(nx_rhi_types STATIC
         include/nx/gfx/bindless.h
         include/nx/gfx/commands.h
+        include/nx/gfx/crash.h
         include/nx/gfx/device.h
         include/nx/gfx/frame.h
+        include/nx/gfx/native.h
+        include/nx/gfx/pipeline_job.h
         include/nx/gfx/pipelines.h
         include/nx/gfx/reflection.h
         include/nx/gfx/resources.h
@@ -39,6 +42,7 @@ set(NX_RHI_HEADERS
         upload.h)
 
 set(NX_RHI_SOURCES
+        gfx.cpp
         gpu_crash.cpp)
 
 if (APPLE)

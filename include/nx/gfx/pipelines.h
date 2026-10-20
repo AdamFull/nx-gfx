@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nx/gfx/pipeline_job.h"
 #include "nx/gfx/reflection.h"
 #include "nx/gfx/types.h"
 
@@ -83,5 +84,21 @@ struct compute_pipeline_desc {
   shader_entry compute;
   u32 group_size[3] = {0, 0, 0};
 };
+
+[[nodiscard]] shader_handle create_shader(device &dev, const shader_desc &desc);
+void destroy_shader(device &dev, shader_handle shader) noexcept;
+[[nodiscard]] const shader_reflection &
+reflection(const device &dev, shader_handle shader) noexcept;
+
+/// On the device's owner thread; compile the job anywhere, then publish it
+/// on the owner thread.
+[[nodiscard]] pipeline_job prepare_pipeline(device &dev,
+                                            const graphics_pipeline_desc &desc);
+[[nodiscard]] pipeline_job prepare_pipeline(device &dev,
+                                            const compute_pipeline_desc &desc);
+[[nodiscard]] pipeline_handle publish_pipeline(device &dev, pipeline_job &&job);
+void destroy_pipeline(device &dev, pipeline_handle pipeline) noexcept;
+[[nodiscard]] nx::workload_statistics
+pipeline_compile_statistics(const device &dev) noexcept;
 
 } // namespace nx::gfx

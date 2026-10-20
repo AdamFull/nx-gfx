@@ -1,8 +1,35 @@
 #pragma once
 
+#include "core/foundation/core/result.h"
+#include "nx/gfx/crash.h"
+#include "nx/gfx/native.h"
 #include "nx/gfx/types.h"
 
+#include <span>
+
 namespace nx::gfx {
+
+struct device_desc {
+  nx::string_view application_name;
+  u32 application_version = 0;
+  /// What drivers key application profiles on; make_version() packs it.
+  nx::string_view engine_name;
+  u32 engine_version = 0;
+#if NX_DEBUG
+  bool enable_validation = true;
+  bool enable_sync_validation = true;
+#else
+  bool enable_validation = false;
+  bool enable_sync_validation = false;
+#endif
+  bool break_on_validation_error = false;
+  gfx::gpu_crash_mode gpu_crash_mode = gfx::gpu_crash_mode::Basic;
+  nx::string_view pipeline_cache_path;
+  native_driver_view native_driver;
+  u32 frames_in_flight = 2;
+  /// Asked what to enable before the device is made, and only then.
+  std::span<native_device_client *const> native_clients{};
+};
 
 struct device_caps {
   nx::string_view device_name;
@@ -108,5 +135,42 @@ struct device_init_report {
   u32 vendor_id = 0;
   u32 device_id = 0;
 };
+
+struct device_init_error {
+  device_init_failure failure = device_init_failure::Failed;
+  /// What is missing, or what failed.
+  nx::string message;
+  u32 vendor_id = 0;
+  u32 device_id = 0;
+};
+
+/// Makes a device on the calling thread, which owns it from then on.
+[[nodiscard]] nx::result<device *, device_init_error>
+create_device(const device_desc &desc);
+/// Waits for the GPU, then frees the device and whatever it still holds.
+/// Nothing may be recording.
+void destroy_device(device *dev) noexcept;
+
+[[nodiscard]] const device_caps &caps(const device &dev) noexcept;
+[[nodiscard]] gpu_device_status device_status(const device &dev) noexcept;
+[[nodiscard]] u32 frames_in_flight(const device &dev) noexcept;
+[[nodiscard]] bool supports(const device &dev, format fmt,
+                            texture_usage_flags usage);
+
+/// Pushes queued uploads to the GPU now, for a device that runs no frames.
+void flush_uploads(device &dev) noexcept;
+/// Waits for the GPU, then frees every retired resource. Never while another
+/// thread records or submits a frame: that frame may hold what this frees.
+void wait_idle(device &dev) noexcept;
+/// Waits for the frames already submitted; frees nothing.
+void wait_submitted(device &dev) noexcept;
+/// Writes the driver's pipeline cache to device_desc::pipeline_cache_path,
+/// from any thread, while compiles continue.
+bool save_pipeline_cache(device &dev) noexcept;
+
+/// A producer that runs ahead of rendering holds the serial of work that may
+/// still name resources; their destruction waits until it is released.
+void hold_retirements(device &dev, u64 serial) noexcept;
+void release_retirements(device &dev, u64 serial) noexcept;
 
 } // namespace nx::gfx
