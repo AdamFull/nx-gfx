@@ -4,34 +4,34 @@
 
 #include <cstring>
 
-namespace nxe::rhi {
+namespace nx::gfx {
 
-const ReflectMember *
-ReflectBlock::member(const nx::id_string field) const noexcept {
-  for (const ReflectMember &m : members)
+const reflect_member *
+reflect_block::member(const nx::id_string field) const noexcept {
+  for (const reflect_member &m : members)
     if (m.name == field)
       return &m;
   return nullptr;
 }
 
-const ReflectBlock *
-ShaderReflection::block(const nx::id_string name) const noexcept {
-  for (const ReflectBlock &b : blocks)
+const reflect_block *
+shader_reflection::block(const nx::id_string name) const noexcept {
+  for (const reflect_block &b : blocks)
     if (b.name == name)
       return &b;
   return nullptr;
 }
 
-const ReflectBlock *ShaderReflection::push_block() const noexcept {
-  for (const ReflectBlock &b : blocks)
-    if (b.kind == ReflectKind::PushConstant)
+const reflect_block *shader_reflection::push_block() const noexcept {
+  for (const reflect_block &b : blocks)
+    if (b.kind == reflect_kind::PushConstant)
       return &b;
   return nullptr;
 }
 
-bool ShaderReflection::local_size(const nx::id_string entry_point,
-                                  u32 out_size[3]) const noexcept {
-  for (const ReflectComputeEntry &e : compute_entries) {
+bool shader_reflection::local_size(const nx::id_string entry_point,
+                                   u32 out_size[3]) const noexcept {
+  for (const reflect_compute_entry &e : compute_entries) {
     if (e.name != entry_point)
       continue;
     if (e.local_size[0] == 0)
@@ -43,6 +43,10 @@ bool ShaderReflection::local_size(const nx::id_string entry_point,
   }
   return false;
 }
+
+} // namespace nx::gfx
+
+namespace nxe::rhi {
 
 BlockWriter::BlockWriter(const ReflectBlock &block) : m_block(&block) {
   m_data.resize(block.size);
@@ -91,4 +95,4 @@ bool BlockWriter::set_all(const void *data, const u32 size) noexcept {
   return true;
 }
 
-}
+} // namespace nxe::rhi

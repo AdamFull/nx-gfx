@@ -1,414 +1,55 @@
 #pragma once
 
-#include "core/foundation/core/foundation.h"
-#include "core/foundation/platform/native_window.h"
-#include "core/foundation/strings/utf8_string_view.h"
+#include "nx/gfx/commands.h"
+#include "nx/gfx/device.h"
+#include "nx/gfx/frame.h"
+#include "nx/gfx/pipelines.h"
+#include "nx/gfx/resources.h"
+#include "nx/gfx/types.h"
 #include "rendering/rhi/handles.h"
 #include "rendering/rhi/types.h"
 
 namespace nxe::rhi {
 
-struct Extent2D {
-  u32 width = 0;
-  u32 height = 0;
-};
+// The names before nx::gfx, until every caller has moved to nx/gfx (G6).
+using Extent2D = nx::gfx::extent2d;
+using Extent3D = nx::gfx::extent3d;
+using Offset2D = nx::gfx::offset2d;
+using Rect2D = nx::gfx::rect2d;
+using Viewport = nx::gfx::viewport;
+using ClearValue = nx::gfx::clear_value;
+using TextureDesc = nx::gfx::texture_desc;
+using MemoryRequirements = nx::gfx::memory_requirements;
+using HeapDesc = nx::gfx::heap_desc;
+using BufferDesc = nx::gfx::buffer_desc;
+using SamplerDesc = nx::gfx::sampler_desc;
+using RenderAttachment = nx::gfx::render_attachment;
+using RenderPassDesc = nx::gfx::render_pass_desc;
+using SwapchainDesc = nx::gfx::swapchain_desc;
+using ShaderReflection = nx::gfx::shader_reflection;
+using ShaderDesc = nx::gfx::shader_desc;
+using ShaderEntry = nx::gfx::shader_entry;
+using BlendState = nx::gfx::blend_state;
+using GraphicsPipelineDesc = nx::gfx::graphics_pipeline_desc;
+using ComputePipelineDesc = nx::gfx::compute_pipeline_desc;
+using DrawIndirectCommand = nx::gfx::draw_indirect_command;
+using DrawMeshTasksIndirectCommand = nx::gfx::draw_mesh_tasks_indirect_command;
+using DrawIndexedIndirectCommand = nx::gfx::draw_indexed_indirect_command;
+using DispatchIndirectCommand = nx::gfx::dispatch_indirect_command;
+using TextureBarrier = nx::gfx::texture_barrier;
+using BufferBarrier = nx::gfx::buffer_barrier;
+using RecordingSplit = nx::gfx::recording_split;
+using DeviceCaps = nx::gfx::device_caps;
+using DeviceInitFailure = nx::gfx::device_init_failure;
+using DeviceInitReport = nx::gfx::device_init_report;
 
-struct Extent3D {
-  u32 width = 0;
-  u32 height = 0;
-  u32 depth = 1;
-};
-
-struct Offset2D {
-  i32 x = 0;
-  i32 y = 0;
-};
-
-struct Rect2D {
-  Offset2D offset;
-  Extent2D extent;
-};
-
-struct Viewport {
-  f32 x = 0.f, y = 0.f;
-  f32 width = 0.f, height = 0.f;
-  f32 min_depth = 0.f, max_depth = 1.f;
-};
-
-union ClearValue {
-  f32 color[4];
-  struct {
-    f32 depth;
-    u32 stencil;
-  } depth_stencil;
-};
-
-[[nodiscard]] constexpr ClearValue
-clear_color(const f32 r, const f32 g, const f32 b, const f32 a = 1.f) noexcept {
-  ClearValue v{};
-  v.color[0] = r;
-  v.color[1] = g;
-  v.color[2] = b;
-  v.color[3] = a;
-  return v;
-}
-
-[[nodiscard]] constexpr ClearValue clear_depth(const f32 depth = 1.f,
-                                               const u32 stencil = 0) noexcept {
-  ClearValue v{};
-  v.depth_stencil.depth = depth;
-  v.depth_stencil.stencil = stencil;
-  return v;
-}
-
-struct TextureDesc {
-  nx::string_view name = "texture";
-  Format format = Format::Unknown;
-  TextureDimension dimension = TextureDimension::Tex2D;
-  u32 width = 1;
-  u32 height = 1;
-  u32 depth_or_layers = 1;
-  u32 mip_levels = 1;
-  u32 sample_count = 1;
-  TextureUsageFlags usage = TextureUsage::Sampled;
-  MemoryUsage memory = MemoryUsage::DeviceLocal;
-  ResourceState initial_state = ResourceState::Undefined;
-  /// First mip exposed by the sampled view. Streaming clients use this to
-  /// create a texture with only its already-uploaded coarse tail visible.
-  u32 sampled_base_mip = 0;
-};
-
-/// What a resource needs from a heap. Query it before packing, then place the
-/// resource at an offset that satisfies the alignment.
-struct MemoryRequirements {
-  u64 size = 0;
-  u64 alignment = 1;
-  u32 memory_type_bits = ~0u;
-};
-
-/// Memory the caller sub-allocates itself. Resources placed at non-overlapping
-/// offsets are independent; resources placed at overlapping offsets alias, and
-/// must not be in use at the same time.
-struct HeapDesc {
-  nx::string_view name = "heap";
-  u64 size = 0;
-  u64 alignment = 256;
-  u32 memory_type_bits = ~0u;
-  MemoryUsage memory = MemoryUsage::DeviceLocal;
-};
-
-struct BufferDesc {
-  nx::string_view name = "buffer";
-  u64 size = 0;
-  BufferUsageFlags usage = BufferUsage::Storage;
-  MemoryUsage memory = MemoryUsage::DeviceLocal;
-  /// Keep the mapping alive for the buffer's lifetime. Upload-heap ring
-  /// buffers want this; mapping per frame is pure overhead.
-  bool persistently_mapped = false;
-};
-
-struct SamplerDesc {
-  nx::string_view name = "sampler";
-  FilterMode min_filter = FilterMode::Linear;
-  FilterMode mag_filter = FilterMode::Linear;
-  FilterMode mip_filter = FilterMode::Linear;
-  AddressMode address_u = AddressMode::ClampToEdge;
-  AddressMode address_v = AddressMode::ClampToEdge;
-  AddressMode address_w = AddressMode::ClampToEdge;
-  f32 mip_lod_bias = 0.f;
-  f32 max_anisotropy = 1.f;
-  f32 min_lod = 0.f;
-  f32 max_lod = 1000.f;
-  CompareOp compare = CompareOp::Never;
-};
-
-/// The sampler at bindless slot DEFAULT_SAMPLER: SamplerDesc's defaults,
-/// bilinear and clamped to the edge.
-inline constexpr SamplerDesc DEFAULT_SAMPLER_DESC{.name = "default sampler"};
-
-struct RenderAttachment {
-  TextureHandle texture;
-  u32 mip_level = 0;
-  u32 base_layer = 0;
-  LoadOp load = LoadOp::Clear;
-  StoreOp store = StoreOp::Store;
-  ClearValue clear = {};
-  TextureHandle resolve_target;
-  /// A depth attachment the pass only tests, in its read-only state
-  /// (ResourceState::DepthStencilRead) and storing nothing; the pass's
-  /// pipelines must not write depth.
-  bool read_only = false;
-};
-
-inline constexpr u32 MAX_COLOR_ATTACHMENTS = 8;
-
-struct RenderPassDesc {
-  nx::string_view name = "pass";
-  RenderAttachment color[MAX_COLOR_ATTACHMENTS] = {};
-  u32 color_count = 0;
-  RenderAttachment depth_stencil = {};
-  bool has_depth_stencil = false;
-  Rect2D render_area = {};
-};
-
-struct SwapchainDesc {
-  nx::NativeWindowHandle window;
-  u32 width = 0;
-  u32 height = 0;
-  PresentMode present_mode = PresentMode::Fifo;
-  Format preferred_format = Format::BGRA8_UNORM;
-  /// Opaque, or Premultiplied for a see-through window. The surface may not
-  /// offer it; swapchain_alpha() reports what was granted.
-  SurfaceAlpha alpha = SurfaceAlpha::Opaque;
-};
-
-#if defined(NX_RHI_METAL)
-inline constexpr nx::string_view SHADER_BINARY_EXT = ".metallib";
-#else
-inline constexpr nx::string_view SHADER_BINARY_EXT = ".spv";
-#endif
-
-struct ShaderReflection;
-
-/// A compiled shader blob (SPIR-V on Vulkan, metallib on Metal). One blob may
-/// hold several entry points; a pipeline names the one it wants.
-struct ShaderDesc {
-  nx::string_view name = "shader";
-  const void *code = nullptr;
-  usize code_size = 0;
-  /// Its interface, already parsed (reflect_from_json, a cooked container);
-  /// copied. Null for a shader with none.
-  const ShaderReflection *reflection = nullptr;
-};
-
-struct ShaderEntry {
-  ShaderHandle shader;
-  nx::string_view entry_point = "main";
-};
-
-struct BlendState {
-  bool enabled = false;
-  BlendMode mode = BlendMode::Opaque;
-  /// Per-channel write mask, bit 0..3 = R,G,B,A.
-  u8 write_mask = 0xF;
-};
-
-struct GraphicsPipelineDesc {
-  nx::string_view name = "pipeline";
-  /// Exactly one of vertex and mesh has a shader; a description without
-  /// shaders yet (GpuPipelineRuntime's) names a mesh pipeline by an empty
-  /// vertex entry. A mesh pipeline has no vertex input or topology of its
-  /// own, needs DeviceCaps::mesh_shaders and draws only through
-  /// draw_mesh_tasks_indirect.
-  ShaderEntry vertex;
-  ShaderEntry mesh;
-  ShaderEntry fragment;
-
-  /// Attachment formats, for dynamic rendering. Must match the render pass the
-  /// pipeline is used in.
-  Format color_formats[MAX_COLOR_ATTACHMENTS] = {};
-  u32 color_count = 0;
-  Format depth_format = Format::Unknown;
-  // No "= {}" here (unlike color_formats above): GCC has a real bug binding
-  // a temporary aggregate-initialized from a braced-init-list directly to a
-  // reference function parameter when one of its members is an array of
-  // class type with its own default member initializer - every
-  // compile_pipeline(device, {...}) call site failed with "no known
-  // conversion" on Linux, even the ones that never touch .blend. Safe to
-  // drop: BlendState's own fields all have default member initializers, so
-  // omitting .blend from an aggregate-init list already value-initializes
-  // each element identically via [dcl.init.aggr]'s "empty initializer list"
-  // rule, and plain `GraphicsPipelineDesc d;` default-init still runs
-  // BlendState's implicit default constructor per element either way.
-  BlendState blend[MAX_COLOR_ATTACHMENTS];
-
-  PrimitiveTopology topology = PrimitiveTopology::TriangleList;
-  CullMode cull = CullMode::None;
-  FrontFace front_face = FrontFace::CounterClockwise;
-
-  bool depth_test = false;
-  bool depth_write = false;
-  CompareOp depth_compare = CompareOp::LessOrEqual;
-
-  u32 sample_count = 1;
-  /// Runs the fragment shader once for each covered sample, at that sample,
-  /// where the device can (DeviceCaps::sample_shading); once a pixel
-  /// otherwise.
-  bool sample_shading = false;
-};
-
-struct ComputePipelineDesc {
-  nx::string_view name = "pipeline";
-  ShaderEntry compute;
-  u32 group_size[3] = {0, 0, 0};
-};
-
-struct DrawIndirectCommand {
-  u32 vertex_count = 0;
-  u32 instance_count = 0;
-  u32 first_vertex = 0;
-  u32 first_instance = 0;
-};
-
-struct DrawMeshTasksIndirectCommand {
-  u32 groups_x = 0;
-  u32 groups_y = 0;
-  u32 groups_z = 0;
-};
-
-struct DrawIndexedIndirectCommand {
-  u32 index_count = 0;
-  u32 instance_count = 0;
-  u32 first_index = 0;
-  i32 vertex_offset = 0;
-  u32 first_instance = 0;
-};
-
-struct DispatchIndirectCommand {
-  u32 groups_x = 0;
-  u32 groups_y = 0;
-  u32 groups_z = 0;
-};
-
-/// Barrier describing a texture's state transition. The render graph is the
-/// intended producer of these; hand-written barriers are expert-mode. From a
-/// written state to itself, it orders the accesses on either side of it.
-struct TextureBarrier {
-  TextureHandle texture;
-  ResourceState from = ResourceState::Undefined;
-  ResourceState to = ResourceState::Undefined;
-  bool discard = false;
-  u32 base_mip = 0;
-  u32 mip_count = ~0u;
-  u32 base_layer = 0;
-  u32 layer_count = ~0u;
-};
-
-struct BufferBarrier {
-  BufferHandle buffer;
-  ResourceState from = ResourceState::Undefined;
-  ResourceState to = ResourceState::Undefined;
-  u64 offset = 0;
-  u64 size = ~0ull;
-};
-
-/// Command buffers split off a frame by split_frame. They are submitted in
-/// index order, after what the frame recorded before the split and before what
-/// it records after.
-struct RecordingSplit {
-  u32 first = 0;
-  u32 count = 0;
-};
-
-struct DeviceCaps {
-  nx::string_view device_name;
-  u32 api_version = 0;
-  u32 driver_version = 0;
-  u32 vendor_id = 0;
-  bool discrete = false;
-
-  bool descriptor_indexing = false;
-  bool buffer_device_address = false;
-
-  /// True on every backend in practice, for different reasons: Vulkan
-  /// requires all three at physical-device selection (device creation fails
-  /// otherwise, so this is a fact, not a probe), and Metal has never had a
-  /// render-pass-object or pipeline-barrier API to opt into in the first
-  /// place - its baseline behaviour already is what these name. Present for
-  /// diagnostics and ModuleCapability completeness; no code branches on
-  /// these being false because on a successfully-initialized device they
-  /// never are.
-  bool dynamic_rendering = false;
-  bool synchronization2 = false;
-  bool timeline_semaphores = false;
-
-  bool async_compute = false;
-  bool dedicated_transfer = false;
-  bool draw_indirect_count = false;
-  bool memoryless_attachments = false;
-  bool timestamps = false;
-  /// One frame's commands can be recorded on several threads at once, through
-  /// split_frame and begin_recording.
-  bool parallel_recording = false;
-
-  /// The sample counts a multisampled target may have in every attachment
-  /// format, colour, integer and depth alike: bit N set where N samples
-  /// work. A device may skip one between its largest and 1 (Mali has no 2).
-  u32 msaa_sample_counts = 1;
-
-  /// What 3D may use where the device has it, each enabled at device
-  /// creation when present. Metal reports none of them until its 3D track.
-  bool mesh_shaders = false;
-  bool buffer_int64_atomics = false;
-  bool image_int64_atomics = false;
-  /// Half-precision arithmetic in shaders (SPIR-V Float16).
-  bool shader_float16 = false;
-  bool fragment_barycentrics = false;
-  /// GraphicsPipelineDesc::sample_shading.
-  bool sample_shading = false;
-  /// A fragment shader may store to and atomically update buffers.
-  bool fragment_stores = false;
-  bool acceleration_structures = false;
-  /// Implies acceleration_structures.
-  bool ray_queries = false;
-  /// In compute shaders. subgroup_size is what a dispatch gets unless its
-  /// pipeline asks for another in [min_subgroup_size, max_subgroup_size],
-  /// which needs subgroup_size_control.
-  SubgroupOpFlags subgroup_ops;
-  u32 subgroup_size = 0;
-  u32 min_subgroup_size = 0;
-  u32 max_subgroup_size = 0;
-  bool subgroup_size_control = false;
-
-  u32 max_texture_2d = 0;
-  u64 max_buffer_size = 0;
-  Extent3D max_compute_work_groups{0, 0, 0};
-  u32 max_bindless_sampled_images = 0;
-  u32 max_bindless_storage_images = 0;
-  u32 max_bindless_samplers = 0;
-  u32 max_push_constant_size = 0;
-  u64 device_local_memory = 0;
-  f32 timestamp_period_ns = 0.f;
-};
-
-/// The most samples a target may have in @p counts (DeviceCaps::
-/// msaa_sample_counts); 1 at least.
-[[nodiscard]] constexpr u32 max_samples(const u32 counts) noexcept {
-  for (u32 samples = 64; samples > 1; samples >>= 1)
-    if ((counts & samples) != 0)
-      return samples;
-  return 1;
-}
-
-/// The most samples in @p counts that are at most @p wanted; 1 at least.
-[[nodiscard]] constexpr u32 samples_at_most(const u32 counts,
-                                            const u32 wanted) noexcept {
-  for (u32 samples = 64; samples > 1; samples >>= 1)
-    if (samples <= wanted && (counts & samples) != 0)
-      return samples;
-  return 1;
-}
-
-/// Classifies device startup without leaking a backend-specific error model to
-/// the application. Unsupported means that the available system graphics
-/// stack cannot satisfy the RHI's required capability floor; Failed means a
-/// compatible stack was found but initialization did not complete.
-enum class DeviceInitFailure : u8 {
-  None,
-  Unsupported,
-  Failed,
-};
-
-/// A version as the graphics API packs it (Vulkan's VK_MAKE_VERSION layout).
-[[nodiscard]] constexpr u32 make_version(const u32 major, const u32 minor,
-                                         const u32 patch) noexcept {
-  return (major << 22u) | (minor << 12u) | patch;
-}
-
-struct DeviceInitReport {
-  DeviceInitFailure failure = DeviceInitFailure::None;
-  u32 vendor_id = 0;
-  u32 device_id = 0;
-};
+using nx::gfx::clear_color;
+using nx::gfx::clear_depth;
+using nx::gfx::DEFAULT_SAMPLER_DESC;
+using nx::gfx::make_version;
+using nx::gfx::MAX_COLOR_ATTACHMENTS;
+using nx::gfx::max_samples;
+using nx::gfx::samples_at_most;
+using nx::gfx::SHADER_BINARY_EXT;
 
 } // namespace nxe::rhi

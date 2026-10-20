@@ -1,21 +1,21 @@
-#include "rendering/rhi/texture_data.h"
+#include "nx/gfx/upload.h"
 
-namespace nxe::rhi {
+namespace nx::gfx {
 
 bool validate_image_upload(
-    const ImageUploadDesc &target, const std::span<const u8> src,
-    const std::span<const ImageSubresource> layout) noexcept {
+    const image_upload_desc &target, const std::span<const u8> src,
+    const std::span<const image_subresource> layout) noexcept {
   u32 block_width = 0;
   u32 block_height = 0;
   format_block_extent(target.format, block_width, block_height);
   const u64 bytes_per_block = format_texel_size(target.format);
-  if (target.format == Format::Unknown || target.width == 0 ||
+  if (target.format == format::Unknown || target.width == 0 ||
       target.height == 0 || target.depth == 0 || target.mip_levels == 0 ||
       target.array_layers == 0 || block_width == 0 || block_height == 0 ||
       bytes_per_block == 0 || layout.empty())
     return false;
 
-  for (const ImageSubresource &sub : layout) {
+  for (const image_subresource &sub : layout) {
     if (sub.size == 0 || sub.offset > src.size() ||
         sub.size > src.size() - sub.offset || sub.mip >= target.mip_levels ||
         sub.layer >= target.array_layers || sub.width == 0 || sub.height == 0 ||
@@ -59,4 +59,4 @@ bool validate_image_upload(
   return true;
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx

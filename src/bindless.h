@@ -1,35 +1,22 @@
 #pragma once
 
-#include "core/foundation/core/foundation.h"
-#include "rendering/rhi/shaders/core_layout.h"
-#include "rendering/rhi/shaders/nx_texture.hpp"
+#include "nx/gfx/bindless.h"
 
 namespace nxe::rhi {
 
-inline constexpr u32 BINDLESS_SET = NX_BINDLESS_SET;
+// The names before nx::gfx, until every caller has moved to nx/gfx (G6).
 
-inline constexpr u32 BINDLESS_BINDING_SAMPLERS = NX_BINDLESS_BINDING_SAMPLERS;
-inline constexpr u32 BINDLESS_BINDING_TEXTURES = NX_BINDLESS_BINDING_TEXTURES;
-inline constexpr u32 BINDLESS_BINDING_RW_TEXTURES =
-    NX_BINDLESS_BINDING_RW_TEXTURES;
-inline constexpr u32 BINDLESS_BINDING_GLOBALS = NX_BINDLESS_BINDING_GLOBALS;
-
-inline constexpr u32 NULL_PAGE_BYTES = NX_NULL_PAGE_BYTES;
-
-/// Upper bounds on each array; the actual size is min(this, device limit).
-/// TEXTURES must exceed the peak count of simultaneously live textures because
-/// a texture's SRV slot is its handle index.
-inline constexpr u32 MAX_BINDLESS_SAMPLERS = NX_BINDLESS_MAX_SAMPLERS;
-inline constexpr u32 MAX_BINDLESS_TEXTURES = NX_BINDLESS_MAX_TEXTURES;
-inline constexpr u32 MAX_BINDLESS_RW_TEXTURES = NX_BINDLESS_MAX_RW_TEXTURES;
-
-inline constexpr u32 PUSH_CONSTANT_SIZE = 128;
-
-inline constexpr u32 BINDLESS_INVALID_INDEX = ~0u;
-
-/// The sampler slot every device fills first, before any sampler it is asked
-/// for (DEFAULT_SAMPLER_DESC): what a texture made with sampler 0 samples and
-/// gathers through. An unwritten slot would be read as undefined.
-inline constexpr u32 DEFAULT_SAMPLER = 0;
+using nx::gfx::BINDLESS_BINDING_GLOBALS;
+using nx::gfx::BINDLESS_BINDING_RW_TEXTURES;
+using nx::gfx::BINDLESS_BINDING_SAMPLERS;
+using nx::gfx::BINDLESS_BINDING_TEXTURES;
+using nx::gfx::BINDLESS_INVALID_INDEX;
+using nx::gfx::BINDLESS_SET;
+using nx::gfx::DEFAULT_SAMPLER;
+using nx::gfx::MAX_BINDLESS_RW_TEXTURES;
+using nx::gfx::MAX_BINDLESS_SAMPLERS;
+using nx::gfx::MAX_BINDLESS_TEXTURES;
+using nx::gfx::NULL_PAGE_BYTES;
+using nx::gfx::PUSH_CONSTANT_SIZE;
 
 } // namespace nxe::rhi

@@ -1,58 +1,20 @@
 #pragma once
 
 #include "core/foundation/containers/small_vector.h"
-#include "core/foundation/strings/id_string.h"
-#include "rendering/rhi/types.h"
+#include "nx/gfx/reflection.h"
 
 #include <span>
 
 namespace nxe::rhi {
 
-enum class ReflectKind : u8 {
-  PushConstant,
-  UniformBuffer,
-  StorageBuffer,
-  SampledTexture,
-  StorageTexture,
-  Sampler,
-};
+// The names before nx::gfx, until every caller has moved to nx/gfx (G6).
+using ReflectKind = nx::gfx::reflect_kind;
+using ReflectMember = nx::gfx::reflect_member;
+using ReflectBlock = nx::gfx::reflect_block;
+using ReflectComputeEntry = nx::gfx::reflect_compute_entry;
+using ShaderReflection = nx::gfx::shader_reflection;
 
-struct ReflectMember {
-  nx::id_string name;
-  u32 offset = 0;
-  u32 size = 0;
-  u32 array_count = 1;
-};
-
-struct ReflectBlock {
-  nx::id_string name;
-  ReflectKind kind = ReflectKind::PushConstant;
-  u32 set = 0;
-  u32 binding = 0;
-  u32 size = 0;
-  nx::small_vector<ReflectMember, 12> members;
-
-  [[nodiscard]] const ReflectMember *member(nx::id_string field) const noexcept;
-};
-
-struct ReflectComputeEntry {
-  nx::id_string name;
-  u32 local_size[3] = {};
-};
-
-/// A shader's interface. Owned by the RHI, one per ShaderHandle.
-struct ShaderReflection {
-  nx::small_vector<ReflectBlock, 8> blocks;
-  nx::small_vector<ReflectComputeEntry, 4> compute_entries;
-
-  [[nodiscard]] const ReflectBlock *block(nx::id_string name) const noexcept;
-  [[nodiscard]] const ReflectBlock *push_block() const noexcept;
-  [[nodiscard]] bool local_size(nx::id_string entry_point,
-                                u32 out_size[3]) const noexcept;
-};
-
-[[nodiscard]] bool reflect_from_json(nx::string_view text,
-                                     ShaderReflection &out);
+using nx::gfx::reflect_from_json;
 
 class BlockWriter {
 public:
@@ -87,4 +49,4 @@ private:
   nx::small_vector<std::byte, 128> m_data;
 };
 
-}
+} // namespace nxe::rhi

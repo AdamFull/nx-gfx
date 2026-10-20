@@ -2,6 +2,15 @@
 # Formats and texel layouts: what the RHI and the asset tools share, with no
 # backend behind it.
 add_library(nx_rhi_types STATIC
+        include/nx/gfx/bindless.h
+        include/nx/gfx/commands.h
+        include/nx/gfx/device.h
+        include/nx/gfx/frame.h
+        include/nx/gfx/pipelines.h
+        include/nx/gfx/reflection.h
+        include/nx/gfx/resources.h
+        include/nx/gfx/types.h
+        include/nx/gfx/upload.h
         types.h
         types.cpp
         texture_data.h
@@ -10,7 +19,9 @@ add_library(nx_rhi_types STATIC
         shader_reflect.cpp
         shader_reflect_json.cpp)
 add_library(nx::rhi_types ALIAS nx_rhi_types)
-target_include_directories(nx_rhi_types PUBLIC "${NX_ENGINE_ROOT}/engine")
+target_include_directories(nx_rhi_types PUBLIC
+        "${NX_ENGINE_ROOT}/engine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(nx_rhi_types
         PUBLIC nx::foundation
         PRIVATE nx::compile_options)

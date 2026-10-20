@@ -1,36 +1,36 @@
 
-#include "rendering/rhi/shader_reflect.h"
+#include "nx/gfx/reflection.h"
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/serialization/json.h"
 #include "core/foundation/serialization/json_util.h"
 
-namespace nxe::rhi {
+namespace nx::gfx {
 namespace {
 
 /// Slang names the same concept differently per target: a push block is
 /// "pushConstantBuffer" for SPIR-V but "constantBuffer" for Metal.
-[[nodiscard]] ReflectKind to_kind(const nx::string_view kind,
-                                  const nx::string_view name) noexcept {
+[[nodiscard]] reflect_kind to_kind(const nx::string_view kind,
+                                   const nx::string_view name) noexcept {
   if (kind == "pushConstantBuffer")
-    return ReflectKind::PushConstant;
+    return reflect_kind::PushConstant;
   if (kind == "constantBuffer")
-    return name == "pc" ? ReflectKind::PushConstant
-                        : ReflectKind::UniformBuffer;
+    return name == "pc" ? reflect_kind::PushConstant
+                        : reflect_kind::UniformBuffer;
   if (kind == "shaderResource" || kind == "descriptorTableSlot")
-    return ReflectKind::SampledTexture;
+    return reflect_kind::SampledTexture;
   if (kind == "unorderedAccess")
-    return ReflectKind::StorageTexture;
+    return reflect_kind::StorageTexture;
   if (kind == "samplerState")
-    return ReflectKind::Sampler;
+    return reflect_kind::Sampler;
   nx::logw(nx::log::rhi,
            "shader reflection: parameter '{}' has unrecognized kind '{}'; "
            "treating it as a storage buffer",
            name, kind);
-  return ReflectKind::StorageBuffer;
+  return reflect_kind::StorageBuffer;
 }
 
-void read_fields(const nx::json::value &element_type, ReflectBlock &out) {
+void read_fields(const nx::json::value &element_type, reflect_block &out) {
   const nx::json::value &fields = element_type["fields"];
   if (!fields.is_array())
     return;
@@ -41,7 +41,7 @@ void read_fields(const nx::json::value &element_type, ReflectBlock &out) {
     if (name.empty())
       continue;
     const nx::json::value &binding = field["binding"];
-    out.members.push_back(ReflectMember{
+    out.members.push_back(reflect_member{
         .name = nx::id_string(name),
         .offset = nx::json::u32_or(binding, "offset", 0),
         .size = nx::json::u32_or(binding, "size", 0),
@@ -49,10 +49,9 @@ void read_fields(const nx::json::value &element_type, ReflectBlock &out) {
     });
   }
 }
-
 }
 
-bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
+bool reflect_from_json(const nx::string_view text, shader_reflection &out) {
   out.blocks.clear();
   out.compute_entries.clear();
 
@@ -71,7 +70,7 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
           nx::json::string_or(param, "name", "parameter");
       const nx::json::value &binding = param["binding"];
 
-      ReflectBlock block;
+      reflect_block block;
       block.name = nx::id_string(name);
       block.kind = to_kind(nx::json::string_or(binding, "kind", {}), name);
       block.binding = nx::json::u32_or(binding, "index", 0);
@@ -83,7 +82,7 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
       // Slang states a block's size on its fields rather than on the block for
       // a push constant buffer, so derive it when it is not given.
       if (block.size == 0 && !block.members.empty()) {
-        const ReflectMember &last = block.members.back();
+        const reflect_member &last = block.members.back();
         block.size = last.offset + last.size;
       }
 
@@ -98,7 +97,7 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
       if (nx::json::string_or(entry, "stage", {}) != "compute")
         continue;
 
-      ReflectComputeEntry out_entry;
+      reflect_compute_entry out_entry;
       out_entry.name = nx::id_string(nx::json::string_or(entry, "name", {}));
       const nx::json::value &tgs = entry["threadGroupSize"];
       if (tgs.is_array() && tgs.size() == 3)
@@ -111,4 +110,4 @@ bool reflect_from_json(const nx::string_view text, ShaderReflection &out) {
   return true;
 }
 
-}
+} // namespace nx::gfx

@@ -1,6 +1,6 @@
-#include "rendering/rhi/types.h"
+#include "nx/gfx/types.h"
 
-namespace nxe::rhi {
+namespace nx::gfx {
 namespace {
 
 struct FormatInfo {
@@ -77,8 +77,8 @@ constexpr FormatInfo FORMAT_TABLE[] = {
     {"BC6H_RGB_UFLOAT", 16, 4, 4, false, false, false},
     {"BC6H_RGB_SFLOAT", 16, 4, 4, false, false, false},
 };
-static_assert(std::size(FORMAT_TABLE) == nx::cast<usize>(Format::Count),
-              "FORMAT_TABLE is out of sync with Format");
+static_assert(std::size(FORMAT_TABLE) == nx::cast<usize>(format::Count),
+              "FORMAT_TABLE is out of sync with format");
 
 constexpr nx::string_view STATE_NAMES[] = {"Undefined",
                                            "General",
@@ -100,22 +100,22 @@ constexpr nx::string_view STATE_NAMES[] = {"Undefined",
                                            "HostRead",
                                            "HostWrite",
                                            "Present"};
-static_assert(std::size(STATE_NAMES) == nx::cast<usize>(ResourceState::Count),
-              "STATE_NAMES is out of sync with ResourceState");
+static_assert(std::size(STATE_NAMES) == nx::cast<usize>(resource_state::Count),
+              "STATE_NAMES is out of sync with resource_state");
 
 constexpr nx::string_view QUEUE_NAMES[] = {"Graphics", "Compute", "Copy"};
-static_assert(std::size(QUEUE_NAMES) == nx::cast<usize>(QueueType::Count),
-              "QUEUE_NAMES is out of sync with QueueType");
+static_assert(std::size(QUEUE_NAMES) == nx::cast<usize>(queue_type::Count),
+              "QUEUE_NAMES is out of sync with queue_type");
 
 constexpr nx::string_view SURFACE_ALPHA_NAMES[] = {
     "Opaque", "Premultiplied", "Unmultiplied", "WindowSystem"};
 static_assert(std::size(SURFACE_ALPHA_NAMES) ==
-                  nx::cast<usize>(SurfaceAlpha::Count),
-              "SURFACE_ALPHA_NAMES is out of sync with SurfaceAlpha");
+                  nx::cast<usize>(surface_alpha::Count),
+              "SURFACE_ALPHA_NAMES is out of sync with surface_alpha");
 
-const FormatInfo &info_of(const Format format) noexcept {
-  const auto i = nx::cast<usize>(format);
-  return FORMAT_TABLE[i < nx::cast<usize>(Format::Count) ? i : 0];
+const FormatInfo &info_of(const format fmt) noexcept {
+  const auto i = nx::cast<usize>(fmt);
+  return FORMAT_TABLE[i < nx::cast<usize>(format::Count) ? i : 0];
 }
 
 [[nodiscard]] bool same_ignoring_case(const nx::string_view a,
@@ -137,171 +137,167 @@ struct UsageName {
 };
 
 constexpr UsageName TEXTURE_USAGE_NAMES[] = {
-    {"sampled", nx::cast<u16>(TextureUsage::Sampled)},
-    {"storage", nx::cast<u16>(TextureUsage::Storage)},
-    {"render_target", nx::cast<u16>(TextureUsage::RenderTarget)},
-    {"depth_stencil", nx::cast<u16>(TextureUsage::DepthStencil)},
-    {"copy_src", nx::cast<u16>(TextureUsage::CopySrc)},
-    {"copy_dst", nx::cast<u16>(TextureUsage::CopyDst)},
-    {"transient", nx::cast<u16>(TextureUsage::Transient)},
+    {"sampled", nx::cast<u16>(texture_usage::Sampled)},
+    {"storage", nx::cast<u16>(texture_usage::Storage)},
+    {"render_target", nx::cast<u16>(texture_usage::RenderTarget)},
+    {"depth_stencil", nx::cast<u16>(texture_usage::DepthStencil)},
+    {"copy_src", nx::cast<u16>(texture_usage::CopySrc)},
+    {"copy_dst", nx::cast<u16>(texture_usage::CopyDst)},
+    {"transient", nx::cast<u16>(texture_usage::Transient)},
 };
 
 constexpr UsageName BUFFER_USAGE_NAMES[] = {
-    {"vertex", nx::cast<u16>(BufferUsage::Vertex)},
-    {"index", nx::cast<u16>(BufferUsage::Index)},
-    {"uniform", nx::cast<u16>(BufferUsage::Uniform)},
-    {"storage", nx::cast<u16>(BufferUsage::Storage)},
-    {"indirect", nx::cast<u16>(BufferUsage::Indirect)},
-    {"copy_src", nx::cast<u16>(BufferUsage::CopySrc)},
-    {"copy_dst", nx::cast<u16>(BufferUsage::CopyDst)},
-    {"device_address", nx::cast<u16>(BufferUsage::DeviceAddress)},
+    {"vertex", nx::cast<u16>(buffer_usage::Vertex)},
+    {"index", nx::cast<u16>(buffer_usage::Index)},
+    {"uniform", nx::cast<u16>(buffer_usage::Uniform)},
+    {"storage", nx::cast<u16>(buffer_usage::Storage)},
+    {"indirect", nx::cast<u16>(buffer_usage::Indirect)},
+    {"copy_src", nx::cast<u16>(buffer_usage::CopySrc)},
+    {"copy_dst", nx::cast<u16>(buffer_usage::CopyDst)},
+    {"device_address", nx::cast<u16>(buffer_usage::DeviceAddress)},
 };
 
 } // namespace
 
-nx::string_view to_string(const Format format) noexcept {
-  // Not info_of(format).name: that clamps an out-of-range value to index 0
-  // (Format::Unknown) for its numeric-field callers, which would make a
+nx::string_view to_string(const format fmt) noexcept {
+  // Not info_of(fmt).name: that clamps an out-of-range value to index 0
+  // (format::Unknown) for its numeric-field callers, which would make a
   // genuinely invalid value indistinguishable from the real Unknown format
   // here - the one caller that actually wants to tell those apart.
-  const auto i = nx::cast<usize>(format);
-  return i < nx::cast<usize>(Format::Count) ? FORMAT_TABLE[i].name : "Invalid";
+  const auto i = nx::cast<usize>(fmt);
+  return i < nx::cast<usize>(format::Count) ? FORMAT_TABLE[i].name : "Invalid";
 }
 
-bool format_is_float(const Format format) noexcept {
-  switch (format) {
-  case Format::R16_FLOAT:
-  case Format::RG16_FLOAT:
-  case Format::RGBA16_FLOAT:
-  case Format::R32_FLOAT:
-  case Format::RG32_FLOAT:
-  case Format::RGBA32_FLOAT:
-  case Format::RG11B10_FLOAT:
+bool format_is_float(const format fmt) noexcept {
+  switch (fmt) {
+  case format::R16_FLOAT:
+  case format::RG16_FLOAT:
+  case format::RGBA16_FLOAT:
+  case format::R32_FLOAT:
+  case format::RG32_FLOAT:
+  case format::RGBA32_FLOAT:
+  case format::RG11B10_FLOAT:
     return true;
   default:
     return false;
   }
 }
 
-Format format_from_string(const nx::string_view name) noexcept {
-  for (usize i = 0; i < nx::cast<usize>(Format::Count); ++i)
+format format_from_string(const nx::string_view name) noexcept {
+  for (usize i = 0; i < nx::cast<usize>(format::Count); ++i)
     if (same_ignoring_case(FORMAT_TABLE[i].name, name))
-      return nx::cast<Format>(i);
-  return Format::Unknown;
+      return nx::cast<format>(i);
+  return format::Unknown;
 }
 
-TextureUsage texture_usage_from_string(const nx::string_view name) noexcept {
+texture_usage texture_usage_from_string(const nx::string_view name) noexcept {
   for (const UsageName &one : TEXTURE_USAGE_NAMES)
     if (same_ignoring_case(one.name, name))
-      return nx::cast<TextureUsage>(one.bit);
-  return TextureUsage::None;
+      return nx::cast<texture_usage>(one.bit);
+  return texture_usage::None;
 }
 
-BufferUsage buffer_usage_from_string(const nx::string_view name) noexcept {
+buffer_usage buffer_usage_from_string(const nx::string_view name) noexcept {
   for (const UsageName &one : BUFFER_USAGE_NAMES)
     if (same_ignoring_case(one.name, name))
-      return nx::cast<BufferUsage>(one.bit);
-  return BufferUsage::None;
+      return nx::cast<buffer_usage>(one.bit);
+  return buffer_usage::None;
 }
 
-nx::string_view to_string(const ResourceState state) noexcept {
+nx::string_view to_string(const resource_state state) noexcept {
   const auto i = nx::cast<usize>(state);
-  return i < nx::cast<usize>(ResourceState::Count) ? STATE_NAMES[i] : "Invalid";
+  return i < nx::cast<usize>(resource_state::Count) ? STATE_NAMES[i]
+                                                    : "Invalid";
 }
 
-nx::string_view to_string(const QueueType queue) noexcept {
+nx::string_view to_string(const queue_type queue) noexcept {
   const auto i = nx::cast<usize>(queue);
-  return i < nx::cast<usize>(QueueType::Count) ? QUEUE_NAMES[i] : "Invalid";
+  return i < nx::cast<usize>(queue_type::Count) ? QUEUE_NAMES[i] : "Invalid";
 }
 
-nx::string_view to_string(const SurfaceAlpha alpha) noexcept {
+nx::string_view to_string(const surface_alpha alpha) noexcept {
   const auto i = nx::cast<usize>(alpha);
-  return i < nx::cast<usize>(SurfaceAlpha::Count) ? SURFACE_ALPHA_NAMES[i]
-                                                  : "Invalid";
+  return i < nx::cast<usize>(surface_alpha::Count) ? SURFACE_ALPHA_NAMES[i]
+                                                   : "Invalid";
 }
 
-u32 format_texel_size(const Format format) noexcept {
-  return info_of(format).texel_size;
+u32 format_texel_size(const format fmt) noexcept {
+  return info_of(fmt).texel_size;
 }
 
-u32 format_channels(const Format format) noexcept {
-  switch (format) {
-  case Format::Unknown:
-  case Format::Count:
+u32 format_channels(const format fmt) noexcept {
+  switch (fmt) {
+  case format::Unknown:
+  case format::Count:
     return 0;
-  case Format::R8_UNORM:
-  case Format::R8_SNORM:
-  case Format::R8_UINT:
-  case Format::R8_SINT:
-  case Format::R16_UNORM:
-  case Format::R16_FLOAT:
-  case Format::R16_UINT:
-  case Format::R16_SINT:
-  case Format::R32_FLOAT:
-  case Format::R32_UINT:
-  case Format::R32_SINT:
-  case Format::D16_UNORM:
-  case Format::D32_FLOAT:
-  case Format::BC4_R_UNORM:
+  case format::R8_UNORM:
+  case format::R8_SNORM:
+  case format::R8_UINT:
+  case format::R8_SINT:
+  case format::R16_UNORM:
+  case format::R16_FLOAT:
+  case format::R16_UINT:
+  case format::R16_SINT:
+  case format::R32_FLOAT:
+  case format::R32_UINT:
+  case format::R32_SINT:
+  case format::D16_UNORM:
+  case format::D32_FLOAT:
+  case format::BC4_R_UNORM:
     return 1;
-  case Format::RG8_UNORM:
-  case Format::RG8_UINT:
-  case Format::RG16_FLOAT:
-  case Format::RG16_UNORM:
-  case Format::RG32_FLOAT:
-  case Format::RG32_UINT:
-  case Format::D24_UNORM_S8_UINT:
-  case Format::D32_FLOAT_S8_UINT:
-  case Format::BC5_RG_UNORM:
+  case format::RG8_UNORM:
+  case format::RG8_UINT:
+  case format::RG16_FLOAT:
+  case format::RG16_UNORM:
+  case format::RG32_FLOAT:
+  case format::RG32_UINT:
+  case format::D24_UNORM_S8_UINT:
+  case format::D32_FLOAT_S8_UINT:
+  case format::BC5_RG_UNORM:
     return 2;
-  case Format::RG11B10_FLOAT:
-  case Format::BC1_RGB_UNORM:
-  case Format::BC1_RGB_SRGB:
-  case Format::BC6H_RGB_UFLOAT:
-  case Format::BC6H_RGB_SFLOAT:
+  case format::RG11B10_FLOAT:
+  case format::BC1_RGB_UNORM:
+  case format::BC1_RGB_SRGB:
+  case format::BC6H_RGB_UFLOAT:
+  case format::BC6H_RGB_SFLOAT:
     return 3;
   default:
     return 4;
   }
 }
 
-void format_block_extent(const Format format, u32 &width,
-                         u32 &height) noexcept {
-  const FormatInfo &info = info_of(format);
+void format_block_extent(const format fmt, u32 &width, u32 &height) noexcept {
+  const FormatInfo &info = info_of(fmt);
   width = info.block_width;
   height = info.block_height;
 }
 
-bool format_is_depth(const Format format) noexcept {
-  return info_of(format).depth;
+bool format_is_depth(const format fmt) noexcept { return info_of(fmt).depth; }
+
+bool format_is_stencil(const format fmt) noexcept {
+  return info_of(fmt).stencil;
 }
 
-bool format_is_stencil(const Format format) noexcept {
-  return info_of(format).stencil;
-}
+bool format_is_srgb(const format fmt) noexcept { return info_of(fmt).srgb; }
 
-bool format_is_srgb(const Format format) noexcept {
-  return info_of(format).srgb;
-}
-
-bool format_is_compressed(const Format format) noexcept {
-  const FormatInfo &info = info_of(format);
+bool format_is_compressed(const format fmt) noexcept {
+  const FormatInfo &info = info_of(fmt);
   return info.block_width > 1 || info.block_height > 1;
 }
 
-u64 format_row_pitch(const Format format, const u32 width) noexcept {
-  const FormatInfo &info = info_of(format);
+u64 format_row_pitch(const format fmt, const u32 width) noexcept {
+  const FormatInfo &info = info_of(fmt);
   const u64 blocks_x =
       (nx::cast<u64>(width) + info.block_width - 1) / info.block_width;
   return blocks_x * info.texel_size;
 }
 
-u64 format_subresource_size(const Format format, const u32 width,
-                            const u32 height, const u32 depth) noexcept {
-  const FormatInfo &info = info_of(format);
+u64 format_subresource_size(const format fmt, const u32 width, const u32 height,
+                            const u32 depth) noexcept {
+  const FormatInfo &info = info_of(fmt);
   const u64 blocks_y =
       (nx::cast<u64>(height) + info.block_height - 1) / info.block_height;
-  return format_row_pitch(format, width) * blocks_y * (depth == 0 ? 1u : depth);
+  return format_row_pitch(fmt, width) * blocks_y * (depth == 0 ? 1u : depth);
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx
