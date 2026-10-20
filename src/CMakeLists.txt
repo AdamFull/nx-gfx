@@ -19,21 +19,16 @@ set(NX_RHI_HEADERS
         device.h
         gpu_crash.h
         handles.h
-        key_sort.h
-        key_sort_interop.h
         native_driver.h
         pipeline_compiler.h
         rhi.h
         shader_reflect.h
-        upload.h
-        upload_ring.h)
+        upload.h)
 
 set(NX_RHI_SOURCES
         gpu_crash.cpp
-        key_sort.cpp
         shader_reflect.cpp
-        shader_reflect_json.cpp
-        upload_ring.cpp)
+        shader_reflect_json.cpp)
 
 if (APPLE)
     set(NX_RHI_BACKEND "Metal")
@@ -88,7 +83,7 @@ add_library(nx::rhi ALIAS nx_rhi)
 
 target_link_libraries(nx_rhi
         PUBLIC nx::foundation nx::rhi_types
-        PRIVATE nx::compile_options nx::glm)
+        PRIVATE nx::compile_options)
 
 if (APPLE)
     target_compile_definitions(nx_rhi PUBLIC NX_RHI_METAL=1)

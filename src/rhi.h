@@ -8,4 +8,3 @@
 #include "rendering/rhi/texture_data.h"
 #include "rendering/rhi/types.h"
 #include "rendering/rhi/upload.h"
-#include "rendering/rhi/upload_ring.h"
