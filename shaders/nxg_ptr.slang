@@ -121,6 +121,16 @@ public extension NxPtr<uint>
         InterlockedMax(*word, value, before);
         return before;
     }
+
+    /// Stores @p value in word @p index if it holds @p compare, and returns
+    /// what it held before.
+    public uint atomic_compare_exchange(uint index, uint compare, uint value)
+    {
+        uint* word = (uint*)element_address(index);
+        uint before;
+        InterlockedCompareExchange(*word, compare, value, before);
+        return before;
+    }
 }
 
 public extension NxPtr<uint64_t>

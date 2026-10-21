@@ -118,7 +118,8 @@ names a header supplying the consumer's own (with
 every target linking `nx::gfx_formats`, so every translation unit agrees.
 
 `NxPtr<T>` is a device address, read and written with `load`, `store` and, on
-`NxPtr<uint>` and `NxPtr<int>`, `atomic_add` (on `NxPtr<uint>` and
+`NxPtr<uint>` and `NxPtr<int>`, `atomic_add` (on `NxPtr<uint>`, also
+`atomic_compare_exchange`; on `NxPtr<uint>` and
 `NxPtr<uint64_t>`, `atomic_max`, the 64-bit one only where
 `device_caps::buffer_int64_atomics`). A load through a null `NxPtr` reads
 zeros: Mali compilers move a load above the check that guards it, so loads
