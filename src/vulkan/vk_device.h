@@ -14,6 +14,7 @@
 #include "nx/gfx/pipeline_job.h"
 #include "nx/gfx/reflection.h"
 #include "nx/gfx/types.h"
+#include "nx/gfx/vulkan.h"
 #include "src/vulkan/vk_common.h"
 #include "src/vulkan/vk_gpu_crash.h"
 #include "src/vulkan/vk_gpu_profiler.h"
@@ -71,6 +72,9 @@ struct VulkanTexture {
   gfx::resource_state state = gfx::resource_state::Undefined;
   ImageOwner owner = ImageOwner::Unknown;
   bool owns_image = true;
+  /// A wrapped image's owner, called once the device is done with it.
+  void (*release)(void *user, VkImage image) noexcept = nullptr;
+  void *release_user = nullptr;
 };
 
 /// The views create_texture_views makes, as create infos: the sampled view
@@ -515,6 +519,8 @@ public:
 
   [[nodiscard]] gfx::texture_handle
   create_texture(const gfx::texture_desc &desc);
+  [[nodiscard]] gfx::texture_handle
+  wrap_texture(const gfx::vk::wrapped_image &image);
   void destroy_texture(gfx::texture_handle handle) noexcept;
   /// Gives @p target @p replacement's image under its own handle and
   /// bindless index, and takes ownership of @p replacement. Under a hold the
@@ -613,6 +619,9 @@ public:
   }
   [[nodiscard]] u32 graphics_family() const noexcept {
     return m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)];
+  }
+  [[nodiscard]] std::span<const u32> queue_families() const noexcept {
+    return {m_distinct_families.data(), m_distinct_families.size()};
   }
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
@@ -784,6 +793,8 @@ private:
 
   VkQueue m_queues[nx::cast<usize>(gfx::queue_type::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(gfx::queue_type::Count)] = {};
+  nx::fixed_vector<u32, nx::cast<usize>(gfx::queue_type::Count)>
+      m_distinct_families;
   nx::mutex m_queue_locks[nx::cast<usize>(gfx::queue_type::Count)];
   /// Which lock each queue type takes: the first type with the same VkQueue.
   u8 m_queue_lock_of[nx::cast<usize>(gfx::queue_type::Count)] = {0, 1, 2};

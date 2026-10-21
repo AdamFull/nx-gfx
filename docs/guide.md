@@ -243,6 +243,15 @@ wait; native code submitting to a device queue goes through
 `vk::submit_graphics`, which takes the same lock. A client's own queue is the
 client's to synchronize.
 
+An image the library did not make can be adopted: `vk::wrap` takes a 2D,
+single-mip Vulkan image shared (concurrent) with every family
+`vk::queue_families` lists, and gives it a handle, a bindless slot and views
+of the device's own. It retires as any texture does; once no submitted or
+held work can use it, the device drops its views and calls the image's
+`release` instead of freeing it. A wrapped image is sampled and may be copied
+from, never uploaded into: uploads hand images between the copy and graphics
+families.
+
 ## GPU crash reporting
 
 `device_desc::gpu_crash_mode` selects the crash service. `Disabled` collects

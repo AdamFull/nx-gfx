@@ -1,5 +1,6 @@
 #include "src/vulkan/vk_device.h"
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -900,6 +901,11 @@ bool VulkanDevice::create_logical_device(
   m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)] = graphics;
   m_queue_families[nx::cast<usize>(gfx::queue_type::Compute)] = compute;
   m_queue_families[nx::cast<usize>(gfx::queue_type::Copy)] = copy;
+  m_distinct_families.clear();
+  for (const u32 family : m_queue_families)
+    if (std::find(m_distinct_families.begin(), m_distinct_families.end(),
+                  family) == m_distinct_families.end())
+      m_distinct_families.push_back(family);
 
   constexpr f32 priority = 1.f;
   nx::small_vector<VkDeviceQueueCreateInfo, 3> queue_infos;
@@ -1722,6 +1728,8 @@ void VulkanDevice::destroy_texture_now(VulkanTexture &texture) noexcept {
     vkDestroyImageView(m_device, texture.rtv, nullptr);
   if (texture.owns_image && texture.image != VK_NULL_HANDLE)
     vmaDestroyImage(m_allocator, texture.image, texture.allocation);
+  if (texture.release != nullptr)
+    texture.release(texture.release_user, texture.image);
 }
 
 void VulkanDevice::retire(PendingDelete pending) noexcept {

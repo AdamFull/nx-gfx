@@ -222,6 +222,48 @@ VulkanDevice::create_texture(const gfx::texture_desc &desc) {
   return handle;
 }
 
+gfx::texture_handle
+VulkanDevice::wrap_texture(const gfx::vk::wrapped_image &image) {
+  // Uploads hand images between the copy and graphics families; an image
+  // shared with both must never take part.
+  constexpr gfx::texture_usage_flags wrappable =
+      gfx::texture_usage::Sampled | gfx::texture_usage::CopySrc;
+  if (image.image == VK_NULL_HANDLE || image.format == gfx::format::Unknown ||
+      image.width == 0 || image.height == 0 ||
+      !image.usage.has(gfx::texture_usage::Sampled) ||
+      (image.usage & ~wrappable).any()) {
+    nx::loge(nx::log::rhi,
+             "wrap('{}'): needs an image, a format, an extent and sampled "
+             "usage, and takes only sampled and copy-source usage",
+             image.name);
+    return {};
+  }
+
+  VulkanTexture texture;
+  texture.image = image.image;
+  texture.format = image.format;
+  texture.width = image.width;
+  texture.height = image.height;
+  texture.usage = image.usage;
+  texture.image_usage = to_vk_image_usage(image.usage, image.format);
+  texture.state = image.state;
+  texture.owns_image = false;
+  if (!create_texture_views(texture, image.name)) {
+    if (texture.srv != VK_NULL_HANDLE)
+      vkDestroyImageView(m_device, texture.srv, nullptr);
+    return {};
+  }
+  texture.release = image.release;
+  texture.release_user = image.user;
+
+  const gfx::texture_handle handle = m_textures.insert(std::move(texture));
+  VulkanTexture &stored = *m_textures.try_get(handle);
+  set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
+                  image.name);
+  write_texture_descriptor(nx::cast<u32>(handle.index()), stored);
+  return handle;
+}
+
 gfx::memory_requirements
 VulkanDevice::texture_requirements(const gfx::texture_desc &desc) const {
   const VkImageCreateInfo info = to_image_create_info(desc);

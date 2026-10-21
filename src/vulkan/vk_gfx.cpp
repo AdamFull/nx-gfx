@@ -24,6 +24,14 @@ u32 graphics_family(const device &dev) noexcept {
   return be(dev).graphics_family();
 }
 
+std::span<const u32> queue_families(const device &dev) noexcept {
+  return be(dev).queue_families();
+}
+
+texture_handle wrap(device &dev, const wrapped_image &image) {
+  return be(dev).wrap_texture(image);
+}
+
 VkResult submit_graphics(device &dev,
                          const std::span<const VkSubmitInfo> submits,
                          const VkFence fence) noexcept {
