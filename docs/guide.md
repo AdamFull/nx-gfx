@@ -97,6 +97,8 @@ indices. Each is one word with a C++ half under the same name
 `from_index` for storage, `texture_index()`, `is_valid()`.
 `NxTexture2D<float>::gather` (and `<uint>`) reads the four texels bilinear
 filtering would blend, unfiltered, in Gather's order.
+`NxTexture2DArray<T>::sample_grad(uv, layer, dx, dy)` samples a layer with
+explicit screen gradients, as a compute shader with none of its own must.
 
 A struct C++ and Slang share is declared once, in a header that starts from
 `nx/gfx/shaders/interop.h`, whose comment states the rules: fields of the

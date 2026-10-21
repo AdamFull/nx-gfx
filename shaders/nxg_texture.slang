@@ -263,6 +263,8 @@ public interface INxTextureElement {
     static This sample_2d_array(uint texture, uint sampler, float3 at);
     static This sample_level_2d_array(uint texture, uint sampler, float3 at,
                                       float lod);
+    static This sample_grad_2d_array(uint texture, uint sampler, float3 at,
+                                     float2 dx, float2 dy);
     static This load_2d_array(uint texture, int4 at);
     static uint3 dimensions_2d_array(uint texture);
     static This sample_3d(uint texture, uint sampler, float3 at);
@@ -293,6 +295,10 @@ public interface INxTextureElement {
         static TYPE sample_level_2d_array(uint t, uint s, float3 at,       \
                                           float lod) {                     \
             return ARRAY(t).SampleLevel(get_sampler(s), at, lod)SWIZZLE;   \
+        }                                                                  \
+        static TYPE sample_grad_2d_array(uint t, uint s, float3 at,        \
+                                         float2 dx, float2 dy) {           \
+            return ARRAY(t).SampleGrad(get_sampler(s), at, dx, dy)SWIZZLE; \
         }                                                                  \
         static TYPE load_2d_array(uint t, int4 at) {                       \
             return ARRAY(t).Load(at)SWIZZLE;                               \
@@ -719,6 +725,12 @@ public struct NxTexture2DArray<T>
     public T sample_level(float2 uv, float layer, float lod) {
         return T.sample_level_2d_array(texture_index(), sampler_index(),
                                        float3(uv, layer), lod);
+    }
+
+    [ForceInline]
+    public T sample_grad(float2 uv, float layer, float2 dx, float2 dy) {
+        return T.sample_grad_2d_array(texture_index(), sampler_index(),
+                                      float3(uv, layer), dx, dy);
     }
 
     [ForceInline]
