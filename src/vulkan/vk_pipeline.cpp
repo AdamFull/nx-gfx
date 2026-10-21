@@ -1,5 +1,5 @@
 
-#include "rendering/rhi/vulkan/vk_device.h"
+#include "src/vulkan/vk_device.h"
 
 #include "core/foundation/core/scope_guard.h"
 #include "core/foundation/diagnostics/log.h"

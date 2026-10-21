@@ -1,5 +1,5 @@
 
-#include "rendering/rhi/metal/mtl_internal.h"
+#include "src/metal/mtl_internal.h"
 
 namespace nx::gfx::detail {
 namespace {

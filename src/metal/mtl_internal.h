@@ -13,7 +13,7 @@
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread.h"
-#include "rendering/rhi/metal/mtl_device.h"
+#include "src/metal/mtl_device.h"
 
 #include <atomic>
 

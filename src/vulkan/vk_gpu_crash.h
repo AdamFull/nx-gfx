@@ -2,7 +2,7 @@
 
 #include "core/foundation/threading/sync.h"
 #include "nx/gfx/crash.h"
-#include "rendering/rhi/vulkan/vk_common.h"
+#include "src/vulkan/vk_common.h"
 
 #include <atomic>
 

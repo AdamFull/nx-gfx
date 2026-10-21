@@ -2,7 +2,7 @@
 
 #include "core/foundation/diagnostics/profiler.h"
 #include "core/foundation/strings/utf8_string_view.h"
-#include "rendering/rhi/vulkan/vk_common.h"
+#include "src/vulkan/vk_common.h"
 
 #include <cstddef>
 

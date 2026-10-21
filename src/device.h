@@ -4,7 +4,7 @@
 #include "nx/gfx/gfx.h"
 
 #if defined(NX_RHI_VULKAN)
-#include "rendering/rhi/vulkan/vk_device.h"
+#include "src/vulkan/vk_device.h"
 
 namespace nx::gfx::detail {
 using BackendDevice = VulkanDevice;
@@ -12,7 +12,7 @@ using BackendCommandContext = VulkanCommandContext;
 } // namespace nx::gfx::detail
 
 #elif defined(NX_RHI_METAL)
-#include "rendering/rhi/metal/mtl_device.h"
+#include "src/metal/mtl_device.h"
 
 namespace nx::gfx::detail {
 using BackendDevice = MetalDevice;

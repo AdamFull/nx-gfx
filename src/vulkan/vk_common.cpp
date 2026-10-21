@@ -1,4 +1,4 @@
-#include "rendering/rhi/vulkan/vk_common.h"
+#include "src/vulkan/vk_common.h"
 
 #include "core/foundation/diagnostics/log.h"
 

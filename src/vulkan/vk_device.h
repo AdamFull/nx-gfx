@@ -14,13 +14,13 @@
 #include "nx/gfx/pipeline_job.h"
 #include "nx/gfx/reflection.h"
 #include "nx/gfx/types.h"
-#include "rendering/rhi/vulkan/vk_common.h"
-#include "rendering/rhi/vulkan/vk_gpu_crash.h"
-#include "rendering/rhi/vulkan/vk_gpu_profiler.h"
-#include "rendering/rhi/vulkan/vk_mem_alloc_include.h"
-#include "rendering/rhi/vulkan/vk_upload.h"
+#include "src/vulkan/vk_common.h"
+#include "src/vulkan/vk_gpu_crash.h"
+#include "src/vulkan/vk_gpu_profiler.h"
+#include "src/vulkan/vk_mem_alloc_include.h"
+#include "src/vulkan/vk_upload.h"
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
-#include "rendering/rhi/vulkan/vk_composition_win32.h"
+#include "src/vulkan/vk_composition_win32.h"
 #endif
 
 #include <span>

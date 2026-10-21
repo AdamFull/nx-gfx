@@ -1,5 +1,5 @@
 #include "nx/gfx/vulkan.h"
-#include "rendering/rhi/device.h"
+#include "src/device.h"
 
 namespace nx::gfx::vk {
 

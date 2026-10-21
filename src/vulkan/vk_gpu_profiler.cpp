@@ -1,4 +1,4 @@
-#include "rendering/rhi/vulkan/vk_gpu_profiler.h"
+#include "src/vulkan/vk_gpu_profiler.h"
 
 #if NX_PROFILE_ENABLED
 

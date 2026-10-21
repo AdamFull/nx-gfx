@@ -5,7 +5,7 @@
 #include "nx/gfx/pipelines.h"
 #include "nx/gfx/resources.h"
 #include "nx/gfx/upload.h"
-#include "rendering/rhi/device.h"
+#include "src/device.h"
 
 namespace nx::gfx {
 

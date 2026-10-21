@@ -5,8 +5,8 @@
 #include "core/foundation/threading/sync.h"
 #include "nx/gfx/types.h"
 #include "nx/gfx/upload.h"
-#include "rendering/rhi/vulkan/vk_common.h"
-#include "rendering/rhi/vulkan/vk_mem_alloc_include.h"
+#include "src/vulkan/vk_common.h"
+#include "src/vulkan/vk_mem_alloc_include.h"
 
 #include <span>
 

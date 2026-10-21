@@ -1,7 +1,7 @@
-#include "rendering/rhi/metal/mtl_gpu_crash.h"
+#include "src/metal/mtl_gpu_crash.h"
 
 #include "nx/gfx/crash.h"
-#include "rendering/rhi/metal/mtl_internal.h"
+#include "src/metal/mtl_internal.h"
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/strings/format.h"
