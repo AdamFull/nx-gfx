@@ -4,7 +4,8 @@
 
 namespace nxe::rhi {
 
-// The names before nx::gfx, until every caller has moved to nx/gfx (G6).
+// The names before nx::gfx. Only the backend's own sources and projects made
+// before nx::gfx (through app/engine.h) use them.
 using GpuBackend = nx::gfx::gpu_backend;
 using GpuCrashMode = nx::gfx::gpu_crash_mode;
 using GpuDeviceStatus = nx::gfx::gpu_device_status;

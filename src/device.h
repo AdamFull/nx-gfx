@@ -30,22 +30,49 @@ using Uploader = MetalUploader;
 
 namespace nx::gfx {
 
-class command_list final : public nxe::rhi::BackendCommandContext {};
+namespace detail {
+struct backend_access;
+}
+
+class command_list final : private nxe::rhi::BackendCommandContext {
+  friend struct detail::backend_access;
+};
 
 /// The backend's device, with the command lists it hands out: the frame's,
 /// and one for each recording split off it, by its place in the frame's
 /// submission order.
-class device final : public nxe::rhi::BackendDevice {
-  friend command_list *begin_frame(device &dev);
-  friend command_list *begin_headless_frame(device &dev);
-  friend recording_split split_frame(device &dev, command_list &frame,
-                                     u32 count);
-  friend command_list *begin_recording(device &dev, recording_split split,
-                                       u32 index);
+class device final : private nxe::rhi::BackendDevice {
+  friend struct detail::backend_access;
 
   command_list m_frame;
   nx::small_vector<nx::unique_ptr<command_list>, 4> m_recordings;
 };
+
+namespace detail {
+
+/// How the free functions reach the backend: nothing else can.
+struct backend_access {
+  [[nodiscard]] static nxe::rhi::BackendDevice &of(device &dev) noexcept {
+    return dev;
+  }
+  [[nodiscard]] static const nxe::rhi::BackendDevice &
+  of(const device &dev) noexcept {
+    return dev;
+  }
+  [[nodiscard]] static nxe::rhi::BackendCommandContext &
+  of(command_list &cmd) noexcept {
+    return cmd;
+  }
+  [[nodiscard]] static command_list &frame(device &dev) noexcept {
+    return dev.m_frame;
+  }
+  [[nodiscard]] static nx::small_vector<nx::unique_ptr<command_list>, 4> &
+  recordings(device &dev) noexcept {
+    return dev.m_recordings;
+  }
+};
+
+} // namespace detail
 
 } // namespace nx::gfx
 

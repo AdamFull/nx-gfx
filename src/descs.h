@@ -11,7 +11,8 @@
 
 namespace nxe::rhi {
 
-// The names before nx::gfx, until every caller has moved to nx/gfx (G6).
+// The names before nx::gfx. Only the backend's own sources and projects made
+// before nx::gfx (through app/engine.h) use them.
 using Extent2D = nx::gfx::extent2d;
 using Extent3D = nx::gfx::extent3d;
 using Offset2D = nx::gfx::offset2d;

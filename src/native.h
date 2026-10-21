@@ -4,7 +4,8 @@
 
 namespace nxe::rhi {
 
-// The names before nx::gfx, until every caller has moved to nx/gfx (G6).
+// The names before nx::gfx. Only the backend's own sources and projects made
+// before nx::gfx (through app/engine.h) use them.
 using NativeApi = nx::gfx::native_api;
 using NativeDevice = nx::gfx::native_device;
 using NativeTexture = nx::gfx::native_texture;

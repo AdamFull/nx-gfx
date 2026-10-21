@@ -4,7 +4,8 @@
 
 namespace nxe::rhi {
 
-// The names before nx::gfx, until every caller has moved to nx/gfx (G6).
+// The names before nx::gfx. Only the backend's own sources and projects made
+// before nx::gfx (through app/engine.h) use them.
 using ImageSubresource = nx::gfx::image_subresource;
 using TextureData = nx::gfx::texture_data;
 using ImageUploadDesc = nx::gfx::image_upload_desc;

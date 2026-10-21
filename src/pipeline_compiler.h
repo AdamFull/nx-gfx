@@ -4,7 +4,8 @@
 
 namespace nxe::rhi {
 
-// The names before nx::gfx, until every caller has moved to nx/gfx (G6).
+// The names before nx::gfx. Only the backend's own sources and projects made
+// before nx::gfx (through app/engine.h) use them.
 using PipelineJob = nx::gfx::pipeline_job;
 
 using nx::gfx::compile_pipeline_async;
