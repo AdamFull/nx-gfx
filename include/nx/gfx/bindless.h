@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/foundation/core/foundation.h"
-#include "rendering/rhi/shaders/core_layout.h"
-#include "rendering/rhi/shaders/nx_texture.hpp"
+#include "nx/gfx/shaders/core_layout.h"
+#include "nx/gfx/shaders/texture.hpp"
 
 namespace nx::gfx {
 

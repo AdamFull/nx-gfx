@@ -1,130 +1,10 @@
+// The bindless texture handles shaders sample, load and store through,
+// the Slang half of the pair whose C++ half is nx/gfx/shaders/texture.hpp,
+// with the texel types they read; the tables they reach are nxg_core's.
+module nxg_texture;
 
-#pragma once
-
-// Slang reserves `core` for its built-in module, so the engine core is a
-// guarded source include rather than a module named after this file.
-
-#include "rendering/rhi/shaders/core_layout.h"
-
-public static const uint kInvalidIndex = 0xFFFFFFFF;
-
-// A half float's bits as a float, by hand: f16tof32 makes a module declare
-// the SPIR-V Float16 capability, an optional device feature, and nothing
-// here needs half arithmetic, only half storage. Zero and subnormals read as
-// zero; infinities and NaN are not carried.
-public float nx_unpack_half(uint half_bits) {
-    const uint exponent = (half_bits >> 10u) & 0x1Fu;
-    if (exponent == 0u)
-        return 0.0;
-    return asfloat(((half_bits & 0x8000u) << 16u) |
-                   ((exponent + 127u - 15u) << 23u) |
-                   ((half_bits & 0x3FFu) << 13u));
-}
-
-public uint nx_hash_u32(uint x) {
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
-
-public float nx_rand01(uint seed) {
-    return float(nx_hash_u32(seed) & 0xFFFFFFu) * (1.0 / 16777216.0);
-}
-
-public float4 nx_unpack_rgba8(uint c) {
-    return float4(float((c >> 0) & 0xFFu), float((c >> 8) & 0xFFu),
-                  float((c >> 16) & 0xFFu), float((c >> 24) & 0xFFu)) *
-           (1.0 / 255.0);
-}
-
-#if defined(NX_TARGET_METAL)
-
-// Declaration order fixes the byte offsets the C++ side writes slots at, so it
-// must not change without updating create_bindless_heap().
-public struct BindlessTables {
-    public Texture2D<float4> textures[NX_BINDLESS_MAX_TEXTURES];
-    public Texture2D<uint4> uint_textures[NX_BINDLESS_MAX_TEXTURES];
-    public RWTexture2D<float4> rw_textures[NX_BINDLESS_MAX_RW_TEXTURES];
-    public RWTexture2D<uint4> rw_uint_textures[NX_BINDLESS_MAX_RW_TEXTURES];
-    public SamplerState samplers[NX_BINDLESS_MAX_SAMPLERS];
-    public uint64_t null_address;
-};
-
-public ParameterBlock<BindlessTables> g_bindless;
-
-public uint64_t nx_null_address() {
-    return g_bindless.null_address;
-}
-
-public Texture2D<float4> get_texture(uint index) {
-    return g_bindless.textures[index];
-}
-public Texture2D<uint4> get_uint_texture(uint index) {
-    return g_bindless.uint_textures[index];
-}
-public RWTexture2D<float4> get_rw_texture(uint index) {
-    return g_bindless.rw_textures[index];
-}
-public RWTexture2D<uint4> get_rw_uint_texture(uint index) {
-    return g_bindless.rw_uint_textures[index];
-}
-public SamplerState get_sampler(uint index) {
-    return g_bindless.samplers[index];
-}
-
-#else
-
-[[vk::binding(NX_BINDLESS_BINDING_SAMPLERS, NX_BINDLESS_SET)]]
-SamplerState g_samplers[];
-
-[[vk::binding(NX_BINDLESS_BINDING_TEXTURES, NX_BINDLESS_SET)]]
-__DynamicResource<__DynamicResourceKind.General> g_textures[];
-
-[[vk::binding(NX_BINDLESS_BINDING_RW_TEXTURES, NX_BINDLESS_SET)]]
-__DynamicResource<__DynamicResourceKind.General> g_rw_textures[];
-
-struct NxGlobals {
-    uint64_t null_address;
-};
-
-[[vk::binding(NX_BINDLESS_BINDING_GLOBALS, NX_BINDLESS_SET)]]
-ConstantBuffer<NxGlobals> g_globals;
-
-public uint64_t nx_null_address() {
-    return g_globals.null_address;
-}
-
-public Texture2D<float4> get_texture(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<Texture2D<float4>>();
-}
-public Texture2D<uint4> get_uint_texture(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<Texture2D<uint4>>();
-}
-public RWTexture2D<float4> get_rw_texture(uint index) {
-    return g_rw_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<RWTexture2D<float4>>();
-}
-public RWTexture2D<uint4> get_rw_uint_texture(uint index) {
-    return g_rw_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<RWTexture2D<uint4>>();
-}
-public SamplerState get_sampler(uint index) {
-    return g_samplers[NonUniformResourceIndex(index)];
-}
-
-#endif
-
-// The address to read @p offset bytes past @p address from. Mali compilers
-// move device loads above the check that guards them, so a null address must
-// read the zeroed null page rather than fault.
-public uint64_t nx_readable(uint64_t address, uint64_t offset) {
-    return address != 0 ? address + offset : nx_null_address();
-}
+__exported import nxg_core;
+__exported import nxg_texture_layout;
 
 float nx_sample_2d(uint texture, uint sampler, float2 uv, float) {
     return get_texture(texture).Sample(get_sampler(sampler), uv).x;
@@ -366,60 +246,6 @@ NX_DEFINE_RW_TEXTURE_2D_ELEMENT(uint4, get_rw_uint_texture)
 
 #if !defined(NX_TARGET_METAL)
 
-// Cube, array and 3D textures share the 2D tables: a slot holds a view of its
-// texture's own type, and a shader names that type when it reads the slot.
-// Metal reports them absent until its 3D track, so they are Vulkan's alone.
-
-public TextureCube<float4> get_texture_cube(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<TextureCube<float4>>();
-}
-public TextureCube<uint4> get_uint_texture_cube(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<TextureCube<uint4>>();
-}
-public Texture2DArray<float4> get_texture_2d_array(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<Texture2DArray<float4>>();
-}
-public Texture2DArray<uint4> get_uint_texture_2d_array(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<Texture2DArray<uint4>>();
-}
-public Texture3D<float4> get_texture_3d(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<Texture3D<float4>>();
-}
-public Texture3D<uint4> get_uint_texture_3d(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<Texture3D<uint4>>();
-}
-public Texture2DMS<float4> get_texture_2d_ms(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<Texture2DMS<float4>>();
-}
-public Texture2DMS<uint4> get_uint_texture_2d_ms(uint index) {
-    return g_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<Texture2DMS<uint4>>();
-}
-// A cube's storage view is a 2D array of its faces.
-public RWTexture2DArray<float4> get_rw_texture_2d_array(uint index) {
-    return g_rw_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<RWTexture2DArray<float4>>();
-}
-public RWTexture2DArray<uint4> get_rw_uint_texture_2d_array(uint index) {
-    return g_rw_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<RWTexture2DArray<uint4>>();
-}
-public RWTexture3D<float4> get_rw_texture_3d(uint index) {
-    return g_rw_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<RWTexture3D<float4>>();
-}
-public RWTexture3D<uint4> get_rw_uint_texture_3d(uint index) {
-    return g_rw_textures[NonUniformResourceIndex(index)]
-        .asOpaqueDescriptor<RWTexture3D<uint4>>();
-}
-
 float4 nx_texel4(float value) { return float4(value, 0.0, 0.0, 0.0); }
 float4 nx_texel4(float2 value) { return float4(value, 0.0, 0.0); }
 float4 nx_texel4(float3 value) { return float4(value, 0.0); }
@@ -595,5 +421,422 @@ NX_DEFINE_RW_TEXTURE_ELEMENT(uint4, .xyzw, get_rw_uint_texture_2d_array,
 
 #endif
 
-#include "nx_texture.slang"
-#include "nx_ptr.slang"
+/// A sampled texture's word: its bindless slot (NX_TEXTURE_NONE for none) in
+/// the upper 16 bits, its sampler and the NX_TEXTURE_LINEAR and
+/// NX_TEXTURE_PREMULTIPLIED flags in the lower.
+uint nx_texture_word(uint texture, uint sampler, uint flags) {
+    const uint slot = min(texture, NX_TEXTURE_NONE);
+    return (slot << 16) | (sampler & NX_TEXTURE_SAMPLER_MASK) |
+           (flags & (NX_TEXTURE_LINEAR | NX_TEXTURE_PREMULTIPLIED));
+}
+
+public struct NxSampler {
+    public uint index;
+
+    [ForceInline]
+    public static NxSampler from_index(uint index) {
+        NxSampler result;
+        result.index = index;
+        return result;
+    }
+
+    [ForceInline]
+    public bool is_valid() { return index != kInvalidIndex; }
+
+    [ForceInline]
+    public SamplerState get() { return get_sampler(index); }
+}
+
+/// Compact sampled 2D texture. Its single word retains the existing ABI:
+/// texture index in the upper 16 bits, sampler and flags in the lower 16.
+public struct NxTexture2D<T>
+    where T : INxTexture2DElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTexture2D<T> from_packed(uint packed) {
+        NxTexture2D<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public static NxTexture2D<T> from_indices(uint texture, uint sampler,
+                                              uint flags = 0u) {
+        return from_packed(nx_texture_word(texture, sampler, flags));
+    }
+
+    [ForceInline]
+    public static NxTexture2D<T> none() {
+        return from_indices(NX_TEXTURE_NONE, 0u);
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public uint sampler_index() { return value & NX_TEXTURE_SAMPLER_MASK; }
+
+    [ForceInline]
+    public NxSampler sampler() { return NxSampler.from_index(sampler_index()); }
+
+    [ForceInline]
+    public bool is_linear() { return (value & NX_TEXTURE_LINEAR) != 0u; }
+
+    [ForceInline]
+    public bool is_premultiplied() {
+        return (value & NX_TEXTURE_PREMULTIPLIED) != 0u;
+    }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    [ForceInline]
+    public uint2 dimensions() { return T.dimensions_2d(texture_index()); }
+
+    [ForceInline]
+    public T sample(float2 uv) {
+        return T.sample_2d(texture_index(), sampler_index(), uv);
+    }
+
+    [ForceInline]
+    public T sample_level(float2 uv, float lod) {
+        return T.sample_level_2d(texture_index(), sampler_index(), uv, lod);
+    }
+
+    [ForceInline]
+    public T sample_grad(float2 uv, float2 dx, float2 dy) {
+        return T.sample_grad_2d(texture_index(), sampler_index(), uv, dx, dy);
+    }
+
+    [ForceInline]
+    public T load(int3 at) {
+        return T.load_2d(texture_index(), at);
+    }
+}
+
+/// Escape hatches for algorithms whose signatures require a native resource
+/// object (for example the reference FXAA implementation). Ordinary shader
+/// code should use the typed methods above.
+public extension NxTexture2D<float4> {
+    [ForceInline]
+    public Texture2D<float4> native_texture() {
+        return get_texture(texture_index());
+    }
+}
+
+public extension NxTexture2D<uint4> {
+    [ForceInline]
+    public Texture2D<uint4> native_texture() {
+        return get_uint_texture(texture_index());
+    }
+}
+
+public extension NxTexture2D<float> {
+    /// The four texels bilinear filtering at @p uv would blend, unfiltered,
+    /// through this handle's sampler's addressing: x the one at the lesser x
+    /// and greater y, then y, z and w round counter-clockwise, w at the
+    /// lesser of both.
+    public float4 gather(float2 uv) {
+        return get_texture(texture_index())
+            .GatherRed(get_sampler(sampler_index()), uv);
+    }
+}
+
+public extension NxTexture2D<uint> {
+    /// The four texels at @p uv, as NxTexture2D<float>::gather orders them.
+    public uint4 gather(float2 uv) {
+        return get_uint_texture(texture_index())
+            .GatherRed(get_sampler(sampler_index()), uv);
+    }
+}
+
+public struct NxRWTexture2D<T>
+    where T : INxRWTexture2DElement {
+    public uint index;
+
+    [ForceInline]
+    public static NxRWTexture2D<T> from_index(uint index) {
+        NxRWTexture2D<T> result;
+        result.index = index;
+        return result;
+    }
+
+    [ForceInline]
+    public bool is_valid() { return index != kInvalidIndex; }
+
+    [ForceInline]
+    public uint2 dimensions() {
+        return T.dimensions_rw_2d(index);
+    }
+
+    [ForceInline]
+    public T load(uint2 at) {
+        return T.load_rw_2d(index, at);
+    }
+
+    [ForceInline]
+    public void store(uint2 at, T value) {
+        T.store_rw_2d(index, at, value);
+    }
+
+    public __subscript(uint2 at) -> T {
+        get { return load(at); }
+        [nonmutating] set { store(at, newValue); }
+    }
+}
+
+#if !defined(NX_TARGET_METAL)
+
+/// A multisampled 2D texture, read a sample at a time, in NxTexture2D's
+/// one-word ABI; its sampler bits are unused.
+public struct NxTexture2DMS<T>
+    where T : INxTexture2DMSElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTexture2DMS<T> from_packed(uint packed) {
+        NxTexture2DMS<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public static NxTexture2DMS<T> from_indices(uint texture, uint sampler,
+                                                uint flags = 0u) {
+        return from_packed(nx_texture_word(texture, sampler, flags));
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    /// Width, height and samples a pixel.
+    [ForceInline]
+    public uint3 dimensions() { return T.dimensions_2d_ms(texture_index()); }
+
+    [ForceInline]
+    public T load(int2 at, int sample) {
+        return T.load_2d_ms(texture_index(), at, sample);
+    }
+}
+
+/// Compact sampled cube texture, in NxTexture2D's one-word ABI.
+public struct NxTextureCube<T>
+    where T : INxTextureElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTextureCube<T> from_packed(uint packed) {
+        NxTextureCube<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public static NxTextureCube<T> from_indices(uint texture, uint sampler,
+                                     uint flags = 0u) {
+        return from_packed(nx_texture_word(texture, sampler, flags));
+    }
+
+    [ForceInline]
+    public static NxTextureCube<T> none() {
+        return from_indices(NX_TEXTURE_NONE, 0u);
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public uint sampler_index() { return value & NX_TEXTURE_SAMPLER_MASK; }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    /// One face's.
+    [ForceInline]
+    public uint2 dimensions() { return T.dimensions_cube(texture_index()); }
+
+    [ForceInline]
+    public T sample(float3 direction) {
+        return T.sample_cube(texture_index(), sampler_index(), direction);
+    }
+
+    [ForceInline]
+    public T sample_level(float3 direction, float lod) {
+        return T.sample_level_cube(texture_index(), sampler_index(), direction,
+                                   lod);
+    }
+}
+
+/// Compact sampled 2D array texture, in NxTexture2D's one-word ABI.
+public struct NxTexture2DArray<T>
+    where T : INxTextureElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTexture2DArray<T> from_packed(uint packed) {
+        NxTexture2DArray<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public static NxTexture2DArray<T> from_indices(uint texture, uint sampler,
+                                     uint flags = 0u) {
+        return from_packed(nx_texture_word(texture, sampler, flags));
+    }
+
+    [ForceInline]
+    public static NxTexture2DArray<T> none() {
+        return from_indices(NX_TEXTURE_NONE, 0u);
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public uint sampler_index() { return value & NX_TEXTURE_SAMPLER_MASK; }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    /// Width, height and layers.
+    [ForceInline]
+    public uint3 dimensions() {
+        return T.dimensions_2d_array(texture_index());
+    }
+
+    [ForceInline]
+    public T sample(float2 uv, float layer) {
+        return T.sample_2d_array(texture_index(), sampler_index(),
+                                 float3(uv, layer));
+    }
+
+    [ForceInline]
+    public T sample_level(float2 uv, float layer, float lod) {
+        return T.sample_level_2d_array(texture_index(), sampler_index(),
+                                       float3(uv, layer), lod);
+    }
+
+    [ForceInline]
+    public T load(int2 at, uint layer, uint mip) {
+        return T.load_2d_array(texture_index(), int4(at, int(layer), int(mip)));
+    }
+}
+
+/// Compact sampled 3D texture, in NxTexture2D's one-word ABI.
+public struct NxTexture3D<T>
+    where T : INxTextureElement {
+    public uint value;
+
+    [ForceInline]
+    public static NxTexture3D<T> from_packed(uint packed) {
+        NxTexture3D<T> result;
+        result.value = packed;
+        return result;
+    }
+
+    [ForceInline]
+    public static NxTexture3D<T> from_indices(uint texture, uint sampler,
+                                     uint flags = 0u) {
+        return from_packed(nx_texture_word(texture, sampler, flags));
+    }
+
+    [ForceInline]
+    public static NxTexture3D<T> none() {
+        return from_indices(NX_TEXTURE_NONE, 0u);
+    }
+
+    [ForceInline]
+    public uint texture_index() { return value >> 16; }
+
+    [ForceInline]
+    public uint sampler_index() { return value & NX_TEXTURE_SAMPLER_MASK; }
+
+    [ForceInline]
+    public bool is_valid() { return texture_index() != NX_TEXTURE_NONE; }
+
+    [ForceInline]
+    public uint3 dimensions() { return T.dimensions_3d(texture_index()); }
+
+    [ForceInline]
+    public T sample(float3 at) {
+        return T.sample_3d(texture_index(), sampler_index(), at);
+    }
+
+    [ForceInline]
+    public T sample_level(float3 at, float lod) {
+        return T.sample_level_3d(texture_index(), sampler_index(), at, lod);
+    }
+
+    [ForceInline]
+    public T load(int3 at, uint mip) {
+        return T.load_3d(texture_index(), int4(at, int(mip)));
+    }
+}
+
+/// A storage 2D array, or a cube's faces as one: x, y and the layer.
+public struct NxRWTexture2DArray<T>
+    where T : INxRWTextureElement {
+    public uint index;
+
+    [ForceInline]
+    public static NxRWTexture2DArray<T> from_index(uint index) {
+        NxRWTexture2DArray<T> result;
+        result.index = index;
+        return result;
+    }
+
+    [ForceInline]
+    public bool is_valid() { return index != kInvalidIndex; }
+
+    [ForceInline]
+    public uint3 dimensions() { return T.dimensions_rw_2d_array(index); }
+
+    [ForceInline]
+    public T load(uint3 at) { return T.load_rw_2d_array(index, at); }
+
+    [ForceInline]
+    public void store(uint3 at, T value) {
+        T.store_rw_2d_array(index, at, value);
+    }
+
+    public __subscript(uint3 at) -> T {
+        get { return load(at); }
+        [nonmutating] set { store(at, newValue); }
+    }
+}
+
+public struct NxRWTexture3D<T>
+    where T : INxRWTextureElement {
+    public uint index;
+
+    [ForceInline]
+    public static NxRWTexture3D<T> from_index(uint index) {
+        NxRWTexture3D<T> result;
+        result.index = index;
+        return result;
+    }
+
+    [ForceInline]
+    public bool is_valid() { return index != kInvalidIndex; }
+
+    [ForceInline]
+    public uint3 dimensions() { return T.dimensions_rw_3d(index); }
+
+    [ForceInline]
+    public T load(uint3 at) { return T.load_rw_3d(index, at); }
+
+    [ForceInline]
+    public void store(uint3 at, T value) { T.store_rw_3d(index, at, value); }
+
+    public __subscript(uint3 at) -> T {
+        get { return load(at); }
+        [nonmutating] set { store(at, newValue); }
+    }
+}
+
+#endif

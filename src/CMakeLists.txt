@@ -13,6 +13,12 @@ add_library(nx_rhi_types STATIC
         include/nx/gfx/pipelines.h
         include/nx/gfx/reflection.h
         include/nx/gfx/resources.h
+        include/nx/gfx/shaders/core_layout.h
+        include/nx/gfx/shaders/interop.h
+        include/nx/gfx/shaders/ptr.hpp
+        include/nx/gfx/shaders/shared.h
+        include/nx/gfx/shaders/texture.hpp
+        include/nx/gfx/shaders/texture_layout.h
         include/nx/gfx/types.h
         include/nx/gfx/upload.h
         types.h
@@ -29,6 +35,13 @@ target_include_directories(nx_rhi_types PUBLIC
 target_link_libraries(nx_rhi_types
         PUBLIC nx::foundation
         PRIVATE nx::compile_options)
+# Shared structs' float4 and the rest (nx/gfx/shaders/interop.h) are the
+# consumer's own when it names a header supplying them, in every translation
+# unit alike.
+if (NX_GFX_INTEROP_MATH_TYPES)
+    target_compile_definitions(nx_rhi_types PUBLIC
+            "NX_GFX_INTEROP_MATH_TYPES=\"${NX_GFX_INTEROP_MATH_TYPES}\"")
+endif ()
 set_target_properties(nx_rhi_types PROPERTIES FOLDER "engine")
 
 set(NX_RHI_HEADERS
@@ -87,8 +100,10 @@ else ()
     endif ()
 endif ()
 
-set(NX_RHI_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
-        CACHE INTERNAL "Slang module search path for the bindless contract")
+set(NX_GFX_SHADER_INCLUDE_DIRS
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        CACHE INTERNAL "The shader library's Slang modules and shared headers")
 
 message(STATUS "nx_rhi backend: ${NX_RHI_BACKEND}")
 

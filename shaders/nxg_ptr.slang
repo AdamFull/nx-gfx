@@ -1,5 +1,10 @@
 // NxPtr<T>: a device address shaders read and write T through, the Slang
-// half of the pair whose C++ half is nx_ptr.hpp. Included by core.slang.
+// half of the pair whose C++ half is nx/gfx/shaders/ptr.hpp.
+module nxg_ptr;
+
+import nxg_core;
+
+#include "nx/gfx/shaders/core_layout.h"
 
 public uint64_t stride_of<T>()
 {

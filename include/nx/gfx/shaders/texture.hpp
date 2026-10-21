@@ -1,11 +1,11 @@
 #pragma once
 
 // The bindless texture handles, the C++ half of the pair whose Slang half is
-// nx_texture.slang: one word each, made and read with the same names as in
+// nxg_texture.slang: one word each, made and read with the same names as in
 // Slang. C++ carries them in shared structs and hands them to shaders; only
 // shaders sample.
 
-#include "rendering/rhi/shaders/nx_texture_layout.h"
+#include "nx/gfx/shaders/texture_layout.h"
 
 #include <cstdint>
 
@@ -97,37 +97,6 @@ using NxRWTexture2DArray = NxStorageTexture<nx_texture_shape::Array2D, T>;
 template <typename T>
 using NxRWTexture3D = NxStorageTexture<nx_texture_shape::Tex3D, T>;
 
-/// A 2D image in two words: a texture, or a region of an atlas with a
-/// texture to fall back on.
-template <typename T> struct NxImage2DResolver {
-  NxTexture2D<T> texture;
-  std::uint32_t metadata;
-
-  [[nodiscard]] static constexpr NxImage2DResolver
-  from_texture(const NxTexture2D<T> texture) noexcept {
-    return {texture, 0u};
-  }
-
-  [[nodiscard]] static constexpr NxImage2DResolver
-  from_atlas(const NxTexture2D<T> fallback, const std::uint32_t atlas,
-             const std::uint32_t region) noexcept {
-    return {fallback, NX_IMAGE_ATLAS |
-                          ((atlas & NX_IMAGE_ATLAS_INDEX_MASK) << 16u) |
-                          (region & NX_IMAGE_REGION_MASK)};
-  }
-
-  [[nodiscard]] constexpr bool is_atlas() const noexcept {
-    return (metadata & NX_IMAGE_ATLAS) != 0;
-  }
-  [[nodiscard]] constexpr NxTexture2D<T> as_texture() const noexcept {
-    return texture;
-  }
-
-  [[nodiscard]] friend constexpr bool
-  operator==(NxImage2DResolver, NxImage2DResolver) noexcept = default;
-};
-
 static_assert(sizeof(NxTexture2D<std::uint32_t>) == 4 &&
-                  sizeof(NxRWTexture2D<std::uint32_t>) == 4 &&
-                  sizeof(NxImage2DResolver<std::uint32_t>) == 8,
+                  sizeof(NxRWTexture2D<std::uint32_t>) == 4,
               "texture handles keep their word sizes on both sides");

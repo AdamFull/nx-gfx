@@ -1,6 +1,6 @@
 #pragma once
 
-// The macros a header shared by C++ and Slang (see nx_interop.h) writes its
+// The macros a header shared by C++ and Slang (see interop.h) writes its
 // constants, functions and size checks with.
 
 #ifdef __cplusplus

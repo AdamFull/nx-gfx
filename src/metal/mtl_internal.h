@@ -104,7 +104,7 @@ struct MetalPipeline {
 struct BindlessHeap {
   id<MTLBuffer> argument_buffer = nil;
   /// Byte offsets of each table within the buffer, in the declaration order of
-  /// BindlessTables in shaders/core.slang.
+  /// BindlessTables in shaders/nxg_core.slang.
   u64 textures_offset = 0;
   u64 uint_textures_offset = 0;
   u64 rw_textures_offset = 0;

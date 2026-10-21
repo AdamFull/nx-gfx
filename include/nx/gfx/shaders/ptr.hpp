@@ -1,9 +1,9 @@
 #pragma once
 
 // NxPtr<T>: a device address shaders read and write T through, the C++ half
-// of the pair whose Slang half is nx_ptr.slang. A shared struct declares a
+// of the pair whose Slang half is nxg_ptr.slang. A shared struct declares a
 // field NxPtr<T> once for both; C++ fills it with a buffer's address:
-// `push.instances = {device.buffer_address(buffer)}`.
+// `push.instances = {gfx::buffer_address(dev, buffer)}`.
 
 #include <cstdint>
 
