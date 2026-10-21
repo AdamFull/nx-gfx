@@ -9,7 +9,7 @@
 #include <cstring>
 #include <limits>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 const nx::log::Category log_up = nx::log::category("upload");
@@ -18,9 +18,9 @@ constexpr u64 RING_CAPACITY = 32ull * 1024 * 1024;
 constexpr u64 DEDICATED_UPLOAD_THRESHOLD = RING_CAPACITY / 2;
 
 /// Buffer-copy offset must be a multiple of both 4 and the format's block size;
-/// every rhi::Format's block size is a power of two, so max(4, size) satisfies
+/// every gfx::format's block size is a power of two, so max(4, size) satisfies
 /// both.
-[[nodiscard]] u64 copy_alignment(const Format format) noexcept {
+[[nodiscard]] u64 copy_alignment(const gfx::format format) noexcept {
   const u32 texel = format_texel_size(format);
   return texel < 4u ? 4u : texel;
 }
@@ -45,10 +45,11 @@ bool VulkanUploader::init(VulkanDevice *device) {
   m_device = device;
   m_vk = device->m_device;
   m_allocator = device->m_allocator;
-  m_copy_family = device->m_queue_families[nx::cast<usize>(QueueType::Copy)];
+  m_copy_family =
+      device->m_queue_families[nx::cast<usize>(gfx::queue_type::Copy)];
   m_graphics_family =
-      device->m_queue_families[nx::cast<usize>(QueueType::Graphics)];
-  m_queue = device->m_queues[nx::cast<usize>(QueueType::Copy)];
+      device->m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)];
+  m_queue = device->m_queues[nx::cast<usize>(gfx::queue_type::Copy)];
 
   VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -139,7 +140,7 @@ void VulkanUploader::shutdown() noexcept {
 u64 VulkanUploader::completed_value() const noexcept {
   u64 value = 0;
   if (m_timeline != VK_NULL_HANDLE && m_device != nullptr &&
-      m_device->device_status() == GpuDeviceStatus::Ready)
+      m_device->device_status() == gfx::gpu_device_status::Ready)
     NX_VK_DEVICE_CHECK(*m_device,
                        vkGetSemaphoreCounterValueKHR(m_vk, m_timeline, &value));
   return value;
@@ -148,7 +149,7 @@ u64 VulkanUploader::completed_value() const noexcept {
 u64 VulkanUploader::graphics_completed() const noexcept {
   u64 value = 0;
   if (m_device != nullptr && m_device->m_timeline != VK_NULL_HANDLE &&
-      m_device->device_status() == GpuDeviceStatus::Ready)
+      m_device->device_status() == gfx::gpu_device_status::Ready)
     NX_VK_DEVICE_CHECK(*m_device, vkGetSemaphoreCounterValueKHR(
                                       m_vk, m_device->m_timeline, &value));
   return value;
@@ -156,7 +157,7 @@ u64 VulkanUploader::graphics_completed() const noexcept {
 
 void VulkanUploader::wait_value(const u64 value) noexcept {
   if (value == 0 || m_device == nullptr ||
-      m_device->device_status() == GpuDeviceStatus::Lost)
+      m_device->device_status() == gfx::gpu_device_status::Lost)
     return;
   u64 v = value;
   VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -168,7 +169,7 @@ void VulkanUploader::wait_value(const u64 value) noexcept {
 
 void VulkanUploader::wait_graphics(const u64 value) noexcept {
   if (value == 0 || m_device == nullptr ||
-      m_device->device_status() == GpuDeviceStatus::Lost ||
+      m_device->device_status() == gfx::gpu_device_status::Lost ||
       m_device->m_timeline == VK_NULL_HANDLE)
     return;
   u64 v = value;
@@ -232,7 +233,7 @@ void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value) {
   submit.pSignalSemaphoreInfos = &signal;
   {
     const nx::scoped_lock<nx::mutex> held(
-        m_device->queue_lock(QueueType::Copy));
+        m_device->queue_lock(gfx::queue_type::Copy));
     (void)NX_VK_DEVICE_CHECK(
         *m_device, vkQueueSubmit2KHR(m_queue, 1, &submit, VK_NULL_HANDLE));
   }
@@ -406,24 +407,23 @@ bool VulkanUploader::flush_upload_staging(const Chunk *const dedicated,
          VK_SUCCESS;
 }
 
-UploadTicket
-VulkanUploader::upload_texture(const TextureHandle handle,
-                               const std::span<const u8> src,
-                               const std::span<const ImageSubresource> layout,
-                               const ResourceState final_state) {
+gfx::upload_ticket VulkanUploader::upload_texture(
+    const gfx::texture_handle handle, const std::span<const u8> src,
+    const std::span<const gfx::image_subresource> layout,
+    const gfx::resource_state final_state) {
   NX_PROFILE_ZONE("vk::upload_texture");
   const nx::scoped_lock lock(m_command_mutex);
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
   if (tex == nullptr || tex->image == VK_NULL_HANDLE ||
-      !(tex->usage & TextureUsage::CopyDst)) {
+      !(tex->usage & gfx::texture_usage::CopyDst)) {
     nx::loge(log_up, "upload_texture: nothing to upload into");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   if (!validate_image_upload({tex->format, tex->width, tex->height, tex->depth,
                               tex->mip_levels, tex->layers},
                              src, layout)) {
     nx::loge(log_up, "upload_texture: malformed upload layout");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
 
   const VkImageAspectFlags aspect = to_vk_aspect(tex->format);
@@ -435,15 +435,15 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   const bool on_graphics = qfot && tex->owner == ImageOwner::Graphics;
 
   u64 staging_size = 0;
-  for (const ImageSubresource &sr : layout) {
+  for (const gfx::image_subresource &sr : layout) {
     if (staging_size > std::numeric_limits<u64>::max() - (align - 1u)) {
       nx::loge(log_up, "upload_texture: staging size overflow");
-      return UploadTicket::failure();
+      return gfx::upload_ticket::failure();
     }
     const u64 aligned = nx::align_up(staging_size, align);
     if (sr.size > std::numeric_limits<u64>::max() - aligned) {
       nx::loge(log_up, "upload_texture: staging size overflow");
-      return UploadTicket::failure();
+      return gfx::upload_ticket::failure();
     }
     staging_size = aligned + sr.size;
   }
@@ -455,20 +455,20 @@ VulkanUploader::upload_texture(const TextureHandle handle,
                                              base_offset, dedicated);
   if (staging == nullptr) {
     nx::loge(log_up, "upload_texture: no staging for {} bytes", staging_size);
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
 
   const VkCommandBuffer cmd = on_graphics ? VK_NULL_HANDLE : ensure_batch();
   if (!on_graphics && cmd == VK_NULL_HANDLE) {
     nx::loge(log_up, "upload_texture: no command batch to record into");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
                                       "upload texture");
 
   nx::small_vector<VkBufferImageCopy, 16> copies;
   u64 offset = 0;
-  for (const ImageSubresource &sr : layout) {
+  for (const gfx::image_subresource &sr : layout) {
     offset = nx::align_up(offset, align);
     std::memcpy(staging + offset, src.data() + sr.offset,
                 nx::cast<usize>(sr.size));
@@ -499,7 +499,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   // old staging bytes as a brief block artifact while streaming.
   if (!flush_upload_staging(dedicated, base_offset, staging_size)) {
     nx::loge(log_up, "upload_texture: could not flush staging memory");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
 
   if (on_graphics) {
@@ -538,7 +538,7 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   const VkStateInfo from = m_device->state_info(tex->state);
   // nothing is lost, since a stage mask cannot order work on another queue
   // anyway - the release/acquire pair carries that dependency.
-  const bool copy_to_copy = tex->state == ResourceState::CopyDst;
+  const bool copy_to_copy = tex->state == gfx::resource_state::CopyDst;
   VkImageMemoryBarrier2 pre = whole_image_barrier(tex->image, aspect);
   pre.srcStageMask =
       (qfot && !copy_to_copy) ? VK_PIPELINE_STAGE_2_NONE : from.stage;
@@ -578,11 +578,11 @@ VulkanUploader::upload_texture(const TextureHandle handle,
     m_pending_wait = m_batch_value;
 
   if (qfot) {
-    tex->state = ResourceState::CopyDst;
+    tex->state = gfx::resource_state::CopyDst;
     tex->owner = ImageOwner::Copy;
     ImageRelease &release =
         pending_release(handle, tex->image, aspect, final_state);
-    release.old_state = ResourceState::CopyDst;
+    release.old_state = gfx::resource_state::CopyDst;
     release.new_state = final_state;
   } else {
     tex->state = final_state;
@@ -591,36 +591,36 @@ VulkanUploader::upload_texture(const TextureHandle handle,
   return {m_batch_value};
 }
 
-UploadTicket VulkanUploader::upload_texture(const TextureHandle handle,
-                                            const TextureData &data,
-                                            const ResourceState final_state) {
+gfx::upload_ticket
+VulkanUploader::upload_texture(const gfx::texture_handle handle,
+                               const gfx::texture_data &data,
+                               const gfx::resource_state final_state) {
   const VulkanTexture *const texture = m_device->m_textures.try_get(handle);
   if (texture == nullptr || data.format != texture->format) {
     nx::loge(log_up, "upload_texture: data format does not match texture");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   return upload_texture(handle, data.bytes, data.subresources, final_state);
 }
 
-UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
-                                           const u64 dst_offset,
-                                           const std::span<const u8> src,
-                                           const ResourceState final_state) {
+gfx::upload_ticket VulkanUploader::upload_buffer(
+    const gfx::buffer_handle handle, const u64 dst_offset,
+    const std::span<const u8> src, const gfx::resource_state final_state) {
   NX_PROFILE_ZONE("vk::upload_buffer");
   const nx::scoped_lock lock(m_command_mutex);
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (src.empty())
     return {};
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE ||
-      !(buf->usage & BufferUsage::CopyDst)) {
+      !(buf->usage & gfx::buffer_usage::CopyDst)) {
     nx::loge(log_up, "upload_buffer: nothing to upload into");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   if (dst_offset > buf->size || src.size() > buf->size - dst_offset) {
     nx::loge(log_up,
              "upload_buffer: {} bytes at offset {} overruns a {} byte buffer",
              src.size(), dst_offset, buf->size);
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
 
   VkBuffer staging_buf = VK_NULL_HANDLE;
@@ -630,19 +630,19 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
                                              base_offset, dedicated);
   if (staging == nullptr) {
     nx::loge(log_up, "upload_buffer: no staging for {} bytes", src.size());
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   std::memcpy(staging, src.data(), src.size());
 
   if (!flush_upload_staging(dedicated, base_offset, src.size())) {
     nx::loge(log_up, "upload_buffer: could not flush staging memory");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
 
   const VkCommandBuffer cmd = ensure_batch();
   if (cmd == VK_NULL_HANDLE) {
     nx::loge(log_up, "upload_buffer: no command batch to record into");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
                                       "upload buffer");
@@ -702,24 +702,25 @@ UploadTicket VulkanUploader::upload_buffer(const BufferHandle handle,
   return {m_batch_value};
 }
 
-UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
-                                          const ResourceState final_state) {
+gfx::upload_ticket
+VulkanUploader::clear_buffer(const gfx::buffer_handle handle,
+                             const gfx::resource_state final_state) {
   NX_PROFILE_ZONE("vk::clear_buffer");
   const nx::scoped_lock lock(m_command_mutex);
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE) {
     nx::loge(log_up, "clear_buffer: handle is not live");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
-  if (!(buf->usage & BufferUsage::CopyDst)) {
+  if (!(buf->usage & gfx::buffer_usage::CopyDst)) {
     nx::loge(log_up, "clear_buffer: buffer has no copy-destination usage");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
 
   const VkCommandBuffer cmd = ensure_batch();
   if (cmd == VK_NULL_HANDLE) {
     nx::loge(log_up, "clear_buffer: no command batch to record into");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
                                       "clear buffer");
@@ -768,14 +769,15 @@ UploadTicket VulkanUploader::clear_buffer(const BufferHandle handle,
   return {m_batch_value};
 }
 
-ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
-                                           const u64 offset, const u64 size) {
+gfx::readback_result
+VulkanUploader::read_buffer(const gfx::buffer_handle handle, const u64 offset,
+                            const u64 size) {
   const nx::scoped_lock lock(m_command_mutex);
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (buf == nullptr || buf->buffer == VK_NULL_HANDLE || size == 0)
     return {};
 
-  if (!(buf->usage & BufferUsage::CopySrc)) {
+  if (!(buf->usage & gfx::buffer_usage::CopySrc)) {
     nx::loge(log_up, "read_buffer: buffer was not created with CopySrc");
     return {};
   }
@@ -836,8 +838,9 @@ ReadbackResult VulkanUploader::read_buffer(const BufferHandle handle,
   return {{value}, chunk->mapped, size};
 }
 
-ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
-                                            const u32 mip, const u32 layer) {
+gfx::readback_result
+VulkanUploader::read_texture(const gfx::texture_handle handle, const u32 mip,
+                             const u32 layer) {
   const nx::scoped_lock lock(m_command_mutex);
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
   if (tex == nullptr || tex->image == VK_NULL_HANDLE)
@@ -875,8 +878,8 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
              "frame, while the copy queue still owns what it uploaded.");
   }
 
-  const bool copy_state = tex->state == ResourceState::CopyDst ||
-                          tex->state == ResourceState::CopySrc;
+  const bool copy_state = tex->state == gfx::resource_state::CopyDst ||
+                          tex->state == gfx::resource_state::CopySrc;
   const bool foreign = qfot && !copy_state;
   VkImageMemoryBarrier2 to_src = whole_image_barrier(tex->image, aspect);
   to_src.srcStageMask = foreign ? VK_PIPELINE_STAGE_2_NONE : from.stage;
@@ -895,14 +898,14 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   copy.imageExtent = {w, h, 1};
   vkCmdCopyImageToBuffer(cmd, tex->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                          chunk->buffer, 1, &copy);
-  tex->state = ResourceState::CopySrc;
+  tex->state = gfx::resource_state::CopySrc;
   // Anything graphics does with it afterwards needs an acquire, and the only
   // barrier that can pair with one is the release the next frame hand-off emits
   // - so book it now rather than leaving the image stranded on this queue.
   if (qfot && tex->owner == ImageOwner::Copy) {
-    ImageRelease &release =
-        pending_release(handle, tex->image, aspect, ResourceState::CopySrc);
-    release.old_state = ResourceState::CopySrc;
+    ImageRelease &release = pending_release(handle, tex->image, aspect,
+                                            gfx::resource_state::CopySrc);
+    release.old_state = gfx::resource_state::CopySrc;
   }
 
   VkMemoryBarrier2 host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -923,11 +926,12 @@ ReadbackResult VulkanUploader::read_texture(const TextureHandle handle,
   return {{value}, chunk->mapped, size};
 }
 
-bool VulkanUploader::is_complete(const UploadTicket ticket) const noexcept {
+bool VulkanUploader::is_complete(
+    const gfx::upload_ticket ticket) const noexcept {
   return !ticket.valid() || completed_value() >= ticket.value;
 }
 
-void VulkanUploader::wait(const UploadTicket ticket) noexcept {
+void VulkanUploader::wait(const gfx::upload_ticket ticket) noexcept {
   if (!ticket.valid())
     return;
   {
@@ -959,9 +963,9 @@ void VulkanUploader::flush_batch() noexcept {
   flush_locked();
 }
 
-UploaderStats VulkanUploader::stats() const noexcept {
+gfx::uploader_stats VulkanUploader::stats() const noexcept {
   const nx::scoped_lock lock(m_command_mutex);
-  UploaderStats s;
+  gfx::uploader_stats s;
   s.total_submits = m_value;
   s.completed_submits = completed_value();
   s.ring_used = m_ring_head - m_ring_tail;
@@ -971,10 +975,9 @@ UploaderStats VulkanUploader::stats() const noexcept {
   return s;
 }
 
-VulkanUploader::ImageRelease &
-VulkanUploader::pending_release(const TextureHandle handle, const VkImage image,
-                                const VkImageAspectFlags aspect,
-                                const ResourceState state) {
+VulkanUploader::ImageRelease &VulkanUploader::pending_release(
+    const gfx::texture_handle handle, const VkImage image,
+    const VkImageAspectFlags aspect, const gfx::resource_state state) {
   for (ImageRelease &release : m_image_releases)
     if (release.image == image)
       return release;
@@ -982,10 +985,9 @@ VulkanUploader::pending_release(const TextureHandle handle, const VkImage image,
   return m_image_releases.back();
 }
 
-VulkanUploader::BufferRelease &
-VulkanUploader::pending_release(const BufferHandle handle,
-                                const VkBuffer buffer, const u64 offset,
-                                const u64 size, const ResourceState state) {
+VulkanUploader::BufferRelease &VulkanUploader::pending_release(
+    const gfx::buffer_handle handle, const VkBuffer buffer, const u64 offset,
+    const u64 size, const gfx::resource_state state) {
   for (BufferRelease &release : m_buffer_releases) {
     if (release.buffer != buffer)
       continue;
@@ -1025,7 +1027,7 @@ void VulkanUploader::record_releases() {
     VkImageMemoryBarrier2 barrier =
         whole_image_barrier(release.image, release.aspect);
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    barrier.srcAccessMask = release.old_state == ResourceState::CopySrc
+    barrier.srcAccessMask = release.old_state == gfx::resource_state::CopySrc
                                 ? VK_ACCESS_2_TRANSFER_READ_BIT
                                 : VK_ACCESS_2_TRANSFER_WRITE_BIT;
     // The destination half belongs to the acquire on the other queue; a
@@ -1231,4 +1233,4 @@ void VulkanUploader::reclaim() noexcept {
   reclaim_locked();
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

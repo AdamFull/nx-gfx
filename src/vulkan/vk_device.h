@@ -8,14 +8,12 @@
 #include "core/foundation/threading/sync.h"
 #include "core/foundation/threading/thread_pool.h"
 #include "core/foundation/threading/workload.h"
-#include "rendering/rhi/bindless.h"
-#include "rendering/rhi/descs.h"
-#include "rendering/rhi/handles.h"
-#include "rendering/rhi/native.h"
-#include "rendering/rhi/native_driver.h"
-#include "rendering/rhi/pipeline_compiler.h"
-#include "rendering/rhi/shader_reflect.h"
-#include "rendering/rhi/types.h"
+#include "nx/gfx/bindless.h"
+#include "nx/gfx/gfx.h"
+#include "nx/gfx/native.h"
+#include "nx/gfx/pipeline_job.h"
+#include "nx/gfx/reflection.h"
+#include "nx/gfx/types.h"
 #include "rendering/rhi/vulkan/vk_common.h"
 #include "rendering/rhi/vulkan/vk_gpu_crash.h"
 #include "rendering/rhi/vulkan/vk_gpu_profiler.h"
@@ -27,7 +25,7 @@
 
 #include <span>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 class VulkanDevice;
 
@@ -40,7 +38,7 @@ enum class ImageOwner : u8 {
 };
 
 struct PendingTextureView {
-  TextureHandle texture;
+  gfx::texture_handle texture;
   VkImageView view = VK_NULL_HANDLE;
   u64 publish_after = 0;
   u32 base_mip = 0;
@@ -56,16 +54,16 @@ struct VulkanTexture {
   nx::small_vector<VkImageView, 12> uavs;
   nx::small_vector<u32, 12> uav_indices;
   VmaAllocation allocation = VK_NULL_HANDLE;
-  Format format = Format::Unknown;
-  TextureDimension dimension = TextureDimension::Tex2D;
+  gfx::format format = gfx::format::Unknown;
+  gfx::texture_dimension dimension = gfx::texture_dimension::Tex2D;
   u32 width = 0;
   u32 height = 0;
   u32 depth = 1;
   u32 mip_levels = 1;
   u32 sampled_base_mip = 0;
   u32 layers = 1;
-  TextureUsageFlags usage = TextureUsage::None;
-  ResourceState state = ResourceState::Undefined;
+  gfx::texture_usage_flags usage = gfx::texture_usage::None;
+  gfx::resource_state state = gfx::resource_state::Undefined;
   ImageOwner owner = ImageOwner::Unknown;
   bool owns_image = true;
 };
@@ -76,7 +74,7 @@ struct VulkanBuffer {
   VkDeviceAddress device_address = 0;
   void *mapped = nullptr;
   u64 size = 0;
-  BufferUsageFlags usage = BufferUsage::None;
+  gfx::buffer_usage_flags usage = gfx::buffer_usage::None;
 };
 
 struct VulkanSampler {
@@ -101,7 +99,7 @@ struct VulkanShader {
   };
   nx::small_vector<ComputeEntry, 4> compute_entries;
   nx::small_vector<nx::string, 4> entry_points;
-  ShaderReflection reflection;
+  gfx::shader_reflection reflection;
 };
 
 struct VulkanPipeline {
@@ -169,31 +167,32 @@ public:
   [[nodiscard]] VkCommandBuffer handle() const noexcept { return m_cmd; }
   [[nodiscard]] bool valid() const noexcept { return m_cmd != VK_NULL_HANDLE; }
 
-  void begin_render_pass(const RenderPassDesc &desc);
+  void begin_render_pass(const gfx::render_pass_desc &desc);
   void end_render_pass();
 
   void begin_compute_pass(nx::string_view name = "compute");
   void end_compute_pass();
 
-  void set_viewport(const Viewport &viewport);
-  void set_scissor(const Rect2D &rect);
+  void set_viewport(const gfx::viewport &viewport);
+  void set_scissor(const gfx::rect2d &rect);
   /// Override the bound graphics pipeline's own until the next bind.
-  void set_cull_mode(CullMode cull);
-  void set_front_face(FrontFace face);
+  void set_cull_mode(gfx::cull_mode cull);
+  void set_front_face(gfx::front_face face);
 
   /// Clears @p count slots. Every slot written must be reset first, and a reset
   /// is invalid inside a render pass - so this belongs at the top of a frame.
-  void reset_queries(QueryPoolHandle pool, u32 first, u32 count);
-  void write_timestamp(QueryPoolHandle pool, u32 index);
+  void reset_queries(gfx::query_pool_handle pool, u32 first, u32 count);
+  void write_timestamp(gfx::query_pool_handle pool, u32 index);
 
-  void bind_pipeline(PipelineHandle pipeline);
+  void bind_pipeline(gfx::pipeline_handle pipeline);
   /// Sets the whole 128-byte push block. Offset/size in bytes.
   void push_constants(const void *data, u32 size, u32 offset = 0);
 
   /// The only buffer binding in the API: everything else a shader reads is
   /// reached bindlessly by device address. An index buffer cannot be, because
   /// the index fetch is fixed-function on both backends.
-  void bind_index_buffer(BufferHandle buffer, IndexType type, u64 offset = 0);
+  void bind_index_buffer(gfx::buffer_handle buffer, gfx::index_type type,
+                         u64 offset = 0);
 
   void draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0,
             u32 first_instance = 0);
@@ -202,33 +201,35 @@ public:
                     u32 first_instance = 0);
   void dispatch(u32 groups_x, u32 groups_y = 1, u32 groups_z = 1);
 
-  void draw_indirect(BufferHandle buffer, u64 offset = 0, u32 draw_count = 1,
-                     u32 stride = 0);
-  void draw_indexed_indirect(BufferHandle buffer, u64 offset = 0,
+  void draw_indirect(gfx::buffer_handle buffer, u64 offset = 0,
+                     u32 draw_count = 1, u32 stride = 0);
+  void draw_indexed_indirect(gfx::buffer_handle buffer, u64 offset = 0,
                              u32 draw_count = 1, u32 stride = 0);
-  /// DrawMeshTasksIndirectCommand records, for a mesh pipeline; nothing where
-  /// the device has no mesh shaders.
-  void draw_mesh_tasks_indirect(BufferHandle buffer, u64 offset = 0,
+  /// gfx::draw_mesh_tasks_indirect_command records, for a mesh pipeline;
+  /// nothing where the device has no mesh shaders.
+  void draw_mesh_tasks_indirect(gfx::buffer_handle buffer, u64 offset = 0,
                                 u32 draw_count = 1, u32 stride = 0);
-  void dispatch_indirect(BufferHandle buffer, u64 offset = 0);
+  void dispatch_indirect(gfx::buffer_handle buffer, u64 offset = 0);
 
-  void barrier(const TextureBarrier *textures, u32 texture_count,
-               const BufferBarrier *buffers = nullptr, u32 buffer_count = 0,
-               StateTracking tracking = StateTracking::Update);
-  void barrier(const TextureBarrier &texture) { barrier(&texture, 1); }
+  void barrier(const gfx::texture_barrier *textures, u32 texture_count,
+               const gfx::buffer_barrier *buffers = nullptr,
+               u32 buffer_count = 0,
+               gfx::state_tracking tracking = gfx::state_tracking::Update);
+  void barrier(const gfx::texture_barrier &texture) { barrier(&texture, 1); }
 
   /// Copies one tightly packed colour mip into a host-readable buffer. The
   /// source must already be in CopySrc and this must be called outside a
   /// render/compute pass. row_pitch may include padding between rows.
-  [[nodiscard]] bool copy_texture_to_buffer(TextureHandle texture,
-                                            BufferHandle buffer, u64 row_pitch,
-                                            u32 mip = 0, u32 layer = 0);
+  [[nodiscard]] bool copy_texture_to_buffer(gfx::texture_handle texture,
+                                            gfx::buffer_handle buffer,
+                                            u64 row_pitch, u32 mip = 0,
+                                            u32 layer = 0);
   /// Copies @p size bytes of @p source from @p source_offset into
   /// @p destination at @p destination_offset, outside a render/compute pass,
   /// and makes them visible to the host. The source must be CopySrc, the
   /// destination CopyDst, both in usage and state.
-  [[nodiscard]] bool copy_buffer(BufferHandle source, u64 source_offset,
-                                 BufferHandle destination,
+  [[nodiscard]] bool copy_buffer(gfx::buffer_handle source, u64 source_offset,
+                                 gfx::buffer_handle destination,
                                  u64 destination_offset, u64 size);
 
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
@@ -282,8 +283,8 @@ struct VulkanSwapchain {
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
   VkExtent2D extent = {};
   VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-  SurfaceAlpha requested_alpha = SurfaceAlpha::Opaque;
-  SurfaceAlpha alpha = SurfaceAlpha::Opaque;
+  gfx::surface_alpha requested_alpha = gfx::surface_alpha::Opaque;
+  gfx::surface_alpha alpha = gfx::surface_alpha::Opaque;
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
   // Set instead of swapchain when frames reach the screen through
   // DirectComposition. The backbuffers are imported images of its own.
@@ -295,7 +296,7 @@ struct VulkanSwapchain {
   /// image is written again.
   nx::small_vector<u64, 4> composed_serials;
 #endif
-  nx::small_vector<TextureHandle, 4> backbuffers;
+  nx::small_vector<gfx::texture_handle, 4> backbuffers;
   /// One per image, signalled when the frame that drew it is done.
   nx::small_vector<VkSemaphore, 4> release_semaphores;
   /// One per frame slot, signalled when the image acquired into it is ready.
@@ -334,19 +335,19 @@ public:
   VulkanDevice(const VulkanDevice &) = delete;
   VulkanDevice &operator=(const VulkanDevice &) = delete;
 
-  [[nodiscard]] bool init(const DeviceDesc &desc);
+  [[nodiscard]] bool init(const gfx::device_desc &desc);
   void shutdown() noexcept;
 
   [[nodiscard]] nx::string_view init_error() const noexcept {
     return m_init_error;
   }
-  [[nodiscard]] const DeviceInitReport &init_report() const noexcept {
+  [[nodiscard]] const gfx::device_init_report &init_report() const noexcept {
     return m_init_report;
   }
 
-  [[nodiscard]] const DeviceCaps &caps() const noexcept { return m_caps; }
+  [[nodiscard]] const gfx::device_caps &caps() const noexcept { return m_caps; }
   [[nodiscard]] VkStateInfo
-  state_info(const ResourceState state) const noexcept {
+  state_info(const gfx::resource_state state) const noexcept {
     VkPipelineStageFlags2 shaders = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
                                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -356,7 +357,7 @@ public:
                  VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
     return to_vk_state(state, shaders);
   }
-  [[nodiscard]] GpuDeviceStatus device_status() const noexcept {
+  [[nodiscard]] gfx::gpu_device_status device_status() const noexcept {
     return m_gpu_crash.status();
   }
 
@@ -374,33 +375,37 @@ public:
   /// A swapchain for one window; a device has one per window it draws. Every
   /// swapchain shares swapchain_format(), so a surface that cannot offer it
   /// while others exist is refused. Invalid when it cannot be made.
-  [[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDesc &desc);
+  [[nodiscard]] gfx::swapchain_handle
+  create_swapchain(const gfx::swapchain_desc &desc);
   /// A swapchain with no surface: images of its own that nothing presents.
   /// Everything that reads swapchain_format(), swapchain_extent() or
   /// current_backbuffer() sees a normal swapchain, so a renderer draws a whole
   /// frame without a window behind it; acquire() and end_frame() drop only
   /// the acquire and the present.
-  [[nodiscard]] SwapchainHandle
-  create_offscreen_swapchain(u32 width, u32 height, Format format);
-  [[nodiscard]] bool resize_swapchain(SwapchainHandle swapchain, u32 width,
-                                      u32 height);
+  [[nodiscard]] gfx::swapchain_handle
+  create_offscreen_swapchain(u32 width, u32 height, gfx::format format);
+  [[nodiscard]] bool resize_swapchain(gfx::swapchain_handle swapchain,
+                                      u32 width, u32 height);
   /// Waits for the GPU first; not between acquire() and end_frame().
-  void destroy_swapchain(SwapchainHandle swapchain) noexcept;
+  void destroy_swapchain(gfx::swapchain_handle swapchain) noexcept;
 
   /// Whether @p swapchain is one with no surface behind it.
-  [[nodiscard]] bool offscreen_swapchain(SwapchainHandle swapchain) const;
+  [[nodiscard]] bool offscreen_swapchain(gfx::swapchain_handle swapchain) const;
 
-  [[nodiscard]] bool supports(Format format, TextureUsageFlags usage) const;
+  [[nodiscard]] bool supports(gfx::format format,
+                              gfx::texture_usage_flags usage) const;
 
   /// The format every swapchain has: chosen by the first one made while none
   /// exists, and kept after it goes, so pipelines built for it stay valid.
-  [[nodiscard]] Format swapchain_format() const noexcept {
+  [[nodiscard]] gfx::format swapchain_format() const noexcept {
     return m_swapchain_format;
   }
-  [[nodiscard]] Extent2D swapchain_extent(SwapchainHandle swapchain) const;
-  [[nodiscard]] SurfaceAlpha swapchain_alpha(SwapchainHandle swapchain) const;
+  [[nodiscard]] gfx::extent2d
+  swapchain_extent(gfx::swapchain_handle swapchain) const;
+  [[nodiscard]] gfx::surface_alpha
+  swapchain_alpha(gfx::swapchain_handle swapchain) const;
   /// The last present found the surface no longer matches: resize it.
-  [[nodiscard]] bool swapchain_stale(SwapchainHandle swapchain) const;
+  [[nodiscard]] bool swapchain_stale(gfx::swapchain_handle swapchain) const;
 
   /// Starts GPU frame N: waits for its slot, then flushes uploads. False when
   /// the device is lost. Swapchains are acquired separately.
@@ -408,7 +413,7 @@ public:
   /// Takes @p swapchain's next image for this frame, once per frame. A
   /// swapchain that is not acquired is neither drawn nor presented this
   /// frame; the others still are.
-  [[nodiscard]] AcquireResult acquire(SwapchainHandle swapchain);
+  [[nodiscard]] gfx::acquire_result acquire(gfx::swapchain_handle swapchain);
   /// Submits the frame and presents every swapchain it acquired, together.
   /// False when the submission failed; a swapchain its present found out of
   /// date is marked stale instead.
@@ -418,12 +423,12 @@ public:
   /// it, to be recorded apart; the context then continues in a new one, and
   /// must not record until every split recording has ended. An empty split
   /// means none was made.
-  [[nodiscard]] RecordingSplit split_frame(VulkanCommandContext &frame,
-                                           u32 count);
+  [[nodiscard]] gfx::recording_split split_frame(VulkanCommandContext &frame,
+                                                 u32 count);
   /// Begins recording @p index of @p split with a command pool of its own. Any
   /// thread or job may record it, one at a time, and must end it before the
   /// frame ends.
-  [[nodiscard]] bool begin_recording(RecordingSplit split, u32 index,
+  [[nodiscard]] bool begin_recording(gfx::recording_split split, u32 index,
                                      VulkanCommandContext &out);
   void end_recording(VulkanCommandContext &recording);
 
@@ -437,8 +442,8 @@ public:
   [[nodiscard]] bool submit_without_present();
 
   /// The image @p swapchain acquired for this frame.
-  [[nodiscard]] TextureHandle
-  current_backbuffer(SwapchainHandle swapchain) const noexcept;
+  [[nodiscard]] gfx::texture_handle
+  current_backbuffer(gfx::swapchain_handle swapchain) const noexcept;
 
   /// Waits for the GPU, then frees every retired resource. Never while
   /// another thread records or submits a frame: that frame may hold what this
@@ -461,37 +466,41 @@ public:
   /// Frame work up to @p serial has been submitted, or dropped.
   void release_retirements(u64 serial) noexcept;
 
-  [[nodiscard]] TextureHandle create_texture(const TextureDesc &desc);
-  void destroy_texture(TextureHandle handle) noexcept;
+  [[nodiscard]] gfx::texture_handle
+  create_texture(const gfx::texture_desc &desc);
+  void destroy_texture(gfx::texture_handle handle) noexcept;
   /// Gives @p target @p replacement's image under its own handle and
   /// bindless index, and takes ownership of @p replacement. Under a hold the
   /// frame work before the held one may still be recording against the old
   /// image, so the swap waits for the first frame begun after it is released.
-  [[nodiscard]] bool replace_texture(TextureHandle target,
-                                     TextureHandle replacement);
-  [[nodiscard]] bool set_texture_view_base_mip(TextureHandle handle,
+  [[nodiscard]] bool replace_texture(gfx::texture_handle target,
+                                     gfx::texture_handle replacement);
+  [[nodiscard]] bool set_texture_view_base_mip(gfx::texture_handle handle,
                                                u32 base_mip);
   /// True when the device can sample a texture whose finer mips are not yet
-  /// uploaded (via TextureDesc::sampled_base_mip and subsequent view updates).
+  /// uploaded (via gfx::texture_desc::sampled_base_mip and subsequent view
+  /// updates).
   [[nodiscard]] bool supports_mip_streaming() const noexcept { return true; }
   [[nodiscard]] const VulkanTexture *
-  texture(TextureHandle handle) const noexcept;
-  [[nodiscard]] TextureUsageFlags
-  texture_usage(TextureHandle handle) const noexcept;
+  texture(gfx::texture_handle handle) const noexcept;
+  [[nodiscard]] gfx::texture_usage_flags
+  texture_usage(gfx::texture_handle handle) const noexcept;
 
-  [[nodiscard]] BufferHandle create_buffer(const BufferDesc &desc);
-  void destroy_buffer(BufferHandle handle) noexcept;
-  [[nodiscard]] const VulkanBuffer *buffer(BufferHandle handle) const noexcept;
+  [[nodiscard]] gfx::buffer_handle create_buffer(const gfx::buffer_desc &desc);
+  void destroy_buffer(gfx::buffer_handle handle) noexcept;
+  [[nodiscard]] const VulkanBuffer *
+  buffer(gfx::buffer_handle handle) const noexcept;
 
-  [[nodiscard]] SamplerHandle create_sampler(const SamplerDesc &desc);
-  void destroy_sampler(SamplerHandle handle) noexcept;
+  [[nodiscard]] gfx::sampler_handle
+  create_sampler(const gfx::sampler_desc &desc);
+  void destroy_sampler(gfx::sampler_handle handle) noexcept;
 
-  [[nodiscard]] QueryPoolHandle create_timestamp_pool(u32 count);
-  void destroy_query_pool(QueryPoolHandle handle) noexcept;
-  [[nodiscard]] bool read_timestamps(QueryPoolHandle handle,
+  [[nodiscard]] gfx::query_pool_handle create_timestamp_pool(u32 count);
+  void destroy_query_pool(gfx::query_pool_handle handle) noexcept;
+  [[nodiscard]] bool read_timestamps(gfx::query_pool_handle handle,
                                      std::span<u64> out) const;
   [[nodiscard]] const VulkanQueryPool *
-  query_pool(QueryPoolHandle handle) const noexcept {
+  query_pool(gfx::query_pool_handle handle) const noexcept {
     return m_query_pools.try_get(handle);
   }
 
@@ -500,43 +509,46 @@ public:
   // asks what each texture needs, creates one heap, and places them at computed
   // offsets.
 
-  [[nodiscard]] MemoryRequirements
-  texture_requirements(const TextureDesc &desc) const;
-  [[nodiscard]] HeapHandle create_heap(const HeapDesc &desc);
-  void destroy_heap(HeapHandle handle) noexcept;
+  [[nodiscard]] gfx::memory_requirements
+  texture_requirements(const gfx::texture_desc &desc) const;
+  [[nodiscard]] gfx::heap_handle create_heap(const gfx::heap_desc &desc);
+  void destroy_heap(gfx::heap_handle handle) noexcept;
   /// The offset must satisfy the alignment from texture_requirements().
-  [[nodiscard]] TextureHandle
-  create_texture_in_heap(const TextureDesc &desc, HeapHandle heap, u64 offset);
+  [[nodiscard]] gfx::texture_handle
+  create_texture_in_heap(const gfx::texture_desc &desc, gfx::heap_handle heap,
+                         u64 offset);
 
-  [[nodiscard]] ShaderHandle create_shader(const ShaderDesc &desc);
-  void destroy_shader(ShaderHandle handle) noexcept;
+  [[nodiscard]] gfx::shader_handle create_shader(const gfx::shader_desc &desc);
+  void destroy_shader(gfx::shader_handle handle) noexcept;
 
   /// Copies every input of @p desc on the owner thread into a job to compile
-  /// anywhere (PipelineJob::compile, compile_pipeline_async) and publish here.
-  /// Invalid when @p desc is refused.
-  [[nodiscard]] PipelineJob prepare_pipeline(const GraphicsPipelineDesc &desc);
-  [[nodiscard]] PipelineJob prepare_pipeline(const ComputePipelineDesc &desc);
+  /// anywhere (gfx::pipeline_job::compile, compile_pipeline_async) and publish
+  /// here. Invalid when @p desc is refused.
+  [[nodiscard]] gfx::pipeline_job
+  prepare_pipeline(const gfx::graphics_pipeline_desc &desc);
+  [[nodiscard]] gfx::pipeline_job
+  prepare_pipeline(const gfx::compute_pipeline_desc &desc);
   /// Invalid when @p job did not compile.
-  [[nodiscard]] PipelineHandle publish_pipeline(PipelineJob &&job);
+  [[nodiscard]] gfx::pipeline_handle publish_pipeline(gfx::pipeline_job &&job);
   [[nodiscard]] nx::workload_statistics
   pipeline_compile_statistics() const noexcept {
     return m_pipeline_compile_workload.statistics();
   }
-  void destroy_pipeline(PipelineHandle handle) noexcept;
+  void destroy_pipeline(gfx::pipeline_handle handle) noexcept;
 
-  [[nodiscard]] u32 texture_index(TextureHandle handle) const noexcept;
-  [[nodiscard]] u32 rw_texture_index(TextureHandle handle,
+  [[nodiscard]] u32 texture_index(gfx::texture_handle handle) const noexcept;
+  [[nodiscard]] u32 rw_texture_index(gfx::texture_handle handle,
                                      u32 mip = 0) const noexcept;
-  [[nodiscard]] u32 sampler_index(SamplerHandle handle) const noexcept;
+  [[nodiscard]] u32 sampler_index(gfx::sampler_handle handle) const noexcept;
   [[nodiscard]] VkDeviceAddress
-  buffer_address(BufferHandle handle) const noexcept;
+  buffer_address(gfx::buffer_handle handle) const noexcept;
 
-  [[nodiscard]] void *buffer_mapped(BufferHandle handle) const noexcept;
+  [[nodiscard]] void *buffer_mapped(gfx::buffer_handle handle) const noexcept;
   /// Makes CPU writes to a mapped buffer visible to the GPU. This is a no-op
   /// for host-coherent allocations.
-  void flush_buffer(BufferHandle handle, u64 offset = 0,
+  void flush_buffer(gfx::buffer_handle handle, u64 offset = 0,
                     u64 size = ~0ull) noexcept;
-  void invalidate_buffer(BufferHandle handle, u64 offset = 0,
+  void invalidate_buffer(gfx::buffer_handle handle, u64 offset = 0,
                          u64 size = ~0ull) noexcept;
 
   [[nodiscard]] VkPhysicalDevice vk_physical_device() const noexcept {
@@ -546,38 +558,40 @@ public:
   /// host must synchronize: the frame, the uploader and native code all
   /// submit, and queues of different types may be one VkQueue. Never held
   /// across a wait.
-  [[nodiscard]] nx::mutex &queue_lock(const QueueType queue) noexcept {
+  [[nodiscard]] nx::mutex &queue_lock(const gfx::queue_type queue) noexcept {
     return m_queue_locks[m_queue_lock_of[nx::cast<usize>(queue)]];
   }
   [[nodiscard]] VkQueue graphics_queue() const noexcept {
-    return m_queues[nx::cast<usize>(QueueType::Graphics)];
+    return m_queues[nx::cast<usize>(gfx::queue_type::Graphics)];
   }
   [[nodiscard]] u32 graphics_family() const noexcept {
-    return m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+    return m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)];
   }
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
 
   /// The device's own objects (see native.h).
-  [[nodiscard]] NativeDevice native() const noexcept;
+  [[nodiscard]] gfx::native_device native() const noexcept;
   /// @p handle's own objects; empty where it is not live.
-  [[nodiscard]] NativeTexture
-  native_texture(TextureHandle handle) const noexcept;
+  [[nodiscard]] gfx::native_texture
+  native_texture(gfx::texture_handle handle) const noexcept;
   /// The VkImageLayout a texture the graph left in @p state is in.
-  [[nodiscard]] u32 native_layout(ResourceState state) const noexcept;
+  [[nodiscard]] u32 native_layout(gfx::resource_state state) const noexcept;
   /// Whether the instance or the device was made with extension @p name.
   [[nodiscard]] bool native_extension(nx::string_view name) const noexcept;
-  /// The queue made for @p client (NativeDeviceClient::queue_family), or none.
-  [[nodiscard]] NativeQueue
-  native_queue(const NativeDeviceClient &client) const noexcept;
-  [[nodiscard]] VulkanTexture *texture_mut(TextureHandle handle) noexcept;
+  /// The queue made for @p client (gfx::native_device_client::queue_family), or
+  /// none.
+  [[nodiscard]] gfx::native_queue
+  native_queue(const gfx::native_device_client &client) const noexcept;
+  [[nodiscard]] VulkanTexture *texture_mut(gfx::texture_handle handle) noexcept;
 
-  [[nodiscard]] const ShaderReflection &
-  reflection(ShaderHandle handle) const noexcept;
+  [[nodiscard]] const gfx::shader_reflection &
+  reflection(gfx::shader_handle handle) const noexcept;
 
-  [[nodiscard]] ResourceState
-  texture_state(TextureHandle handle) const noexcept;
-  void set_texture_state(TextureHandle handle, ResourceState state) noexcept;
+  [[nodiscard]] gfx::resource_state
+  texture_state(gfx::texture_handle handle) const noexcept;
+  void set_texture_state(gfx::texture_handle handle,
+                         gfx::resource_state state) noexcept;
   [[nodiscard]] bool debug_utils_enabled() const noexcept {
     return m_debug_utils;
   }
@@ -594,7 +608,7 @@ public:
     return m_bindless.set;
   }
   [[nodiscard]] const VulkanPipeline *
-  pipeline(PipelineHandle handle) const noexcept;
+  pipeline(gfx::pipeline_handle handle) const noexcept;
 
   /// Backend calls returning DEVICE_LOST pass through this owner so one
   /// coherent report is collected before the device is torn down.
@@ -605,22 +619,23 @@ private:
   friend class VulkanUploader;
 
   [[nodiscard]] bool
-  prepare_graphics_pipeline(const GraphicsPipelineDesc &desc,
+  prepare_graphics_pipeline(const gfx::graphics_pipeline_desc &desc,
                             VulkanGraphicsPipelineCompileJob &out) const;
   [[nodiscard]] bool
-  prepare_compute_pipeline(const ComputePipelineDesc &desc,
+  prepare_compute_pipeline(const gfx::compute_pipeline_desc &desc,
                            VulkanComputePipelineCompileJob &out) const;
   [[nodiscard]] VulkanCompiledPipeline
   compile_graphics_pipeline(const VulkanGraphicsPipelineCompileJob &job) const;
   [[nodiscard]] VulkanCompiledPipeline
   compile_compute_pipeline(const VulkanComputePipelineCompileJob &job) const;
-  /// PipelineJob's compile step, on a VulkanPipelineJob payload.
+  /// gfx::pipeline_job's compile step, on a VulkanPipelineJob payload.
   static bool compile_job(void *payload);
 
-  bool create_instance(const DeviceDesc &desc);
+  bool create_instance(const gfx::device_desc &desc);
   bool rebuild_debug_messenger(bool address_bindings) noexcept;
   bool select_physical_device();
-  bool create_logical_device(std::span<NativeDeviceClient *const> clients);
+  bool
+  create_logical_device(std::span<gfx::native_device_client *const> clients);
   [[nodiscard]] bool route_promoted_entry_points() noexcept;
   bool create_allocator();
   bool create_bindless_heap();
@@ -644,7 +659,7 @@ private:
   void finish_backbuffer(VulkanSwapchain &sc, VkCommandBuffer cmd) noexcept;
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
   [[nodiscard]] bool create_composed_swapchain(VulkanSwapchain &sc,
-                                               const SwapchainDesc &desc);
+                                               const gfx::swapchain_desc &desc);
   [[nodiscard]] bool import_composed_images(VulkanSwapchain &sc, u32 width,
                                             u32 height);
   void release_composed_images(VulkanSwapchain &sc) noexcept;
@@ -678,10 +693,10 @@ private:
   DeviceRoutes m_routes;
   VkDevice m_device = VK_NULL_HANDLE;
   VmaAllocator m_allocator = VK_NULL_HANDLE;
-  DeviceCaps m_caps;
+  gfx::device_caps m_caps;
   nx::string m_device_name;
   nx::string m_init_error;
-  DeviceInitReport m_init_report;
+  gfx::device_init_report m_init_report;
   bool m_debug_utils = false;
   bool m_sync_validation = false;
   /// Every instance and device extension enabled, the clients' among them.
@@ -690,15 +705,15 @@ private:
   VulkanGpuProfiler m_gpu_profiler;
   VulkanGpuProfiler m_copy_profiler;
 
-  VkQueue m_queues[nx::cast<usize>(QueueType::Count)] = {};
-  u32 m_queue_families[nx::cast<usize>(QueueType::Count)] = {};
-  nx::mutex m_queue_locks[nx::cast<usize>(QueueType::Count)];
+  VkQueue m_queues[nx::cast<usize>(gfx::queue_type::Count)] = {};
+  u32 m_queue_families[nx::cast<usize>(gfx::queue_type::Count)] = {};
+  nx::mutex m_queue_locks[nx::cast<usize>(gfx::queue_type::Count)];
   /// Which lock each queue type takes: the first type with the same VkQueue.
-  u8 m_queue_lock_of[nx::cast<usize>(QueueType::Count)] = {0, 1, 2};
+  u8 m_queue_lock_of[nx::cast<usize>(gfx::queue_type::Count)] = {0, 1, 2};
 
   struct ClientQueue {
-    const NativeDeviceClient *client = nullptr;
-    NativeQueue queue;
+    const gfx::native_device_client *client = nullptr;
+    gfx::native_queue queue;
   };
   nx::small_vector<ClientQueue, 2> m_client_queues;
 
@@ -718,19 +733,19 @@ private:
   u32 m_frame_index = 0;
   u32 m_frames_in_flight = 2;
 
-  nx::slot_map<VulkanSwapchain, SwapchainHandle> m_swapchains;
+  nx::slot_map<VulkanSwapchain, gfx::swapchain_handle> m_swapchains;
   /// The swapchains the frame being recorded acquired, in acquire order.
-  nx::small_vector<SwapchainHandle, 4> m_acquired;
-  Format m_swapchain_format = Format::Unknown;
+  nx::small_vector<gfx::swapchain_handle, 4> m_acquired;
+  gfx::format m_swapchain_format = gfx::format::Unknown;
   bool m_frame_active = false;
 
-  nx::sync_slot_map<VulkanTexture, TextureHandle> m_textures;
-  nx::sync_slot_map<VulkanBuffer, BufferHandle> m_buffers;
-  nx::slot_map<VulkanSampler, SamplerHandle> m_samplers;
-  nx::slot_map<VulkanQueryPool, QueryPoolHandle> m_query_pools;
-  nx::slot_map<VulkanHeap, HeapHandle> m_heaps;
-  nx::slot_map<VulkanShader, ShaderHandle> m_shaders;
-  nx::sync_slot_map<VulkanPipeline, PipelineHandle> m_pipelines;
+  nx::sync_slot_map<VulkanTexture, gfx::texture_handle> m_textures;
+  nx::sync_slot_map<VulkanBuffer, gfx::buffer_handle> m_buffers;
+  nx::slot_map<VulkanSampler, gfx::sampler_handle> m_samplers;
+  nx::slot_map<VulkanQueryPool, gfx::query_pool_handle> m_query_pools;
+  nx::slot_map<VulkanHeap, gfx::heap_handle> m_heaps;
+  nx::slot_map<VulkanShader, gfx::shader_handle> m_shaders;
+  nx::sync_slot_map<VulkanPipeline, gfx::pipeline_handle> m_pipelines;
 
   VulkanUploader m_uploader;
   /// Copy-timeline value the current frame's graphics submit must wait on so
@@ -739,11 +754,11 @@ private:
 
   struct PendingDelete {
     u64 timeline_value = 0;
-    TextureHandle texture;
-    BufferHandle buffer;
-    SamplerHandle sampler;
-    PipelineHandle pipeline;
-    HeapHandle heap;
+    gfx::texture_handle texture;
+    gfx::buffer_handle buffer;
+    gfx::sampler_handle sampler;
+    gfx::pipeline_handle pipeline;
+    gfx::heap_handle heap;
     /// The held frame work it waits on first; 0 once only the timeline is left.
     u64 hold = 0;
   };
@@ -751,13 +766,14 @@ private:
   void retire(PendingDelete pending) noexcept;
 
   struct PendingReplace {
-    TextureHandle target;
-    TextureHandle replacement;
+    gfx::texture_handle target;
+    gfx::texture_handle replacement;
     /// The last held frame work that may name the target's old image.
     u64 after = 0;
   };
   // Neither takes m_garbage_lock on entry; each waits for the GPU first.
-  bool swap_texture(TextureHandle target, TextureHandle replacement) noexcept;
+  bool swap_texture(gfx::texture_handle target,
+                    gfx::texture_handle replacement) noexcept;
   void apply_replacements() noexcept;
   // The render job collects garbage while the owner creates and destroys
   // resources: this guards the deferred lists, the handle tables collection
@@ -773,4 +789,4 @@ private:
   nx::mutex m_bindless_lock;
 };
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

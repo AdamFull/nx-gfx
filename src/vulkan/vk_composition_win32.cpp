@@ -12,7 +12,7 @@
 
 #include <cstring>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 using Microsoft::WRL::ComPtr;
 
@@ -211,4 +211,4 @@ bool CompositionPresenter::present(const u32 index, const u64 value,
   return !failed(presented, "Present");
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

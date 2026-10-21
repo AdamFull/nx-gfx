@@ -7,7 +7,7 @@
 #include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 constexpr u32 REQUIRED_API_VERSION = VK_API_VERSION_1_1;
@@ -361,9 +361,9 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   return out;
 }
 
-bool VulkanDevice::supports(const Format format,
-                            const TextureUsageFlags usage) const {
-  if (m_physical_device == VK_NULL_HANDLE || format == Format::Unknown)
+bool VulkanDevice::supports(const gfx::format format,
+                            const gfx::texture_usage_flags usage) const {
+  if (m_physical_device == VK_NULL_HANDLE || format == gfx::format::Unknown)
     return false;
 
   VkFormatProperties props{};
@@ -372,24 +372,24 @@ bool VulkanDevice::supports(const Format format,
   const VkFormatFeatureFlags have = props.optimalTilingFeatures;
 
   VkFormatFeatureFlags want = 0;
-  if (usage.has_any(TextureUsage::Sampled))
+  if (usage.has_any(gfx::texture_usage::Sampled))
     want |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-  if (usage.has_any(TextureUsage::Storage))
+  if (usage.has_any(gfx::texture_usage::Storage))
     want |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-  if (usage.has_any(TextureUsage::RenderTarget))
+  if (usage.has_any(gfx::texture_usage::RenderTarget))
     want |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
-  if (usage.has_any(TextureUsage::DepthStencil))
+  if (usage.has_any(gfx::texture_usage::DepthStencil))
     want |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
   return (have & want) == want;
 }
 
 VulkanDevice::~VulkanDevice() { shutdown(); }
 
-bool VulkanDevice::create_instance(const DeviceDesc &desc) {
+bool VulkanDevice::create_instance(const gfx::device_desc &desc) {
   u32 available_version = 0;
   NX_VK_TRY(vkEnumerateInstanceVersion(&available_version));
   if (available_version < REQUIRED_API_VERSION) {
-    m_init_report.failure = DeviceInitFailure::Unsupported;
+    m_init_report.failure = gfx::device_init_failure::Unsupported;
     m_init_error =
         nx::format("Vulkan {}.{} is available, but Vulkan {}.{} is required.",
                    VK_API_VERSION_MAJOR(available_version),
@@ -428,7 +428,7 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
     extensions.push_back(platform_ext);
 
   m_debug_utils = (desc.enable_validation ||
-                   desc.gpu_crash_mode != GpuCrashMode::Disabled) &&
+                   desc.gpu_crash_mode != gfx::gpu_crash_mode::Disabled) &&
                   has_extension(available, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
   if (m_debug_utils)
     extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -474,9 +474,9 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
     }
   }
 
-  NativeNames requested;
-  for (NativeDeviceClient *const client : desc.native_clients)
-    client->instance_extensions(NativeApi::Vulkan, requested);
+  gfx::native_names requested;
+  for (gfx::native_device_client *const client : desc.native_clients)
+    client->instance_extensions(gfx::native_api::Vulkan, requested);
   for (const nx::string &name : requested) {
     if (named(extensions, name.c_str()))
       continue;
@@ -494,7 +494,7 @@ bool VulkanDevice::create_instance(const DeviceDesc &desc) {
   info.ppEnabledLayerNames = layers.data();
 
   VkDebugUtilsMessengerCreateInfoEXT messenger_info = debug_messenger_info(
-      m_gpu_crash, desc.gpu_crash_mode == GpuCrashMode::Detailed, false);
+      m_gpu_crash, desc.gpu_crash_mode == gfx::gpu_crash_mode::Detailed, false);
   if (m_debug_utils)
     info.pNext = &messenger_info;
 
@@ -557,7 +557,7 @@ bool VulkanDevice::select_physical_device() {
   u32 count = 0;
   NX_VK_TRY(vkEnumeratePhysicalDevices(m_instance, &count, nullptr));
   if (count == 0) {
-    m_init_report.failure = DeviceInitFailure::Unsupported;
+    m_init_report.failure = gfx::device_init_failure::Unsupported;
     m_init_error = "No Vulkan graphics device was found.";
     nx::logc(nx::log::rhi, "no Vulkan physical devices found");
     return false;
@@ -630,7 +630,7 @@ bool VulkanDevice::select_physical_device() {
   }
 
   if (best == VK_NULL_HANDLE) {
-    m_init_report.failure = DeviceInitFailure::Unsupported;
+    m_init_report.failure = gfx::device_init_failure::Unsupported;
     m_init_error =
         "No compatible Vulkan graphics device was found. Update the operating "
         "system or graphics driver.\n\n";
@@ -719,15 +719,16 @@ bool VulkanDevice::select_physical_device() {
       indexing.maxDescriptorSetUpdateAfterBindSamplers;
 
   if (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) {
-    constexpr std::pair<VkSubgroupFeatureFlagBits, SubgroupOp> ops[] = {
-        {VK_SUBGROUP_FEATURE_BASIC_BIT, SubgroupOp::Basic},
-        {VK_SUBGROUP_FEATURE_VOTE_BIT, SubgroupOp::Vote},
-        {VK_SUBGROUP_FEATURE_ARITHMETIC_BIT, SubgroupOp::Arithmetic},
-        {VK_SUBGROUP_FEATURE_BALLOT_BIT, SubgroupOp::Ballot},
-        {VK_SUBGROUP_FEATURE_SHUFFLE_BIT, SubgroupOp::Shuffle},
-        {VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT, SubgroupOp::ShuffleRelative},
-        {VK_SUBGROUP_FEATURE_CLUSTERED_BIT, SubgroupOp::Clustered},
-        {VK_SUBGROUP_FEATURE_QUAD_BIT, SubgroupOp::Quad},
+    constexpr std::pair<VkSubgroupFeatureFlagBits, gfx::subgroup_op> ops[] = {
+        {VK_SUBGROUP_FEATURE_BASIC_BIT, gfx::subgroup_op::Basic},
+        {VK_SUBGROUP_FEATURE_VOTE_BIT, gfx::subgroup_op::Vote},
+        {VK_SUBGROUP_FEATURE_ARITHMETIC_BIT, gfx::subgroup_op::Arithmetic},
+        {VK_SUBGROUP_FEATURE_BALLOT_BIT, gfx::subgroup_op::Ballot},
+        {VK_SUBGROUP_FEATURE_SHUFFLE_BIT, gfx::subgroup_op::Shuffle},
+        {VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT,
+         gfx::subgroup_op::ShuffleRelative},
+        {VK_SUBGROUP_FEATURE_CLUSTERED_BIT, gfx::subgroup_op::Clustered},
+        {VK_SUBGROUP_FEATURE_QUAD_BIT, gfx::subgroup_op::Quad},
     };
     for (const auto &[bit, op] : ops)
       if (subgroup.supportedOperations & bit)
@@ -788,7 +789,7 @@ bool VulkanDevice::select_physical_device() {
 }
 
 bool VulkanDevice::create_logical_device(
-    const std::span<NativeDeviceClient *const> clients) {
+    const std::span<gfx::native_device_client *const> clients) {
   u32 family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &family_count,
                                            nullptr);
@@ -823,9 +824,9 @@ bool VulkanDevice::create_logical_device(
   if (copy == INVALID_FAMILY)
     copy = graphics;
 
-  m_queue_families[nx::cast<usize>(QueueType::Graphics)] = graphics;
-  m_queue_families[nx::cast<usize>(QueueType::Compute)] = compute;
-  m_queue_families[nx::cast<usize>(QueueType::Copy)] = copy;
+  m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)] = graphics;
+  m_queue_families[nx::cast<usize>(gfx::queue_type::Compute)] = compute;
+  m_queue_families[nx::cast<usize>(gfx::queue_type::Copy)] = copy;
 
   constexpr f32 priority = 1.f;
   nx::small_vector<VkDeviceQueueCreateInfo, 3> queue_infos;
@@ -1048,7 +1049,7 @@ bool VulkanDevice::create_logical_device(
   features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
   features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
-  NativeNames requested;
+  gfx::native_names requested;
   nx::small_vector<ClientQueue, 2> client_queues;
   if (!clients.empty()) {
     u32 count = 0;
@@ -1057,8 +1058,8 @@ bool VulkanDevice::create_logical_device(
     nx::small_vector<VkExtensionProperties, 128> available(count);
     vkEnumerateDeviceExtensionProperties(m_physical_device, nullptr, &count,
                                          available.data());
-    const NativeDevice adapter = native();
-    for (NativeDeviceClient *const client : clients)
+    const gfx::native_device adapter = native();
+    for (gfx::native_device_client *const client : clients)
       client->device_extensions(adapter, requested);
     for (const nx::string &name : requested) {
       if (named(device_extensions, name.c_str()))
@@ -1068,11 +1069,11 @@ bool VulkanDevice::create_logical_device(
       else
         nx::logd(nx::log::rhi, "device extension {} is not available", name);
     }
-    for (NativeDeviceClient *const client : clients)
+    for (gfx::native_device_client *const client : clients)
       client->device_features(adapter, &features);
     tail = chain_end(&features.pNext);
 
-    for (NativeDeviceClient *const client : clients) {
+    for (gfx::native_device_client *const client : clients) {
       const u32 family = client->queue_family(adapter);
       if (family == INVALID_FAMILY)
         continue;
@@ -1136,7 +1137,7 @@ bool VulkanDevice::create_logical_device(
                                                             : "basic",
            address_tracking ? "on" : "off");
 
-  for (usize i = 0; i < nx::cast<usize>(QueueType::Count); ++i) {
+  for (usize i = 0; i < nx::cast<usize>(gfx::queue_type::Count); ++i) {
     vkGetDeviceQueue(m_device, m_queue_families[i], 0, &m_queues[i]);
     m_queue_lock_of[i] = nx::cast<u8>(i);
     for (usize j = 0; j < i; ++j)
@@ -1255,9 +1256,9 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
   return true;
 }
 
-bool VulkanDevice::init(const DeviceDesc &desc) {
+bool VulkanDevice::init(const gfx::device_desc &desc) {
   m_init_error.clear();
-  m_init_report = {.failure = DeviceInitFailure::Failed};
+  m_init_report = {.failure = gfx::device_init_failure::Failed};
   m_gpu_crash.configure(desc.gpu_crash_mode, desc.break_on_validation_error);
   m_report_frame.store(0, std::memory_order_relaxed);
 
@@ -1287,7 +1288,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
              desc.native_driver.identity);
   } else {
     if (const VkResult result = volkInitialize(); result != VK_SUCCESS) {
-      m_init_report.failure = DeviceInitFailure::Unsupported;
+      m_init_report.failure = gfx::device_init_failure::Unsupported;
       m_init_error = nx::format(
           "No Vulkan loader was found ({}). Install a graphics driver with "
           "Vulkan support.",
@@ -1353,7 +1354,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
     nx::small_vector<VkQueueFamilyProperties, 8> families(family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &family_count,
                                              families.data());
-    const u32 copy = m_queue_families[nx::cast<usize>(QueueType::Copy)];
+    const u32 copy = m_queue_families[nx::cast<usize>(gfx::queue_type::Copy)];
     if (m_routes.host_query_reset && copy < family_count &&
         families[copy].timestampValidBits > 0)
       m_copy_profiler.init_host_reset(m_physical_device, m_device,
@@ -1362,7 +1363,7 @@ bool VulkanDevice::init(const DeviceDesc &desc) {
   }
 #endif
 
-  m_init_report.failure = DeviceInitFailure::None;
+  m_init_report.failure = gfx::device_init_failure::None;
   return true;
 }
 
@@ -1464,7 +1465,8 @@ void VulkanDevice::shutdown() noexcept {
 }
 
 void VulkanDevice::wait_idle() noexcept {
-  if (m_device == VK_NULL_HANDLE || device_status() == GpuDeviceStatus::Lost)
+  if (m_device == VK_NULL_HANDLE ||
+      device_status() == gfx::gpu_device_status::Lost)
     return;
 
   if (NX_VK_DEVICE_CHECK(*this, vkDeviceWaitIdle(m_device)) == VK_SUCCESS) {
@@ -1474,7 +1476,8 @@ void VulkanDevice::wait_idle() noexcept {
 }
 
 void VulkanDevice::wait_submitted() noexcept {
-  if (m_device == VK_NULL_HANDLE || device_status() == GpuDeviceStatus::Lost)
+  if (m_device == VK_NULL_HANDLE ||
+      device_status() == gfx::gpu_device_status::Lost)
     return;
   (void)NX_VK_DEVICE_CHECK(*this, wait_timeline(m_timeline_value));
 }
@@ -1489,7 +1492,7 @@ VkResult VulkanDevice::check_result(const VkResult result,
 
 void VulkanDevice::flush_uploads() noexcept {
   if (m_device == VK_NULL_HANDLE || m_frame_active ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return;
 
   m_uploader.flush_batch();
@@ -1497,7 +1500,7 @@ void VulkanDevice::flush_uploads() noexcept {
   VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
   pool_info.queueFamilyIndex =
-      m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+      m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)];
   VkCommandPool pool = VK_NULL_HANDLE;
   if (NX_VK_DEVICE_CHECK(
           *this, vkCreateCommandPool(m_device, &pool_info, nullptr, &pool)) !=
@@ -1556,10 +1559,12 @@ void VulkanDevice::flush_uploads() noexcept {
   submit.pSignalSemaphoreInfos = &signal;
   VkResult submitted = VK_SUCCESS;
   {
-    const nx::scoped_lock<nx::mutex> held(queue_lock(QueueType::Graphics));
+    const nx::scoped_lock<nx::mutex> held(
+        queue_lock(gfx::queue_type::Graphics));
     submitted = NX_VK_DEVICE_CHECK(
-        *this, vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
-                                 1, &submit, VK_NULL_HANDLE));
+        *this,
+        vkQueueSubmit2KHR(m_queues[nx::cast<usize>(gfx::queue_type::Graphics)],
+                          1, &submit, VK_NULL_HANDLE));
   }
   if (submitted != VK_SUCCESS) {
     vkDestroyCommandPool(m_device, pool, nullptr);
@@ -1692,22 +1697,23 @@ void VulkanDevice::collect_garbage(
   }
 }
 
-NativeDevice VulkanDevice::native() const noexcept {
+gfx::native_device VulkanDevice::native() const noexcept {
   return {
-      .api = NativeApi::Vulkan,
+      .api = gfx::native_api::Vulkan,
       .instance = m_instance,
       .adapter = m_physical_device,
       .device = m_device,
-      .queue = m_queues[nx::cast<usize>(QueueType::Graphics)],
-      .queue_family = m_queue_families[nx::cast<usize>(QueueType::Graphics)],
+      .queue = m_queues[nx::cast<usize>(gfx::queue_type::Graphics)],
+      .queue_family =
+          m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)],
       .api_version = m_caps.api_version,
       .get_instance_proc_addr = reinterpret_cast<void *>(vkGetInstanceProcAddr),
       .get_device_proc_addr = reinterpret_cast<void *>(vkGetDeviceProcAddr),
   };
 }
 
-NativeTexture
-VulkanDevice::native_texture(const TextureHandle handle) const noexcept {
+gfx::native_texture
+VulkanDevice::native_texture(const gfx::texture_handle handle) const noexcept {
   const VulkanTexture *const texture = this->texture(handle);
   if (texture == nullptr || texture->image == VK_NULL_HANDLE)
     return {};
@@ -1722,7 +1728,8 @@ VulkanDevice::native_texture(const TextureHandle handle) const noexcept {
   };
 }
 
-u32 VulkanDevice::native_layout(const ResourceState state) const noexcept {
+u32 VulkanDevice::native_layout(
+    const gfx::resource_state state) const noexcept {
   return nx::cast<u32>(state_info(state).layout);
 }
 
@@ -1733,8 +1740,8 @@ bool VulkanDevice::native_extension(const nx::string_view name) const noexcept {
   return false;
 }
 
-NativeQueue
-VulkanDevice::native_queue(const NativeDeviceClient &client) const noexcept {
+gfx::native_queue VulkanDevice::native_queue(
+    const gfx::native_device_client &client) const noexcept {
   for (const ClientQueue &made : m_client_queues)
     if (made.client == &client)
       return made.queue;
@@ -1759,4 +1766,4 @@ void VulkanCommandContext::end_native() noexcept {
                             BINDLESS_SET, 1, &set, 0, nullptr);
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

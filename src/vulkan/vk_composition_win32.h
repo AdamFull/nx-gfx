@@ -2,7 +2,7 @@
 
 #include "core/foundation/core/foundation.h"
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 /// Puts frames rendered by Vulkan on screen through a premultiplied
 /// DirectComposition swap chain. It serves Win32 surfaces whose Vulkan driver
@@ -45,4 +45,4 @@ private:
   nx::unique_ptr<State> m_state;
 };
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

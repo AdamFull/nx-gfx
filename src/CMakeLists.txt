@@ -23,9 +23,7 @@ add_library(nx_rhi_types STATIC
         include/nx/gfx/upload.h
         types.h
         types.cpp
-        texture_data.h
         texture_data.cpp
-        shader_reflect.h
         shader_reflect.cpp
         shader_reflect_json.cpp)
 add_library(nx::rhi_types ALIAS nx_rhi_types)
@@ -45,15 +43,8 @@ endif ()
 set_target_properties(nx_rhi_types PROPERTIES FOLDER "engine")
 
 set(NX_RHI_HEADERS
-        bindless.h
-        descs.h
         device.h
-        gpu_crash.h
-        handles.h
-        native_driver.h
-        pipeline_compiler.h
-        rhi.h
-        upload.h)
+        handles.h)
 
 set(NX_RHI_SOURCES
         gfx.cpp

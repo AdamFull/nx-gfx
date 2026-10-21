@@ -11,7 +11,7 @@
 #include <new>
 #include <time.h>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 /// Tracy's host-reset context asserts it found a host clock, which release
@@ -179,11 +179,11 @@ void VulkanGpuProfiler::end_open_zones(Zones &zones) {
     end_zone(zones);
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail
 
 #else
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 void VulkanGpuProfiler::init(VkPhysicalDevice, VkDevice, VkQueue, u32,
                              nx::string_view,
@@ -200,6 +200,6 @@ void VulkanGpuProfiler::begin_zone(Zones &, VkCommandBuffer, nx::string_view) {}
 void VulkanGpuProfiler::end_zone(Zones &) {}
 void VulkanGpuProfiler::end_open_zones(Zones &) {}
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail
 
 #endif

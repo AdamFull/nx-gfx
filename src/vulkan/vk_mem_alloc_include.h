@@ -7,7 +7,7 @@
 // Status/Complex/Success/Above/Below as similarly raw macros) with no
 // namespacing at all. Left alone, every later `SomeEnum::None` in the same
 // translation unit silently becomes `SomeEnum::0L`; this is what broke
-// TextureUsage::None/BufferUsage::None/VulkanFaultRoute::None in
+// gfx::texture_usage::None/gfx::buffer_usage::None/VulkanFaultRoute::None in
 // vk_device.h, and later TileFlags::Above in tileset.h. Undefining them
 // once here, immediately after the include that can pull X11 in, means no
 // other header needs to know this is why. A no-op on Windows/macOS, where

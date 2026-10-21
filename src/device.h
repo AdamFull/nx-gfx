@@ -1,28 +1,23 @@
 #pragma once
 
 #include "core/foundation/containers/small_vector.h"
-#include "nx/gfx/frame.h"
-#include "rendering/rhi/descs.h"
-#include "rendering/rhi/handles.h"
-#include "rendering/rhi/types.h"
+#include "nx/gfx/gfx.h"
 
 #if defined(NX_RHI_VULKAN)
 #include "rendering/rhi/vulkan/vk_device.h"
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 using BackendDevice = VulkanDevice;
 using BackendCommandContext = VulkanCommandContext;
-using Uploader = VulkanUploader;
-}
+} // namespace nx::gfx::detail
 
 #elif defined(NX_RHI_METAL)
 #include "rendering/rhi/metal/mtl_device.h"
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 using BackendDevice = MetalDevice;
 using BackendCommandContext = MetalCommandContext;
-using Uploader = MetalUploader;
-}
+} // namespace nx::gfx::detail
 
 #else
 #error "No RHI backend selected; rhi/CMakeLists.txt should define one"
@@ -34,14 +29,14 @@ namespace detail {
 struct backend_access;
 }
 
-class command_list final : private nxe::rhi::BackendCommandContext {
+class command_list final : private detail::BackendCommandContext {
   friend struct detail::backend_access;
 };
 
 /// The backend's device, with the command lists it hands out: the frame's,
 /// and one for each recording split off it, by its place in the frame's
 /// submission order.
-class device final : private nxe::rhi::BackendDevice {
+class device final : private detail::BackendDevice {
   friend struct detail::backend_access;
 
   command_list m_frame;
@@ -52,14 +47,14 @@ namespace detail {
 
 /// How the free functions reach the backend: nothing else can.
 struct backend_access {
-  [[nodiscard]] static nxe::rhi::BackendDevice &of(device &dev) noexcept {
+  [[nodiscard]] static detail::BackendDevice &of(device &dev) noexcept {
     return dev;
   }
-  [[nodiscard]] static const nxe::rhi::BackendDevice &
+  [[nodiscard]] static const detail::BackendDevice &
   of(const device &dev) noexcept {
     return dev;
   }
-  [[nodiscard]] static nxe::rhi::BackendCommandContext &
+  [[nodiscard]] static detail::BackendCommandContext &
   of(command_list &cmd) noexcept {
     return cmd;
   }
@@ -75,8 +70,3 @@ struct backend_access {
 } // namespace detail
 
 } // namespace nx::gfx
-
-namespace nxe::rhi {
-using Device = nx::gfx::device;
-using CommandContext = nx::gfx::command_list;
-} // namespace nxe::rhi

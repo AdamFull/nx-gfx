@@ -3,16 +3,14 @@
 #include "core/foundation/containers/small_vector.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/threading/sync.h"
-#include "rendering/rhi/handles.h"
-#include "rendering/rhi/texture_data.h"
-#include "rendering/rhi/types.h"
-#include "rendering/rhi/upload.h"
+#include "nx/gfx/types.h"
+#include "nx/gfx/upload.h"
 #include "rendering/rhi/vulkan/vk_common.h"
 #include "rendering/rhi/vulkan/vk_mem_alloc_include.h"
 
 #include <span>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 class VulkanDevice;
 
@@ -27,34 +25,36 @@ public:
   [[nodiscard]] bool init(VulkanDevice *device);
   void shutdown() noexcept;
 
-  [[nodiscard]] UploadTicket
-  upload_texture(TextureHandle handle, std::span<const u8> src,
-                 std::span<const ImageSubresource> layout,
-                 ResourceState final_state = ResourceState::ShaderReadOnly);
+  [[nodiscard]] gfx::upload_ticket upload_texture(
+      gfx::texture_handle handle, std::span<const u8> src,
+      std::span<const gfx::image_subresource> layout,
+      gfx::resource_state final_state = gfx::resource_state::ShaderReadOnly);
 
-  [[nodiscard]] UploadTicket
-  upload_texture(TextureHandle handle, const TextureData &data,
-                 ResourceState final_state = ResourceState::ShaderReadOnly);
+  [[nodiscard]] gfx::upload_ticket upload_texture(
+      gfx::texture_handle handle, const gfx::texture_data &data,
+      gfx::resource_state final_state = gfx::resource_state::ShaderReadOnly);
 
-  [[nodiscard]] UploadTicket
-  upload_buffer(BufferHandle handle, u64 dst_offset, std::span<const u8> src,
-                ResourceState final_state = ResourceState::ShaderReadOnly);
+  [[nodiscard]] gfx::upload_ticket upload_buffer(
+      gfx::buffer_handle handle, u64 dst_offset, std::span<const u8> src,
+      gfx::resource_state final_state = gfx::resource_state::ShaderReadOnly);
 
-  [[nodiscard]] UploadTicket
-  clear_buffer(BufferHandle handle,
-               ResourceState final_state = ResourceState::ShaderReadOnly);
+  [[nodiscard]] gfx::upload_ticket clear_buffer(
+      gfx::buffer_handle handle,
+      gfx::resource_state final_state = gfx::resource_state::ShaderReadOnly);
 
   // The source must not be in concurrent use on the graphics queue - read after
   // wait_idle(), or from a resource only the copy queue touches.
 
-  ReadbackResult read_buffer(BufferHandle handle, u64 offset, u64 size);
-  ReadbackResult read_texture(TextureHandle handle, u32 mip = 0, u32 layer = 0);
+  gfx::readback_result read_buffer(gfx::buffer_handle handle, u64 offset,
+                                   u64 size);
+  gfx::readback_result read_texture(gfx::texture_handle handle, u32 mip = 0,
+                                    u32 layer = 0);
 
-  [[nodiscard]] bool is_complete(UploadTicket ticket) const noexcept;
-  void wait(UploadTicket ticket) noexcept;
+  [[nodiscard]] bool is_complete(gfx::upload_ticket ticket) const noexcept;
+  void wait(gfx::upload_ticket ticket) noexcept;
   void flush() noexcept;
 
-  [[nodiscard]] UploaderStats stats() const noexcept;
+  [[nodiscard]] gfx::uploader_stats stats() const noexcept;
 
   void flush_batch() noexcept;
   /// Records queue-ownership acquire barriers for the copies finished since the
@@ -95,28 +95,28 @@ private:
     VkImage image = VK_NULL_HANDLE;
     VkImageAspectFlags aspect = 0;
     VkImageLayout old_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    ResourceState new_state = ResourceState::ShaderReadOnly;
+    gfx::resource_state new_state = gfx::resource_state::ShaderReadOnly;
   };
   /// An image the copy queue still owns and must hand to graphics at the next
   /// frame hand-off. One record per image however many copies touched it, so
   /// the release/acquire pair is emitted once and always names the layout the
   /// image is actually in.
   struct ImageRelease {
-    TextureHandle handle;
+    gfx::texture_handle handle;
     VkImage image = VK_NULL_HANDLE;
     VkImageAspectFlags aspect = 0;
-    ResourceState old_state = ResourceState::CopyDst;
-    ResourceState new_state = ResourceState::ShaderReadOnly;
+    gfx::resource_state old_state = gfx::resource_state::CopyDst;
+    gfx::resource_state new_state = gfx::resource_state::ShaderReadOnly;
   };
   /// A copy into an image the graphics family owns, waiting to be replayed into
   /// the next frame's command buffer (see m_graphics_hold for how its staging
   /// bytes are kept alive until that frame has run).
   struct GraphicsCopy {
-    TextureHandle handle;
+    gfx::texture_handle handle;
     VkImage image = VK_NULL_HANDLE;
     VkImageAspectFlags aspect = 0;
-    ResourceState old_state = ResourceState::ShaderReadOnly;
-    ResourceState new_state = ResourceState::ShaderReadOnly;
+    gfx::resource_state old_state = gfx::resource_state::ShaderReadOnly;
+    gfx::resource_state new_state = gfx::resource_state::ShaderReadOnly;
     VkBuffer buffer = VK_NULL_HANDLE;
     nx::small_vector<VkBufferImageCopy, 4> regions;
   };
@@ -124,14 +124,14 @@ private:
     VkBuffer buffer = VK_NULL_HANDLE;
     u64 offset = 0;
     u64 size = 0;
-    ResourceState new_state = ResourceState::ShaderReadOnly;
+    gfx::resource_state new_state = gfx::resource_state::ShaderReadOnly;
   };
   struct BufferRelease {
-    BufferHandle handle;
+    gfx::buffer_handle handle;
     VkBuffer buffer = VK_NULL_HANDLE;
     u64 offset = 0;
     u64 size = 0;
-    ResourceState new_state = ResourceState::ShaderReadOnly;
+    gfx::resource_state new_state = gfx::resource_state::ShaderReadOnly;
   };
 
   [[nodiscard]] u64 completed_value() const noexcept;
@@ -152,10 +152,12 @@ private:
 
   /// Finds or starts the pending hand-off record for @p image, so several
   /// copies into one texture share a single release/acquire pair.
-  ImageRelease &pending_release(TextureHandle handle, VkImage image,
-                                VkImageAspectFlags aspect, ResourceState state);
-  BufferRelease &pending_release(BufferHandle handle, VkBuffer buffer,
-                                 u64 offset, u64 size, ResourceState state);
+  ImageRelease &pending_release(gfx::texture_handle handle, VkImage image,
+                                VkImageAspectFlags aspect,
+                                gfx::resource_state state);
+  BufferRelease &pending_release(gfx::buffer_handle handle, VkBuffer buffer,
+                                 u64 offset, u64 size,
+                                 gfx::resource_state state);
   /// Emits the copy-side half of the hand-off into the open batch and turns
   /// each record into the acquire record_acquires() will emit.
   void record_releases();
@@ -211,4 +213,4 @@ private:
   u64 m_graphics_hold = 0;
 };
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

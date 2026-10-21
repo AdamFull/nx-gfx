@@ -7,7 +7,7 @@
 #import <UIKit/UIKit.h>
 #endif
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 /// AppKit is main-thread-only. The desktop frame loop already runs there
@@ -22,16 +22,16 @@ void on_main_thread(void (^block)(void)) {
 
 /// Metal only ever presents 8-bit BGRA or a wide-gamut float format, so a
 /// preferred format it cannot show falls back rather than failing.
-MTLPixelFormat pick_layer_format(const Format preferred) noexcept {
+MTLPixelFormat pick_layer_format(const gfx::format preferred) noexcept {
   switch (preferred) {
-  case Format::BGRA8_UNORM:
-  case Format::BGRA8_SRGB:
-  case Format::RGBA16_FLOAT:
-  case Format::RGB10A2_UNORM:
+  case gfx::format::BGRA8_UNORM:
+  case gfx::format::BGRA8_SRGB:
+  case gfx::format::RGBA16_FLOAT:
+  case gfx::format::RGB10A2_UNORM:
     return to_mtl_format(preferred);
-  case Format::RGBA8_UNORM:
+  case gfx::format::RGBA8_UNORM:
     return MTLPixelFormatBGRA8Unorm;
-  case Format::RGBA8_SRGB:
+  case gfx::format::RGBA8_SRGB:
     return MTLPixelFormatBGRA8Unorm_sRGB;
   default:
     return MTLPixelFormatBGRA8Unorm;
@@ -40,7 +40,7 @@ MTLPixelFormat pick_layer_format(const Format preferred) noexcept {
 
 }
 
-SwapchainHandle MetalDevice::create_swapchain(const SwapchainDesc &desc) {
+gfx::swapchain_handle MetalDevice::create_swapchain(const gfx::swapchain_desc &desc) {
   if (m_state == nullptr) {
     nx::loge(log_rhi, "create_swapchain before init");
     return {};
@@ -64,7 +64,7 @@ SwapchainHandle MetalDevice::create_swapchain(const SwapchainDesc &desc) {
     return {};
   }
   // Core Animation composites a non-opaque layer as premultiplied.
-  const bool opaque = desc.alpha == SurfaceAlpha::Opaque;
+  const bool opaque = desc.alpha == gfx::surface_alpha::Opaque;
 
   __block CAMetalLayer *layer = nil;
   __block id layer_host = nil;
@@ -137,7 +137,7 @@ SwapchainHandle MetalDevice::create_swapchain(const SwapchainDesc &desc) {
     layer.drawableSize = CGSizeMake(desc.width, desc.height);
     layer.maximumDrawableCount = nx::clamp<u32>(frames_in_flight + 1, 2, 3);
 #if TARGET_OS_OSX
-    layer.displaySyncEnabled = desc.present_mode != PresentMode::Immediate;
+    layer.displaySyncEnabled = desc.present_mode != gfx::present_mode::Immediate;
 #endif
   }
 
@@ -147,32 +147,32 @@ SwapchainHandle MetalDevice::create_swapchain(const SwapchainDesc &desc) {
   sc.layer_host = layer_host;
   sc.extent = {desc.width, desc.height};
   sc.present_mode = desc.present_mode;
-  sc.alpha = opaque ? SurfaceAlpha::Opaque : SurfaceAlpha::Premultiplied;
+  sc.alpha = opaque ? gfx::surface_alpha::Opaque : gfx::surface_alpha::Premultiplied;
 
   // One handle for the backbuffer, valid for the swapchain's lifetime. Its
   // MTLTexture is filled in per frame from the drawable.
   MetalTexture backbuffer;
   backbuffer.format = s->swapchain_format;
-  backbuffer.dimension = TextureDimension::Tex2D;
+  backbuffer.dimension = gfx::texture_dimension::Tex2D;
   backbuffer.width = desc.width;
   backbuffer.height = desc.height;
-  backbuffer.usage = TextureUsage::RenderTarget | TextureUsage::CopySrc;
-  backbuffer.state = ResourceState::Undefined;
+  backbuffer.usage = gfx::texture_usage::RenderTarget | gfx::texture_usage::CopySrc;
+  backbuffer.state = gfx::resource_state::Undefined;
   backbuffer.owns_texture = false;
   sc.backbuffer = s->textures.insert(std::move(backbuffer));
 
   nx::logd(log_rhi, "swapchain: {}x{} {} ({} frames in flight, {})", desc.width,
            desc.height, to_string(s->swapchain_format), frames_in_flight,
-           desc.present_mode == PresentMode::Immediate ? "no vsync" : "vsync");
+           desc.present_mode == gfx::present_mode::Immediate ? "no vsync" : "vsync");
   return s->swapchains.insert(std::move(sc));
 }
 
-SwapchainHandle MetalDevice::create_offscreen_swapchain(const u32 width,
+gfx::swapchain_handle MetalDevice::create_offscreen_swapchain(const u32 width,
                                                        const u32 height,
-                                                       const Format format) {
-  if (m_state == nullptr || device_status() == GpuDeviceStatus::Lost)
+                                                       const gfx::format format) {
+  if (m_state == nullptr || device_status() == gfx::gpu_device_status::Lost)
     return {};
-  if (width == 0 || height == 0 || format == Format::Unknown)
+  if (width == 0 || height == 0 || format == gfx::format::Unknown)
     return {};
   MetalDeviceState *s = m_state;
   if (!s->swapchains.empty() && format != s->swapchain_format) {
@@ -184,13 +184,13 @@ SwapchainHandle MetalDevice::create_offscreen_swapchain(const u32 width,
 
   // CopySrc because a frame capture reads the backbuffer back, and Sampled
   // because a pass may sample what an earlier one wrote to it.
-  const TextureHandle image = create_texture({
+  const gfx::texture_handle image = create_texture({
       .name = "offscreen backbuffer",
       .format = format,
       .width = width,
       .height = height,
-      .usage = TextureUsage::RenderTarget | TextureUsage::Sampled |
-               TextureUsage::CopySrc,
+      .usage = gfx::texture_usage::RenderTarget | gfx::texture_usage::Sampled |
+               gfx::texture_usage::CopySrc,
   });
   if (!image.valid())
     return {};
@@ -205,13 +205,13 @@ SwapchainHandle MetalDevice::create_offscreen_swapchain(const u32 width,
   return s->swapchains.insert(std::move(sc));
 }
 
-bool MetalDevice::offscreen_swapchain(const SwapchainHandle handle) const {
+bool MetalDevice::offscreen_swapchain(const gfx::swapchain_handle handle) const {
   const MetalSwapchain *const sc =
       m_state != nullptr ? m_state->swapchains.try_get(handle) : nullptr;
   return sc != nullptr && sc->offscreen;
 }
 
-bool MetalDevice::resize_swapchain(const SwapchainHandle handle,
+bool MetalDevice::resize_swapchain(const gfx::swapchain_handle handle,
                                    const u32 width, const u32 height) {
   if (m_state == nullptr || width == 0 || height == 0)
     return false;
@@ -229,16 +229,16 @@ bool MetalDevice::resize_swapchain(const SwapchainHandle handle,
   wait_idle();
   if (sc->offscreen) {
     destroy_texture(sc->backbuffer);
-    const TextureHandle image = create_texture({
+    const gfx::texture_handle image = create_texture({
         .name = "offscreen backbuffer",
         .format = s->swapchain_format,
         .width = width,
         .height = height,
-        .usage = TextureUsage::RenderTarget | TextureUsage::Sampled |
-                 TextureUsage::CopySrc,
+        .usage = gfx::texture_usage::RenderTarget | gfx::texture_usage::Sampled |
+                 gfx::texture_usage::CopySrc,
     });
     sc->backbuffer = image;
-    sc->extent = image.valid() ? Extent2D{width, height} : Extent2D{};
+    sc->extent = image.valid() ? gfx::extent2d{width, height} : gfx::extent2d{};
     return image.valid();
   }
   if (sc->layer == nil)
@@ -256,7 +256,7 @@ bool MetalDevice::resize_swapchain(const SwapchainHandle handle,
   return true;
 }
 
-void MetalDevice::destroy_swapchain(const SwapchainHandle handle) noexcept {
+void MetalDevice::destroy_swapchain(const gfx::swapchain_handle handle) noexcept {
   if (m_state == nullptr)
     return;
   MetalDeviceState *s = m_state;
@@ -305,20 +305,20 @@ u32 MetalDevice::frames_in_flight() const noexcept {
   return m_state != nullptr ? m_state->frames_in_flight : 0u;
 }
 
-Format MetalDevice::swapchain_format() const noexcept {
-  return m_state != nullptr ? m_state->swapchain_format : Format::Unknown;
+gfx::format MetalDevice::swapchain_format() const noexcept {
+  return m_state != nullptr ? m_state->swapchain_format : gfx::format::Unknown;
 }
 
-Extent2D MetalDevice::swapchain_extent(const SwapchainHandle handle) const {
+gfx::extent2d MetalDevice::swapchain_extent(const gfx::swapchain_handle handle) const {
   const MetalSwapchain *const sc =
       m_state != nullptr ? m_state->swapchains.try_get(handle) : nullptr;
-  return sc != nullptr ? sc->extent : Extent2D{};
+  return sc != nullptr ? sc->extent : gfx::extent2d{};
 }
 
-SurfaceAlpha MetalDevice::swapchain_alpha(const SwapchainHandle handle) const {
+gfx::surface_alpha MetalDevice::swapchain_alpha(const gfx::swapchain_handle handle) const {
   const MetalSwapchain *const sc =
       m_state != nullptr ? m_state->swapchains.try_get(handle) : nullptr;
-  return sc != nullptr ? sc->alpha : SurfaceAlpha::Opaque;
+  return sc != nullptr ? sc->alpha : gfx::surface_alpha::Opaque;
 }
 
 }

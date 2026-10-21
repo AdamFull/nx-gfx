@@ -6,7 +6,7 @@
 
 #include <limits>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 using Staging = MetalUploadState::Staging;
@@ -127,7 +127,7 @@ u64 submit_batch(MetalDeviceState &state) {
 
 bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
                            const std::span<const u8> src,
-                           const std::span<const ImageSubresource> layout) {
+                           const std::span<const gfx::image_subresource> layout) {
   MetalUploadState &up = state.upload;
 
   if (!validate_image_upload(
@@ -140,7 +140,7 @@ bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
   }
 
   u64 total = 0;
-  for (const ImageSubresource &sub : layout) {
+  for (const gfx::image_subresource &sub : layout) {
     if (sub.size > std::numeric_limits<u64>::max() - total)
       return false;
     total += sub.size;
@@ -158,7 +158,7 @@ bool record_texture_copies(MetalDeviceState &state, const MetalTexture &texture,
   u32 block_w = 1, block_h = 1;
   format_block_extent(texture.format, block_w, block_h);
 
-  for (const ImageSubresource &sub : layout) {
+  for (const gfx::image_subresource &sub : layout) {
     std::memcpy(dst + cursor, src.data() + sub.offset,
                 nx::cast<usize>(sub.size));
 
@@ -224,71 +224,71 @@ void uploader_reclaim(MetalDeviceState &state) noexcept {
     up.in_flight.pop_back();
 }
 
-UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
+gfx::upload_ticket MetalUploader::upload_texture(const gfx::texture_handle handle,
                                            const std::span<const u8> src,
-                                           const std::span<const ImageSubresource> layout,
-                                           const ResourceState final_state) {
+                                           const std::span<const gfx::image_subresource> layout,
+                                           const gfx::resource_state final_state) {
   if (m_state == nullptr || layout.empty())
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
 
   MetalTexture *texture = m_state->textures.try_get(handle);
   if (texture == nullptr || texture->texture == nil ||
-      !(texture->usage & TextureUsage::CopyDst)) {
+      !(texture->usage & gfx::texture_usage::CopyDst)) {
     nx::loge(log_rhi, "upload_texture: handle is not live");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
 
   if (!ensure_batch(*m_state))
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
 
   if (!record_texture_copies(*m_state, *texture, src, layout))
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
 
   texture->state = final_state;
 
-  return UploadTicket{m_state->upload.submitted + 1};
+  return gfx::upload_ticket{m_state->upload.submitted + 1};
 }
 
-UploadTicket MetalUploader::upload_texture(const TextureHandle handle,
-                                           const TextureData &data,
-                                           const ResourceState final_state) {
+gfx::upload_ticket MetalUploader::upload_texture(const gfx::texture_handle handle,
+                                           const gfx::texture_data &data,
+                                           const gfx::resource_state final_state) {
   const MetalTexture *const texture =
       m_state != nullptr ? m_state->textures.try_get(handle) : nullptr;
   if (texture == nullptr || data.format != texture->format) {
     nx::loge(log_rhi, "upload_texture: data format does not match texture");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   return upload_texture(handle, data.bytes, data.subresources, final_state);
 }
 
-UploadTicket MetalUploader::upload_buffer(const BufferHandle handle,
+gfx::upload_ticket MetalUploader::upload_buffer(const gfx::buffer_handle handle,
                                           const u64 dst_offset,
                                           const std::span<const u8> src,
-                                          const ResourceState final_state) {
+                                          const gfx::resource_state final_state) {
   (void)final_state;
 
   if (m_state == nullptr || src.empty())
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
 
   const MetalBuffer *buffer = m_state->buffers.try_get(handle);
   if (buffer == nullptr || buffer->buffer == nil) {
     nx::loge(log_rhi, "upload_buffer: handle is not live");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   if (dst_offset > buffer->size || src.size() > buffer->size - dst_offset) {
     nx::loge(log_rhi, "upload_buffer: {} bytes at offset {} overruns a {} byte "
                       "buffer",
              src.size(), dst_offset, buffer->size);
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
 
   if (!ensure_batch(*m_state))
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
 
   MetalUploadState &up = m_state->upload;
   Staging staging = acquire_staging(*m_state, src.size());
   if (staging.buffer == nil)
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
 
   std::memcpy([staging.buffer contents], src.data(), src.size());
   [up.blit copyFromBuffer:staging.buffer
@@ -299,43 +299,43 @@ UploadTicket MetalUploader::upload_buffer(const BufferHandle handle,
 
   up.bytes_staged += src.size();
   up.batch_staging.push_back(staging);
-  return UploadTicket{up.submitted + 1};
+  return gfx::upload_ticket{up.submitted + 1};
 }
 
-UploadTicket MetalUploader::clear_buffer(const BufferHandle handle,
-                                         const ResourceState final_state) {
+gfx::upload_ticket MetalUploader::clear_buffer(const gfx::buffer_handle handle,
+                                         const gfx::resource_state final_state) {
   (void)final_state;
 
   if (m_state == nullptr)
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
 
   const MetalBuffer *buffer = m_state->buffers.try_get(handle);
   if (buffer == nullptr || buffer->buffer == nil) {
     nx::loge(log_rhi, "clear_buffer: handle is not live");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
-  if (!(buffer->usage & BufferUsage::CopyDst)) {
+  if (!(buffer->usage & gfx::buffer_usage::CopyDst)) {
     nx::loge(log_rhi, "clear_buffer: buffer has no copy-destination usage");
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
   }
   if (!ensure_batch(*m_state))
-    return UploadTicket::failure();
+    return gfx::upload_ticket::failure();
 
   MetalUploadState &up = m_state->upload;
   [up.blit fillBuffer:buffer->buffer
                 range:NSMakeRange(0, nx::cast<NSUInteger>(buffer->size))
                 value:0];
-  return UploadTicket{up.submitted + 1};
+  return gfx::upload_ticket{up.submitted + 1};
 }
 
-bool MetalUploader::is_complete(const UploadTicket ticket) const noexcept {
+bool MetalUploader::is_complete(const gfx::upload_ticket ticket) const noexcept {
   if (m_state == nullptr || !ticket.valid())
     return true;
   return m_state->upload.completed.load(std::memory_order_acquire) >=
          ticket.value;
 }
 
-ReadbackResult MetalUploader::read_buffer(const BufferHandle handle,
+gfx::readback_result MetalUploader::read_buffer(const gfx::buffer_handle handle,
                                           const u64 offset, const u64 size) {
   if (m_state == nullptr || size == 0)
     return {};
@@ -345,7 +345,7 @@ ReadbackResult MetalUploader::read_buffer(const BufferHandle handle,
     nx::loge(log_rhi, "read_buffer: handle is not live");
     return {};
   }
-  if (!(buffer->usage & BufferUsage::CopySrc)) {
+  if (!(buffer->usage & gfx::buffer_usage::CopySrc)) {
     nx::loge(log_rhi, "read_buffer: buffer was not created with CopySrc");
     return {};
   }
@@ -374,16 +374,16 @@ ReadbackResult MetalUploader::read_buffer(const BufferHandle handle,
 
   up.batch_staging.push_back(staging);
 
-  ReadbackResult result;
+  gfx::readback_result result;
   result.data = static_cast<const u8 *>([staging.buffer contents]);
   result.size = size;
   // Readbacks submit on their own: a caller that polls the ticket would
   // otherwise wait on a batch nothing ever commits.
-  result.ticket = UploadTicket{submit_batch(*m_state)};
+  result.ticket = gfx::upload_ticket{submit_batch(*m_state)};
   return result;
 }
 
-ReadbackResult MetalUploader::read_texture(const TextureHandle handle,
+gfx::readback_result MetalUploader::read_texture(const gfx::texture_handle handle,
                                            const u32 mip, const u32 layer) {
   if (m_state == nullptr)
     return {};
@@ -433,19 +433,19 @@ ReadbackResult MetalUploader::read_texture(const TextureHandle handle,
 
   up.batch_staging.push_back(staging);
 
-  ReadbackResult result;
+  gfx::readback_result result;
   result.data = static_cast<const u8 *>([staging.buffer contents]);
   result.size = size;
-  result.ticket = UploadTicket{submit_batch(*m_state)};
+  result.ticket = gfx::upload_ticket{submit_batch(*m_state)};
   return result;
 }
 
-UploaderStats MetalUploader::stats() const noexcept {
+gfx::uploader_stats MetalUploader::stats() const noexcept {
   if (m_state == nullptr)
     return {};
 
   const MetalUploadState &up = m_state->upload;
-  UploaderStats out;
+  gfx::uploader_stats out;
   out.total_submits = up.submitted;
   out.completed_submits = up.completed.load(std::memory_order_acquire);
   out.ring_used = up.bytes_staged;
@@ -480,7 +480,7 @@ void wait_for_value(MetalDeviceState &state, const u64 value) noexcept {
 
 }
 
-void MetalUploader::wait(const UploadTicket ticket) noexcept {
+void MetalUploader::wait(const gfx::upload_ticket ticket) noexcept {
   if (m_state == nullptr || !ticket.valid() || is_complete(ticket))
     return;
 

@@ -6,25 +6,25 @@
 
 #include <cstring>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
-VmaMemoryUsage to_vma_usage(const MemoryUsage usage) noexcept {
+VmaMemoryUsage to_vma_usage(const gfx::memory_usage usage) noexcept {
   switch (usage) {
-  case MemoryUsage::Upload:
-  case MemoryUsage::Readback:
+  case gfx::memory_usage::Upload:
+  case gfx::memory_usage::Readback:
     return VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
   default:
     return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
   }
 }
 
-VmaAllocationCreateFlags to_vma_flags(const MemoryUsage usage,
+VmaAllocationCreateFlags to_vma_flags(const gfx::memory_usage usage,
                                       const bool persistently_mapped) noexcept {
   VmaAllocationCreateFlags flags = 0;
-  if (usage == MemoryUsage::Upload)
+  if (usage == gfx::memory_usage::Upload)
     flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-  else if (usage == MemoryUsage::Readback)
+  else if (usage == gfx::memory_usage::Readback)
     flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
   if (persistently_mapped)
     flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
@@ -41,9 +41,9 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
   // Attachment and storage views cannot use a CUBE type; they address the
   // faces as an array instead.
   const VkImageViewType flat_type =
-      texture.dimension == TextureDimension::Tex3D ? VK_IMAGE_VIEW_TYPE_3D
-      : texture.layers > 1                         ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                                                   : VK_IMAGE_VIEW_TYPE_2D;
+      texture.dimension == gfx::texture_dimension::Tex3D ? VK_IMAGE_VIEW_TYPE_3D
+      : texture.layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                           : VK_IMAGE_VIEW_TYPE_2D;
 
   const auto make_view = [&](const VkImageViewType type, const u32 base_mip,
                              const u32 mip_count, VkImageView &out) -> bool {
@@ -59,7 +59,7 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
                                                        &out)) == VK_SUCCESS;
   };
 
-  if (texture.usage & TextureUsage::Sampled) {
+  if (texture.usage & gfx::texture_usage::Sampled) {
     if (texture.mip_levels == 0)
       return false;
     const u32 base_mip =
@@ -71,15 +71,16 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
                     nx::format("{}.sampled", name));
   }
 
-  if (texture.usage & (TextureUsage::RenderTarget | TextureUsage::DepthStencil |
-                       TextureUsage::Transient)) {
+  if (texture.usage &
+      (gfx::texture_usage::RenderTarget | gfx::texture_usage::DepthStencil |
+       gfx::texture_usage::Transient)) {
     if (!make_view(flat_type, 0, 1, texture.rtv))
       return false;
     set_object_name(vk_handle_value(texture.rtv), VK_OBJECT_TYPE_IMAGE_VIEW,
                     nx::format("{}.attachment", name));
   }
 
-  if (texture.usage & TextureUsage::Storage) {
+  if (texture.usage & gfx::texture_usage::Storage) {
     for (u32 mip = 0; mip < texture.mip_levels; ++mip) {
       VkImageView uav = VK_NULL_HANDLE;
       if (!make_view(flat_type, mip, 1, uav))
@@ -96,9 +97,9 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
 namespace {
 
 [[nodiscard]] VkImageCreateInfo
-to_image_create_info(const TextureDesc &desc) noexcept {
-  const bool is_cube = desc.dimension == TextureDimension::TexCube;
-  const bool is_3d = desc.dimension == TextureDimension::Tex3D;
+to_image_create_info(const gfx::texture_desc &desc) noexcept {
+  const bool is_cube = desc.dimension == gfx::texture_dimension::TexCube;
+  const bool is_3d = desc.dimension == gfx::texture_dimension::Tex3D;
 
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.imageType = to_vk_image_type(desc.dimension);
@@ -119,8 +120,10 @@ to_image_create_info(const TextureDesc &desc) noexcept {
 
 } // namespace
 
-TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
-  if (desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
+gfx::texture_handle
+VulkanDevice::create_texture(const gfx::texture_desc &desc) {
+  if (desc.format == gfx::format::Unknown || desc.width == 0 ||
+      desc.height == 0) {
     nx::loge(nx::log::rhi, "create_texture('{}'): invalid format or extent",
              desc.name);
     return {};
@@ -131,7 +134,7 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = to_vma_usage(desc.memory);
   alloc_info.flags = to_vma_flags(desc.memory, false);
-  if (desc.usage & TextureUsage::Transient)
+  if (desc.usage & gfx::texture_usage::Transient)
     alloc_info.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
 
   VulkanTexture texture;
@@ -158,7 +161,7 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
                           : 0u;
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
-  texture.state = ResourceState::Undefined;
+  texture.state = gfx::resource_state::Undefined;
   texture.owns_image = true;
 
   if (!create_texture_views(texture, desc.name)) {
@@ -172,7 +175,7 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
     return {};
   }
 
-  const TextureHandle handle = m_textures.insert(std::move(texture));
+  const gfx::texture_handle handle = m_textures.insert(std::move(texture));
   VulkanTexture &stored = *m_textures.try_get(handle);
   set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
                   desc.name);
@@ -195,8 +198,8 @@ TextureHandle VulkanDevice::create_texture(const TextureDesc &desc) {
   return handle;
 }
 
-MemoryRequirements
-VulkanDevice::texture_requirements(const TextureDesc &desc) const {
+gfx::memory_requirements
+VulkanDevice::texture_requirements(const gfx::texture_desc &desc) const {
   const VkImageCreateInfo info = to_image_create_info(desc);
 
   VkImage image = VK_NULL_HANDLE;
@@ -208,14 +211,14 @@ VulkanDevice::texture_requirements(const TextureDesc &desc) const {
   vkGetImageMemoryRequirements(m_device, image, &result);
   vkDestroyImage(m_device, image, nullptr);
 
-  return MemoryRequirements{
+  return gfx::memory_requirements{
       .size = result.size,
       .alignment = result.alignment,
       .memory_type_bits = result.memoryTypeBits,
   };
 }
 
-HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
+gfx::heap_handle VulkanDevice::create_heap(const gfx::heap_desc &desc) {
   if (desc.size == 0) {
     nx::loge(nx::log::rhi, "create_heap('{}'): zero size", desc.name);
     return {};
@@ -230,11 +233,11 @@ HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
   alloc_info.usage = VMA_MEMORY_USAGE_UNKNOWN;
   alloc_info.flags = to_vma_flags(desc.memory, false);
   switch (desc.memory) {
-  case MemoryUsage::Upload:
+  case gfx::memory_usage::Upload:
     alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     break;
-  case MemoryUsage::Readback:
+  case gfx::memory_usage::Readback:
     alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
     break;
@@ -260,19 +263,20 @@ HeapHandle VulkanDevice::create_heap(const HeapDesc &desc) {
   return m_heaps.insert(heap);
 }
 
-void VulkanDevice::destroy_heap(const HeapHandle handle) noexcept {
+void VulkanDevice::destroy_heap(const gfx::heap_handle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_heaps.contains(handle))
     return;
   retire({.heap = handle});
 }
 
-TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
-                                                   const HeapHandle heap_handle,
-                                                   const u64 offset) {
+gfx::texture_handle
+VulkanDevice::create_texture_in_heap(const gfx::texture_desc &desc,
+                                     const gfx::heap_handle heap_handle,
+                                     const u64 offset) {
   const VulkanHeap *heap = m_heaps.try_get(heap_handle);
-  if (heap == nullptr || desc.format == Format::Unknown || desc.width == 0 ||
-      desc.height == 0) {
+  if (heap == nullptr || desc.format == gfx::format::Unknown ||
+      desc.width == 0 || desc.height == 0) {
     nx::loge(nx::log::rhi, "create_texture_in_heap('{}'): invalid heap or extent",
              desc.name);
     return {};
@@ -301,7 +305,7 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
                           : 0u;
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
-  texture.state = ResourceState::Undefined;
+  texture.state = gfx::resource_state::Undefined;
   texture.owns_image = true;
   texture.allocation = VK_NULL_HANDLE;
 
@@ -316,7 +320,7 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
     return {};
   }
 
-  const TextureHandle handle = m_textures.insert(std::move(texture));
+  const gfx::texture_handle handle = m_textures.insert(std::move(texture));
   VulkanTexture &stored = *m_textures.try_get(handle);
   set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
                   desc.name);
@@ -339,15 +343,15 @@ TextureHandle VulkanDevice::create_texture_in_heap(const TextureDesc &desc,
   return handle;
 }
 
-void VulkanDevice::destroy_texture(const TextureHandle handle) noexcept {
+void VulkanDevice::destroy_texture(const gfx::texture_handle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_textures.contains(handle))
     return;
   retire({.texture = handle});
 }
 
-bool VulkanDevice::replace_texture(const TextureHandle target,
-                                   const TextureHandle replacement) {
+bool VulkanDevice::replace_texture(const gfx::texture_handle target,
+                                   const gfx::texture_handle replacement) {
   if (!target.valid() || !replacement.valid() || target == replacement ||
       !m_textures.contains(target) || !m_textures.contains(replacement))
     return false;
@@ -355,7 +359,7 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
   const VulkanTexture *const held = m_textures.try_get(target);
   const VulkanTexture *const fresh = m_textures.try_get(replacement);
   if (held == nullptr || fresh == nullptr || held->usage != fresh->usage ||
-      held->usage.has(TextureUsage::Storage))
+      held->usage.has(gfx::texture_usage::Storage))
     return false;
 
   {
@@ -371,14 +375,15 @@ bool VulkanDevice::replace_texture(const TextureHandle target,
   return swap_texture(target, replacement);
 }
 
-bool VulkanDevice::swap_texture(const TextureHandle target,
-                                const TextureHandle replacement) noexcept {
+bool VulkanDevice::swap_texture(
+    const gfx::texture_handle target,
+    const gfx::texture_handle replacement) noexcept {
   wait_idle();
   const nx::scoped_lock<nx::mutex> collecting(m_garbage_lock);
   VulkanTexture *const held = m_textures.try_get(target);
   VulkanTexture *const fresh = m_textures.try_get(replacement);
   if (held == nullptr || fresh == nullptr ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return false;
   std::swap(*held, *fresh);
   if (held->srv != VK_NULL_HANDLE)
@@ -405,11 +410,11 @@ void VulkanDevice::apply_replacements() noexcept {
       destroy_texture(pending.replacement);
 }
 
-bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,
+bool VulkanDevice::set_texture_view_base_mip(const gfx::texture_handle handle,
                                              u32 base_mip) {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   VulkanTexture *const tex = m_textures.try_get(handle);
-  if (tex == nullptr || !(tex->usage & TextureUsage::Sampled) ||
+  if (tex == nullptr || !(tex->usage & gfx::texture_usage::Sampled) ||
       tex->image == VK_NULL_HANDLE)
     return false;
   if (tex->mip_levels == 0)
@@ -458,33 +463,34 @@ bool VulkanDevice::set_texture_view_base_mip(const TextureHandle handle,
 }
 
 const VulkanTexture *
-VulkanDevice::texture(const TextureHandle handle) const noexcept {
+VulkanDevice::texture(const gfx::texture_handle handle) const noexcept {
   return m_textures.try_get(handle);
 }
 
-TextureUsageFlags
-VulkanDevice::texture_usage(const TextureHandle handle) const noexcept {
+gfx::texture_usage_flags
+VulkanDevice::texture_usage(const gfx::texture_handle handle) const noexcept {
   const VulkanTexture *texture = m_textures.try_get(handle);
-  return texture != nullptr ? texture->usage : TextureUsage::None;
+  return texture != nullptr ? texture->usage : gfx::texture_usage::None;
 }
 
-VulkanTexture *VulkanDevice::texture_mut(const TextureHandle handle) noexcept {
+VulkanTexture *
+VulkanDevice::texture_mut(const gfx::texture_handle handle) noexcept {
   return m_textures.try_get(handle);
 }
 
-ResourceState
-VulkanDevice::texture_state(const TextureHandle handle) const noexcept {
+gfx::resource_state
+VulkanDevice::texture_state(const gfx::texture_handle handle) const noexcept {
   const VulkanTexture *texture = m_textures.try_get(handle);
-  return texture != nullptr ? texture->state : ResourceState::Undefined;
+  return texture != nullptr ? texture->state : gfx::resource_state::Undefined;
 }
 
-void VulkanDevice::set_texture_state(const TextureHandle handle,
-                                     const ResourceState state) noexcept {
+void VulkanDevice::set_texture_state(const gfx::texture_handle handle,
+                                     const gfx::resource_state state) noexcept {
   if (VulkanTexture *texture = m_textures.try_get(handle))
     texture->state = state;
 }
 
-BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
+gfx::buffer_handle VulkanDevice::create_buffer(const gfx::buffer_desc &desc) {
   if (desc.size == 0) {
     nx::loge(nx::log::rhi, "create_buffer('{}'): zero size", desc.name);
     return {};
@@ -520,7 +526,7 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
   buffer.mapped =
       desc.persistently_mapped ? allocation_info.pMappedData : nullptr;
 
-  if (desc.usage & BufferUsage::DeviceAddress) {
+  if (desc.usage & gfx::buffer_usage::DeviceAddress) {
     VkBufferDeviceAddressInfo address_info{
         VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     address_info.buffer = buffer.buffer;
@@ -528,7 +534,7 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
         vkGetBufferDeviceAddressKHR(m_device, &address_info);
   }
 
-  BufferHandle handle;
+  gfx::buffer_handle handle;
   {
     const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
     handle = m_buffers.insert(VulkanBuffer(buffer));
@@ -538,7 +544,7 @@ BufferHandle VulkanDevice::create_buffer(const BufferDesc &desc) {
   return handle;
 }
 
-void VulkanDevice::destroy_buffer(const BufferHandle handle) noexcept {
+void VulkanDevice::destroy_buffer(const gfx::buffer_handle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_buffers.contains(handle))
     return;
@@ -546,11 +552,12 @@ void VulkanDevice::destroy_buffer(const BufferHandle handle) noexcept {
 }
 
 const VulkanBuffer *
-VulkanDevice::buffer(const BufferHandle handle) const noexcept {
+VulkanDevice::buffer(const gfx::buffer_handle handle) const noexcept {
   return m_buffers.try_get(handle);
 }
 
-SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
+gfx::sampler_handle
+VulkanDevice::create_sampler(const gfx::sampler_desc &desc) {
   VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   info.magFilter = to_vk_filter(desc.mag_filter);
   info.minFilter = to_vk_filter(desc.min_filter);
@@ -561,7 +568,8 @@ SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
   info.mipLodBias = desc.mip_lod_bias;
   info.anisotropyEnable = desc.max_anisotropy > 1.f ? VK_TRUE : VK_FALSE;
   info.maxAnisotropy = desc.max_anisotropy;
-  info.compareEnable = desc.compare != CompareOp::Never ? VK_TRUE : VK_FALSE;
+  info.compareEnable =
+      desc.compare != gfx::compare_op::Never ? VK_TRUE : VK_FALSE;
   info.compareOp = to_vk_compare_op(desc.compare);
   info.minLod = desc.min_lod;
   info.maxLod = desc.max_lod;
@@ -575,7 +583,7 @@ SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
     return {};
   }
 
-  SamplerHandle handle;
+  gfx::sampler_handle handle;
   {
     const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
     handle = m_samplers.insert(sampler);
@@ -586,14 +594,14 @@ SamplerHandle VulkanDevice::create_sampler(const SamplerDesc &desc) {
   return handle;
 }
 
-void VulkanDevice::destroy_sampler(const SamplerHandle handle) noexcept {
+void VulkanDevice::destroy_sampler(const gfx::sampler_handle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_samplers.contains(handle))
     return;
   retire({.sampler = handle});
 }
 
-QueryPoolHandle VulkanDevice::create_timestamp_pool(const u32 count) {
+gfx::query_pool_handle VulkanDevice::create_timestamp_pool(const u32 count) {
   if (!m_caps.timestamps || count == 0)
     return {};
 
@@ -611,7 +619,8 @@ QueryPoolHandle VulkanDevice::create_timestamp_pool(const u32 count) {
   return m_query_pools.insert(queries);
 }
 
-void VulkanDevice::destroy_query_pool(const QueryPoolHandle handle) noexcept {
+void VulkanDevice::destroy_query_pool(
+    const gfx::query_pool_handle handle) noexcept {
   VulkanQueryPool *const queries = m_query_pools.try_get(handle);
   if (queries == nullptr)
     return;
@@ -620,7 +629,7 @@ void VulkanDevice::destroy_query_pool(const QueryPoolHandle handle) noexcept {
   m_query_pools.erase(handle);
 }
 
-bool VulkanDevice::read_timestamps(const QueryPoolHandle handle,
+bool VulkanDevice::read_timestamps(const gfx::query_pool_handle handle,
                                    const std::span<u64> out) const {
   const VulkanQueryPool *const queries = m_query_pools.try_get(handle);
   if (queries == nullptr || out.empty())
@@ -636,14 +645,15 @@ bool VulkanDevice::read_timestamps(const QueryPoolHandle handle,
                                        VK_QUERY_RESULT_64_BIT)) == VK_SUCCESS;
 }
 
-u32 VulkanDevice::texture_index(const TextureHandle handle) const noexcept {
+u32 VulkanDevice::texture_index(
+    const gfx::texture_handle handle) const noexcept {
   const VulkanTexture *texture = m_textures.try_get(handle);
   if (texture == nullptr || texture->srv == VK_NULL_HANDLE)
     return BINDLESS_INVALID_INDEX;
   return nx::cast<u32>(handle.index());
 }
 
-u32 VulkanDevice::rw_texture_index(const TextureHandle handle,
+u32 VulkanDevice::rw_texture_index(const gfx::texture_handle handle,
                                    const u32 mip) const noexcept {
   const VulkanTexture *texture = m_textures.try_get(handle);
   if (texture == nullptr || mip >= texture->uav_indices.size())
@@ -651,24 +661,26 @@ u32 VulkanDevice::rw_texture_index(const TextureHandle handle,
   return texture->uav_indices[mip];
 }
 
-u32 VulkanDevice::sampler_index(const SamplerHandle handle) const noexcept {
+u32 VulkanDevice::sampler_index(
+    const gfx::sampler_handle handle) const noexcept {
   return m_samplers.contains(handle) ? nx::cast<u32>(handle.index())
                                      : BINDLESS_INVALID_INDEX;
 }
 
 VkDeviceAddress
-VulkanDevice::buffer_address(const BufferHandle handle) const noexcept {
+VulkanDevice::buffer_address(const gfx::buffer_handle handle) const noexcept {
   const VulkanBuffer *buffer = m_buffers.try_get(handle);
   return buffer != nullptr ? buffer->device_address : 0;
 }
 
-void *VulkanDevice::buffer_mapped(const BufferHandle handle) const noexcept {
+void *
+VulkanDevice::buffer_mapped(const gfx::buffer_handle handle) const noexcept {
   const VulkanBuffer *buffer = m_buffers.try_get(handle);
   return buffer != nullptr ? buffer->mapped : nullptr;
 }
 
-void VulkanDevice::flush_buffer(const BufferHandle handle, const u64 offset,
-                                const u64 size) noexcept {
+void VulkanDevice::flush_buffer(const gfx::buffer_handle handle,
+                                const u64 offset, const u64 size) noexcept {
   const VulkanBuffer *buffer = m_buffers.try_get(handle);
   if (buffer == nullptr || buffer->allocation == VK_NULL_HANDLE)
     return;
@@ -678,7 +690,7 @@ void VulkanDevice::flush_buffer(const BufferHandle handle, const u64 offset,
     (void)vmaFlushAllocation(m_allocator, buffer->allocation, offset, bytes);
 }
 
-void VulkanDevice::invalidate_buffer(const BufferHandle handle,
+void VulkanDevice::invalidate_buffer(const gfx::buffer_handle handle,
                                      const u64 offset,
                                      const u64 size) noexcept {
   const VulkanBuffer *buffer = m_buffers.try_get(handle);
@@ -692,16 +704,17 @@ void VulkanDevice::invalidate_buffer(const BufferHandle handle,
 }
 
 bool VulkanCommandContext::copy_texture_to_buffer(
-    const TextureHandle texture_handle, const BufferHandle buffer_handle,
-    const u64 row_pitch, const u32 mip, const u32 layer) {
+    const gfx::texture_handle texture_handle,
+    const gfx::buffer_handle buffer_handle, const u64 row_pitch, const u32 mip,
+    const u32 layer) {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE || m_in_render_pass)
     return false;
   const VulkanTexture *texture = m_device->texture(texture_handle);
   const VulkanBuffer *buffer = m_device->buffer(buffer_handle);
   if (texture == nullptr || buffer == nullptr ||
-      !(texture->usage & TextureUsage::CopySrc) ||
-      !(buffer->usage & BufferUsage::CopyDst) ||
-      texture->state != ResourceState::CopySrc ||
+      !(texture->usage & gfx::texture_usage::CopySrc) ||
+      !(buffer->usage & gfx::buffer_usage::CopyDst) ||
+      texture->state != gfx::resource_state::CopySrc ||
       format_is_depth(texture->format) ||
       format_is_compressed(texture->format) || mip >= texture->mip_levels ||
       layer >= texture->layers)
@@ -740,18 +753,17 @@ bool VulkanCommandContext::copy_texture_to_buffer(
   return true;
 }
 
-bool VulkanCommandContext::copy_buffer(const BufferHandle source_handle,
-                                       const u64 source_offset,
-                                       const BufferHandle destination_handle,
-                                       const u64 destination_offset,
-                                       const u64 size) {
+bool VulkanCommandContext::copy_buffer(
+    const gfx::buffer_handle source_handle, const u64 source_offset,
+    const gfx::buffer_handle destination_handle, const u64 destination_offset,
+    const u64 size) {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE || m_in_render_pass)
     return false;
   const VulkanBuffer *source = m_device->buffer(source_handle);
   const VulkanBuffer *destination = m_device->buffer(destination_handle);
   if (source == nullptr || destination == nullptr || size == 0 ||
-      !(source->usage & BufferUsage::CopySrc) ||
-      !(destination->usage & BufferUsage::CopyDst) ||
+      !(source->usage & gfx::buffer_usage::CopySrc) ||
+      !(destination->usage & gfx::buffer_usage::CopyDst) ||
       source_offset > source->size || size > source->size - source_offset ||
       destination_offset > destination->size ||
       size > destination->size - destination_offset)
@@ -780,11 +792,11 @@ bool VulkanCommandContext::copy_buffer(const BufferHandle source_handle,
   return true;
 }
 
-void VulkanCommandContext::barrier(const TextureBarrier *textures,
+void VulkanCommandContext::barrier(const gfx::texture_barrier *textures,
                                    const u32 texture_count,
-                                   const BufferBarrier *buffers,
+                                   const gfx::buffer_barrier *buffers,
                                    const u32 buffer_count,
-                                   const StateTracking tracking) {
+                                   const gfx::state_tracking tracking) {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
     return;
 
@@ -792,15 +804,15 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
   nx::small_vector<VkBufferMemoryBarrier2, 8> buffer_barriers;
 
   for (u32 i = 0; i < texture_count; ++i) {
-    const TextureBarrier &desc = textures[i];
+    const gfx::texture_barrier &desc = textures[i];
     VulkanTexture *texture = m_device->texture_mut(desc.texture);
     if (texture == nullptr)
       continue;
 
-    const ResourceState from = desc.discard ? ResourceState::Undefined
-                               : desc.from == ResourceState::Undefined
-                                   ? texture->state
-                                   : desc.from;
+    const gfx::resource_state from =
+        desc.discard ? gfx::resource_state::Undefined
+        : desc.from == gfx::resource_state::Undefined ? texture->state
+                                                      : desc.from;
     VkStateInfo src = m_device->state_info(from);
     const VkStateInfo dst = m_device->state_info(desc.to);
     // A written state kept across the barrier still orders the writes before
@@ -835,14 +847,14 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
       continue;
     // A split recording runs out of submission order, so the state it would
     // record could be overwritten by one that the GPU runs before it.
-    NX_ASSERT(tracking != StateTracking::Update || m_slot == nullptr,
+    NX_ASSERT(tracking != gfx::state_tracking::Update || m_slot == nullptr,
               "a split recording cannot track texture state");
-    if (tracking == StateTracking::Update && m_slot == nullptr)
+    if (tracking == gfx::state_tracking::Update && m_slot == nullptr)
       texture->state = desc.to;
   }
 
   for (u32 i = 0; i < buffer_count; ++i) {
-    const BufferBarrier &desc = buffers[i];
+    const gfx::buffer_barrier &desc = buffers[i];
     const VulkanBuffer *buffer = m_device->buffer(desc.buffer);
     if (buffer == nullptr)
       continue;
@@ -874,7 +886,8 @@ void VulkanCommandContext::barrier(const TextureBarrier *textures,
   vkCmdPipelineBarrier2KHR(m_cmd, &dependency);
 }
 
-void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
+void VulkanCommandContext::begin_render_pass(
+    const gfx::render_pass_desc &desc) {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE || m_in_render_pass)
     return;
 
@@ -885,7 +898,7 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
   u32 height = desc.render_area.extent.height;
 
   for (u32 i = 0; i < desc.color_count && i < MAX_COLOR_ATTACHMENTS; ++i) {
-    const RenderAttachment &attachment = desc.color[i];
+    const gfx::render_attachment &attachment = desc.color[i];
     const VulkanTexture *texture = m_device->texture(attachment.texture);
     if (texture == nullptr)
       continue;
@@ -953,8 +966,8 @@ void VulkanCommandContext::begin_render_pass(const RenderPassDesc &desc) {
   vkCmdBeginRenderingKHR(m_cmd, &info);
   m_in_render_pass = true;
 
-  const Viewport viewport{0.f, 0.f, nx::cast<f32>(width), nx::cast<f32>(height),
-                          0.f, 1.f};
+  const gfx::viewport viewport{
+      0.f, 0.f, nx::cast<f32>(width), nx::cast<f32>(height), 0.f, 1.f};
   set_viewport(viewport);
   set_scissor({{0, 0}, {width, height}});
 }
@@ -967,7 +980,7 @@ void VulkanCommandContext::end_render_pass() {
   pop_debug_group();
 }
 
-void VulkanCommandContext::set_viewport(const Viewport &viewport) {
+void VulkanCommandContext::set_viewport(const gfx::viewport &viewport) {
   if (m_cmd == VK_NULL_HANDLE)
     return;
   // Negative height flips to a Y-down clip space, matching every 2D convention
@@ -982,7 +995,7 @@ void VulkanCommandContext::set_viewport(const Viewport &viewport) {
   vkCmdSetViewport(m_cmd, 0, 1, &vk);
 }
 
-void VulkanCommandContext::set_scissor(const Rect2D &rect) {
+void VulkanCommandContext::set_scissor(const gfx::rect2d &rect) {
   if (m_cmd == VK_NULL_HANDLE)
     return;
   const VkRect2D vk{{rect.offset.x, rect.offset.y},
@@ -990,7 +1003,7 @@ void VulkanCommandContext::set_scissor(const Rect2D &rect) {
   vkCmdSetScissor(m_cmd, 0, 1, &vk);
 }
 
-void VulkanCommandContext::reset_queries(const QueryPoolHandle pool,
+void VulkanCommandContext::reset_queries(const gfx::query_pool_handle pool,
                                          const u32 first, const u32 count) {
   if (m_cmd == VK_NULL_HANDLE || m_device == nullptr || count == 0)
     return;
@@ -1005,7 +1018,7 @@ void VulkanCommandContext::reset_queries(const QueryPoolHandle pool,
                       nx::min(count, queries->count));
 }
 
-void VulkanCommandContext::write_timestamp(const QueryPoolHandle pool,
+void VulkanCommandContext::write_timestamp(const gfx::query_pool_handle pool,
                                            const u32 index) {
   if (m_cmd == VK_NULL_HANDLE || m_device == nullptr)
     return;
@@ -1046,4 +1059,4 @@ void VulkanCommandContext::pop_debug_group() {
   vkCmdEndDebugUtilsLabelEXT(m_cmd);
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

@@ -10,7 +10,7 @@ namespace tracy {
 class VkCtx;
 }
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 enum class VulkanCalibrationRoute : u8 { None, Khr, Ext };
 
@@ -96,4 +96,4 @@ private:
   Zones m_zones;
 };
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

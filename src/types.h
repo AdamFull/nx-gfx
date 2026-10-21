@@ -5,8 +5,8 @@
 
 namespace nxe::rhi {
 
-// The names before nx::gfx. Only the backend's own sources and projects made
-// before nx::gfx (through app/engine.h) use them.
+// The names before nx::gfx, for projects made before it (through
+// app/engine.h); drop them once those have moved.
 using Format = nx::gfx::format;
 using StateTracking = nx::gfx::state_tracking;
 using ResourceState = nx::gfx::resource_state;

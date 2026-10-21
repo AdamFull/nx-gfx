@@ -4,8 +4,8 @@
 
 namespace nxe::rhi {
 
-// The names before nx::gfx. Only the backend's own sources and projects made
-// before nx::gfx (through app/engine.h) use them.
+// The names before nx::gfx, for projects made before it (through
+// app/engine.h); drop them once those have moved.
 using TextureHandle = nx::gfx::texture_handle;
 using BufferHandle = nx::gfx::buffer_handle;
 using HeapHandle = nx::gfx::heap_handle;

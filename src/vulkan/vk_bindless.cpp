@@ -5,7 +5,7 @@
 
 #include <cstring>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 u32 clamp_count(const u32 desired, const u32 device_limit) noexcept {
@@ -17,7 +17,7 @@ u32 clamp_count(const u32 desired, const u32 device_limit) noexcept {
 } // namespace
 
 bool VulkanDevice::create_default_sampler() {
-  const SamplerHandle sampler = create_sampler(DEFAULT_SAMPLER_DESC);
+  const gfx::sampler_handle sampler = create_sampler(DEFAULT_SAMPLER_DESC);
   if (sampler_index(sampler) == DEFAULT_SAMPLER)
     return true;
   nx::loge(nx::log::rhi, "the default sampler did not take slot {}",
@@ -251,4 +251,4 @@ void VulkanDevice::free_rw_slot(const u32 slot) noexcept {
     m_bindless.free_rw_slots.push_back(slot);
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

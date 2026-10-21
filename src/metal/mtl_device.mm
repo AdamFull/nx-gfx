@@ -7,7 +7,7 @@
 
 #include <cstdlib>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 // A render job that would block waits on a blocking-service thread, so its
@@ -41,7 +41,7 @@ void enable_metal_validation() noexcept {
   ::setenv("METAL_ERROR_MODE", "3", 0);
 }
 
-MTLScissorRect to_mtl_scissor(const Rect2D &rect) noexcept {
+MTLScissorRect to_mtl_scissor(const gfx::rect2d &rect) noexcept {
   return MTLScissorRect{
       nx::cast<NSUInteger>(nx::max<i32>(0, rect.offset.x)),
       nx::cast<NSUInteger>(nx::max<i32>(0, rect.offset.y)),
@@ -158,12 +158,12 @@ void collect_garbage(MetalDeviceState &state, const u64 completed_frame) {
 
 MetalDevice::~MetalDevice() { shutdown(); }
 
-bool MetalDevice::init(const DeviceDesc &desc) {
+bool MetalDevice::init(const gfx::device_desc &desc) {
   if (m_state != nullptr)
     return true;
 
   m_init_error.clear();
-  m_init_report = {.failure = DeviceInitFailure::Failed};
+  m_init_report = {.failure = gfx::device_init_failure::Failed};
 
   @autoreleasepool {
     if (desc.enable_validation)
@@ -171,7 +171,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
 
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (device == nil) {
-      m_init_report.failure = DeviceInitFailure::Unsupported;
+      m_init_report.failure = gfx::device_init_failure::Unsupported;
       m_init_error = "No Metal graphics device was found.";
       nx::loge(log_rhi, "init: no Metal device on this system");
       return false;
@@ -245,7 +245,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     nx::logd(log_rhi, "argument buffers: tier {}", tier2 ? 2 : 1);
 
     if (!metal3) {
-      m_init_report.failure = DeviceInitFailure::Unsupported;
+      m_init_report.failure = gfx::device_init_failure::Unsupported;
       m_init_error = nx::format(
           "{} does not support Metal 3, which needs macOS 13 or iOS 16 and "
           "a Metal 3-capable graphics device.",
@@ -311,7 +311,7 @@ bool MetalDevice::init(const DeviceDesc &desc) {
     return false;
   }
 
-  m_init_report.failure = DeviceInitFailure::None;
+  m_init_report.failure = gfx::device_init_failure::None;
   return true;
 }
 
@@ -375,7 +375,7 @@ void MetalDevice::wait_idle() noexcept { wait_submitted(); }
 // frame being recorded has not been.
 void MetalDevice::wait_submitted() noexcept {
   if (m_state == nullptr || m_state->queue == nil ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return;
 
   @autoreleasepool {
@@ -386,9 +386,9 @@ void MetalDevice::wait_submitted() noexcept {
   }
 }
 
-GpuDeviceStatus MetalDevice::device_status() const noexcept {
+gfx::gpu_device_status MetalDevice::device_status() const noexcept {
   return m_state != nullptr ? gpu_device_status(*m_state)
-                            : GpuDeviceStatus::Ready;
+                            : gfx::gpu_device_status::Ready;
 }
 
 void MetalDevice::flush_uploads() noexcept {
@@ -398,7 +398,7 @@ void MetalDevice::flush_uploads() noexcept {
 }
 
 bool MetalDevice::begin_frame(MetalCommandContext &out_context) {
-  if (m_state == nullptr || device_status() == GpuDeviceStatus::Lost)
+  if (m_state == nullptr || device_status() == gfx::gpu_device_status::Lost)
     return false;
 
   MetalDeviceState *s = m_state;
@@ -409,7 +409,7 @@ bool MetalDevice::begin_frame(MetalCommandContext &out_context) {
   apply_replacements();
 
   wait_frame_slot(s->frame_semaphore);
-  if (device_status() == GpuDeviceStatus::Lost)
+  if (device_status() == gfx::gpu_device_status::Lost)
     return false;
 
   collect_garbage(*s, s->frames_submitted >= s->frames_in_flight
@@ -447,52 +447,52 @@ bool MetalDevice::begin_frame(MetalCommandContext &out_context) {
   return true;
 }
 
-AcquireResult MetalDevice::acquire(const SwapchainHandle handle) {
+gfx::acquire_result MetalDevice::acquire(const gfx::swapchain_handle handle) {
   MetalDeviceState *const s = m_state;
   if (s == nullptr || !s->frame_active || s->headless_frame ||
-      device_status() == GpuDeviceStatus::Lost)
-    return AcquireResult::SurfaceLost;
+      device_status() == gfx::gpu_device_status::Lost)
+    return gfx::acquire_result::SurfaceLost;
   MetalSwapchain *const sc = s->swapchains.try_get(handle);
   if (sc == nullptr)
-    return AcquireResult::SurfaceLost;
+    return gfx::acquire_result::SurfaceLost;
   if (sc->acquired) {
     nx::loge(log_rhi, "a swapchain was acquired twice in one frame");
-    return AcquireResult::SurfaceLost;
+    return gfx::acquire_result::SurfaceLost;
   }
 
   // Offscreen: no layer to take a drawable from, and the backbuffer texture is
   // already the one this frame draws into.
   if (!sc->offscreen) {
     if (sc->layer == nil)
-      return AcquireResult::SurfaceLost;
+      return gfx::acquire_result::SurfaceLost;
     sc->drawable = next_drawable(sc->layer);
     if (sc->drawable == nil)
-      return AcquireResult::OutOfDate;
+      return gfx::acquire_result::OutOfDate;
     // Re-point the backbuffer handle at this frame's drawable. The handle is
     // stable across frames; the MTLTexture behind it is not.
     if (MetalTexture *backbuffer = s->textures.try_get(sc->backbuffer)) {
       backbuffer->texture = sc->drawable.texture;
       backbuffer->width = sc->extent.width;
       backbuffer->height = sc->extent.height;
-      backbuffer->state = ResourceState::Undefined;
+      backbuffer->state = gfx::resource_state::Undefined;
     }
   }
   sc->acquired = true;
   s->acquired.push_back(handle);
   if (sc->offscreen)
-    return AcquireResult::Success;
+    return gfx::acquire_result::Success;
 
   const CGSize drawable_size = sc->layer.drawableSize;
   if (nx::cast<u32>(drawable_size.width) != sc->extent.width ||
       nx::cast<u32>(drawable_size.height) != sc->extent.height)
-    return AcquireResult::Suboptimal;
-  return AcquireResult::Success;
+    return gfx::acquire_result::Suboptimal;
+  return gfx::acquire_result::Success;
 }
 
 bool MetalDevice::end_frame() {
   MetalDeviceState *s = m_state;
   if (s == nullptr || !s->frame_active ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return false;
   if (s->headless_frame) {
     nx::loge(log_rhi, "end_frame on a headless frame; use end_headless_frame");
@@ -529,7 +529,7 @@ bool MetalDevice::end_frame() {
         [slot.cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
           dispatch_semaphore_signal(semaphore);
         }];
-        for (const SwapchainHandle handle : s->acquired)
+        for (const gfx::swapchain_handle handle : s->acquired)
           if (const MetalSwapchain *sc = s->swapchains.try_get(handle);
               sc != nullptr && sc->drawable != nil)
             [slot.cmd presentDrawable:sc->drawable];
@@ -547,7 +547,7 @@ bool MetalDevice::end_frame() {
   // The drawable's texture belongs to the layer and must not outlive the
   // frame. An offscreen backbuffer is this device's own, and clearing it would
   // leave the next frame with nothing to draw into.
-  for (const SwapchainHandle handle : s->acquired) {
+  for (const gfx::swapchain_handle handle : s->acquired) {
     MetalSwapchain *const sc = s->swapchains.try_get(handle);
     if (sc == nullptr)
       continue;
@@ -564,7 +564,7 @@ bool MetalDevice::end_frame() {
 
 bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
   if (m_state == nullptr || m_state->queue == nil ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return false;
 
   MetalDeviceState *s = m_state;
@@ -578,7 +578,7 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
   apply_replacements();
 
   wait_frame_slot(s->frame_semaphore);
-  if (device_status() == GpuDeviceStatus::Lost)
+  if (device_status() == gfx::gpu_device_status::Lost)
     return false;
 
   collect_garbage(*s, s->frames_submitted >= s->frames_in_flight
@@ -620,7 +620,7 @@ bool MetalDevice::begin_headless_frame(MetalCommandContext &out_context) {
 bool MetalDevice::end_headless_frame() {
   MetalDeviceState *s = m_state;
   if (s == nullptr || !s->frame_active || !s->headless_frame ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return false;
 
   id<MTLCommandBuffer> last_cmd = nil;
@@ -671,27 +671,27 @@ bool MetalDevice::end_headless_frame() {
   return true;
 }
 
-TextureHandle
-MetalDevice::current_backbuffer(const SwapchainHandle handle) const noexcept {
+gfx::texture_handle
+MetalDevice::current_backbuffer(const gfx::swapchain_handle handle) const noexcept {
   const MetalSwapchain *const sc =
       m_state != nullptr ? m_state->swapchains.try_get(handle) : nullptr;
-  return sc != nullptr ? sc->backbuffer : TextureHandle{};
+  return sc != nullptr ? sc->backbuffer : gfx::texture_handle{};
 }
 
-TextureUsageFlags
-MetalDevice::texture_usage(const TextureHandle handle) const noexcept {
+gfx::texture_usage_flags
+MetalDevice::texture_usage(const gfx::texture_handle handle) const noexcept {
   if (m_state == nullptr)
-    return TextureUsage::None;
+    return gfx::texture_usage::None;
   const MetalTexture *texture = m_state->textures.try_get(handle);
-  return texture != nullptr ? texture->usage : TextureUsage::None;
+  return texture != nullptr ? texture->usage : gfx::texture_usage::None;
 }
 
 namespace {
 
 /// Shared by the owning and the heap-placed paths, so the two cannot drift - which would make the
 /// size and alignment measured for one wrong for the other.
-MTLTextureDescriptor *make_texture_descriptor(const TextureDesc &desc) {
-  const bool is_3d = desc.dimension == TextureDimension::Tex3D;
+MTLTextureDescriptor *make_texture_descriptor(const gfx::texture_desc &desc) {
+  const bool is_3d = desc.dimension == gfx::texture_dimension::Tex3D;
   const u32 layers = is_3d ? 1 : nx::max<u32>(1, desc.depth_or_layers);
   const u32 sample_count = nx::max<u32>(1, desc.sample_count);
 
@@ -702,26 +702,26 @@ MTLTextureDescriptor *make_texture_descriptor(const TextureDesc &desc) {
   info.height = desc.height;
   info.depth = is_3d ? nx::max<u32>(1, desc.depth_or_layers) : 1;
   info.mipmapLevelCount = nx::max<u32>(1, desc.mip_levels);
-  info.arrayLength = desc.dimension == TextureDimension::TexCube
+  info.arrayLength = desc.dimension == gfx::texture_dimension::TexCube
                          ? nx::max<u32>(1, layers / 6)
                          : layers;
   info.sampleCount = sample_count;
   info.usage = to_mtl_texture_usage(desc.usage);
   info.storageMode =
-      to_mtl_storage_mode(desc.memory, desc.usage.has(TextureUsage::Transient));
+      to_mtl_storage_mode(desc.memory, desc.usage.has(gfx::texture_usage::Transient));
   return info;
 }
 
 }
 
-bool MetalDevice::supports(const Format format,
-                           const TextureUsageFlags usage) const {
+bool MetalDevice::supports(const gfx::format format,
+                           const gfx::texture_usage_flags usage) const {
   if (m_state == nullptr || m_state->device == nil ||
-      format == Format::Unknown ||
+      format == gfx::format::Unknown ||
       to_mtl_format(format) == MTLPixelFormatInvalid)
     return false;
 
-  TextureDesc desc;
+  gfx::texture_desc desc;
   desc.name = "format support probe";
   desc.format = format;
   desc.width = 8;
@@ -735,11 +735,11 @@ bool MetalDevice::supports(const Format format,
   }
 }
 
-TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
+gfx::texture_handle MetalDevice::create_texture(const gfx::texture_desc &desc) {
   if (m_state == nullptr)
     return {};
 
-  if (desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
+  if (desc.format == gfx::format::Unknown || desc.width == 0 || desc.height == 0) {
     nx::loge(log_rhi, "create_texture('{}'): invalid format or extent",
              desc.name);
     return {};
@@ -752,7 +752,7 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
     return {};
   }
 
-  const bool is_3d = desc.dimension == TextureDimension::Tex3D;
+  const bool is_3d = desc.dimension == gfx::texture_dimension::Tex3D;
   const u32 layers = is_3d ? 1 : nx::max<u32>(1, desc.depth_or_layers);
   const u32 sample_count = nx::max<u32>(1, desc.sample_count);
 
@@ -760,8 +760,8 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
   @autoreleasepool {
     MTLTextureDescriptor *info = make_texture_descriptor(desc);
 
-    const bool bindless_visible = desc.usage.has(TextureUsage::Sampled) ||
-                                  desc.usage.has(TextureUsage::Storage);
+    const bool bindless_visible = desc.usage.has(gfx::texture_usage::Sampled) ||
+                                  desc.usage.has(gfx::texture_usage::Storage);
     if (bindless_visible) {
       texture.texture = alloc_bindless_texture(*m_state, info);
       texture.heap_backed = texture.texture != nil;
@@ -788,7 +788,7 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
   texture.state = desc.initial_state;
   texture.owns_texture = true;
 
-  if (desc.usage.has(TextureUsage::Storage)) {
+  if (desc.usage.has(gfx::texture_usage::Storage)) {
     @autoreleasepool {
       for (u32 mip = 0; mip < texture.mip_levels; ++mip) {
         id<MTLTexture> view = [texture.texture
@@ -806,18 +806,18 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
     }
   }
 
-  const TextureHandle handle = m_state->textures.insert(std::move(texture));
+  const gfx::texture_handle handle = m_state->textures.insert(std::move(texture));
   if (!handle.valid())
     return {};
 
   MetalTexture &stored = m_state->textures[handle];
-  if (desc.usage.has(TextureUsage::Sampled)) {
+  if (desc.usage.has(gfx::texture_usage::Sampled)) {
     stored.bindless_slot = bindless_index(handle);
     write_texture_descriptor(*m_state, stored.bindless_slot, stored.texture);
   }
 
-  if (!stored.heap_backed && (desc.usage.has(TextureUsage::Sampled) ||
-                              desc.usage.has(TextureUsage::Storage)))
+  if (!stored.heap_backed && (desc.usage.has(gfx::texture_usage::Sampled) ||
+                              desc.usage.has(gfx::texture_usage::Storage)))
     track_resident(*m_state, stored.texture);
 
   return handle;
@@ -826,12 +826,12 @@ TextureHandle MetalDevice::create_texture(const TextureDesc &desc) {
 // Memory aliasing MTLHeap with placement type is Metal's equivalent of a hand-suballocated
 // VkDeviceMemory: the caller picks the offsets, and two textures placed on overlapping bytes alias.
 
-MemoryRequirements
-MetalDevice::texture_requirements(const TextureDesc &desc) const {
+gfx::memory_requirements
+MetalDevice::texture_requirements(const gfx::texture_desc &desc) const {
   if (m_state == nullptr)
     return {};
 
-  MemoryRequirements out;
+  gfx::memory_requirements out;
   @autoreleasepool {
     MTLTextureDescriptor *info = make_texture_descriptor(desc);
     const MTLSizeAndAlign sa =
@@ -842,7 +842,7 @@ MetalDevice::texture_requirements(const TextureDesc &desc) const {
   return out;
 }
 
-HeapHandle MetalDevice::create_heap(const HeapDesc &desc) {
+gfx::heap_handle MetalDevice::create_heap(const gfx::heap_desc &desc) {
   if (m_state == nullptr || desc.size == 0) {
     nx::loge(log_rhi, "create_heap('{}'): zero size", desc.name);
     return {};
@@ -854,7 +854,7 @@ HeapHandle MetalDevice::create_heap(const HeapDesc &desc) {
     info.size = desc.size;
     info.type = MTLHeapTypePlacement;
     info.hazardTrackingMode = MTLHazardTrackingModeTracked;
-    info.storageMode = desc.memory == MemoryUsage::DeviceLocal
+    info.storageMode = desc.memory == gfx::memory_usage::DeviceLocal
                            ? MTLStorageModePrivate
                            : MTLStorageModeShared;
     heap.heap = [m_state->device newHeapWithDescriptor:info];
@@ -869,27 +869,27 @@ HeapHandle MetalDevice::create_heap(const HeapDesc &desc) {
   return m_state->heaps.insert(std::move(heap));
 }
 
-void MetalDevice::destroy_heap(const HeapHandle handle) noexcept {
+void MetalDevice::destroy_heap(const gfx::heap_handle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
   if (m_state->heaps.contains(handle))
     retire(*m_state, {.heap = handle});
 }
 
-TextureHandle MetalDevice::create_texture_in_heap(const TextureDesc &desc,
-                                                  const HeapHandle heap_handle,
+gfx::texture_handle MetalDevice::create_texture_in_heap(const gfx::texture_desc &desc,
+                                                  const gfx::heap_handle heap_handle,
                                                   const u64 offset) {
   if (m_state == nullptr)
     return {};
   MetalHeap *heap = m_state->heaps.try_get(heap_handle);
   if (heap == nullptr || heap->heap == nil ||
-      desc.format == Format::Unknown || desc.width == 0 || desc.height == 0) {
+      desc.format == gfx::format::Unknown || desc.width == 0 || desc.height == 0) {
     nx::loge(log_rhi, "create_texture_in_heap('{}'): invalid heap or extent",
              desc.name);
     return {};
   }
 
-  const bool is_3d = desc.dimension == TextureDimension::Tex3D;
+  const bool is_3d = desc.dimension == gfx::texture_dimension::Tex3D;
   const u32 layers = is_3d ? 1 : nx::max<u32>(1, desc.depth_or_layers);
   const u32 sample_count = nx::max<u32>(1, desc.sample_count);
   const MTLPixelFormat pixel_format = to_mtl_format(desc.format);
@@ -919,7 +919,7 @@ TextureHandle MetalDevice::create_texture_in_heap(const TextureDesc &desc,
   texture.state = desc.initial_state;
   texture.owns_texture = true;
 
-  if (desc.usage.has(TextureUsage::Storage)) {
+  if (desc.usage.has(gfx::texture_usage::Storage)) {
     @autoreleasepool {
       for (u32 mip = 0; mip < texture.mip_levels; ++mip) {
         id<MTLTexture> view = [texture.texture
@@ -937,26 +937,26 @@ TextureHandle MetalDevice::create_texture_in_heap(const TextureDesc &desc,
     }
   }
 
-  const TextureHandle handle = m_state->textures.insert(std::move(texture));
+  const gfx::texture_handle handle = m_state->textures.insert(std::move(texture));
   if (!handle.valid())
     return {};
 
   MetalTexture &stored = m_state->textures[handle];
-  if (desc.usage.has(TextureUsage::Sampled)) {
+  if (desc.usage.has(gfx::texture_usage::Sampled)) {
     stored.bindless_slot = bindless_index(handle);
     write_texture_descriptor(*m_state, stored.bindless_slot, stored.texture);
   }
   return handle;
 }
 
-void MetalDevice::destroy_texture(const TextureHandle handle) noexcept {
+void MetalDevice::destroy_texture(const gfx::texture_handle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
   retire(*m_state, {.texture = handle});
 }
 
-bool MetalDevice::replace_texture(const TextureHandle target,
-                                  const TextureHandle replacement) {
+bool MetalDevice::replace_texture(const gfx::texture_handle target,
+                                  const gfx::texture_handle replacement) {
   if (m_state == nullptr || !target.valid() || !replacement.valid() ||
       target == replacement)
     return false;
@@ -967,7 +967,7 @@ bool MetalDevice::replace_texture(const TextureHandle target,
   // to resources whose complete external identity is the stable texture
   // handle (and sampled slot), which is the editor asset-reload use case.
   if (held == nullptr || fresh == nullptr || held->usage != fresh->usage ||
-      held->usage.has(TextureUsage::Storage))
+      held->usage.has(gfx::texture_usage::Storage))
     return false;
 
   {
@@ -984,18 +984,18 @@ bool MetalDevice::replace_texture(const TextureHandle target,
   return swap_texture(target, replacement);
 }
 
-bool MetalDevice::swap_texture(const TextureHandle target,
-                               const TextureHandle replacement) noexcept {
+bool MetalDevice::swap_texture(const gfx::texture_handle target,
+                               const gfx::texture_handle replacement) noexcept {
   wait_idle();
   MetalTexture *const held = m_state->textures.try_get(target);
   MetalTexture *const fresh = m_state->textures.try_get(replacement);
   if (held == nullptr || fresh == nullptr ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return false;
   std::swap(*held, *fresh);
   const u32 target_slot = bindless_index(target);
   const u32 replacement_slot = bindless_index(replacement);
-  if (held->usage.has(TextureUsage::Sampled)) {
+  if (held->usage.has(gfx::texture_usage::Sampled)) {
     held->bindless_slot = target_slot;
     write_texture_descriptor(*m_state, target_slot, held->texture);
   } else {
@@ -1027,14 +1027,14 @@ void MetalDevice::apply_replacements() noexcept {
       destroy_texture(pending.replacement);
 }
 
-bool MetalDevice::set_texture_view_base_mip(const TextureHandle, u32) {
+bool MetalDevice::set_texture_view_base_mip(const gfx::texture_handle, u32) {
   // Not yet implemented on Metal: a base-mip SRV would need a retained
   // newTextureView bound into the sampled slot. Returning false makes the
   // engine upload the full mip chain (correct, just no streaming benefit here).
   return false;
 }
 
-BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
+gfx::buffer_handle MetalDevice::create_buffer(const gfx::buffer_desc &desc) {
   if (m_state == nullptr)
     return {};
 
@@ -1047,19 +1047,19 @@ BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
   @autoreleasepool {
     MTLResourceOptions options = MTLResourceStorageModePrivate;
     switch (desc.memory) {
-    case MemoryUsage::Upload:
+    case gfx::memory_usage::Upload:
       options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
       break;
-    case MemoryUsage::Readback:
+    case gfx::memory_usage::Readback:
       options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache;
       break;
-    case MemoryUsage::DeviceLocal:
+    case gfx::memory_usage::DeviceLocal:
     default:
       options = MTLResourceStorageModePrivate;
       break;
     }
 
-    buffer.bindless_visible = desc.usage.has(BufferUsage::DeviceAddress);
+    buffer.bindless_visible = desc.usage.has(gfx::buffer_usage::DeviceAddress);
     if (buffer.bindless_visible) {
       buffer.buffer = alloc_bindless_buffer(*m_state, desc.size, options);
       buffer.heap_backed = buffer.buffer != nil;
@@ -1076,14 +1076,14 @@ BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
     }
     buffer.buffer.label = to_ns_string(desc.name);
 
-    if (desc.persistently_mapped && desc.memory != MemoryUsage::DeviceLocal)
+    if (desc.persistently_mapped && desc.memory != gfx::memory_usage::DeviceLocal)
       buffer.mapped = [buffer.buffer contents];
   }
 
   buffer.size = desc.size;
   buffer.usage = desc.usage;
 
-  const BufferHandle handle = m_state->buffers.insert(std::move(buffer));
+  const gfx::buffer_handle handle = m_state->buffers.insert(std::move(buffer));
   if (!handle.valid())
     return {};
 
@@ -1094,13 +1094,13 @@ BufferHandle MetalDevice::create_buffer(const BufferDesc &desc) {
   return handle;
 }
 
-void MetalDevice::destroy_buffer(const BufferHandle handle) noexcept {
+void MetalDevice::destroy_buffer(const gfx::buffer_handle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
   retire(*m_state, {.buffer = handle});
 }
 
-SamplerHandle MetalDevice::create_sampler(const SamplerDesc &desc) {
+gfx::sampler_handle MetalDevice::create_sampler(const gfx::sampler_desc &desc) {
   if (m_state == nullptr)
     return {};
 
@@ -1128,7 +1128,7 @@ SamplerHandle MetalDevice::create_sampler(const SamplerDesc &desc) {
     }
   }
 
-  const SamplerHandle handle = m_state->samplers.insert(std::move(sampler));
+  const gfx::sampler_handle handle = m_state->samplers.insert(std::move(sampler));
   if (!handle.valid())
     return {};
 
@@ -1138,36 +1138,36 @@ SamplerHandle MetalDevice::create_sampler(const SamplerDesc &desc) {
   return handle;
 }
 
-void MetalDevice::destroy_sampler(const SamplerHandle handle) noexcept {
+void MetalDevice::destroy_sampler(const gfx::sampler_handle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
   retire(*m_state, {.sampler = handle});
 }
 
-void MetalDevice::set_texture_state(const TextureHandle handle,
-                                    const ResourceState state) noexcept {
+void MetalDevice::set_texture_state(const gfx::texture_handle handle,
+                                    const gfx::resource_state state) noexcept {
   if (m_state == nullptr)
     return;
   if (MetalTexture *texture = m_state->textures.try_get(handle))
     texture->state = state;
 }
 
-ResourceState
-MetalDevice::texture_state(const TextureHandle handle) const noexcept {
+gfx::resource_state
+MetalDevice::texture_state(const gfx::texture_handle handle) const noexcept {
   if (m_state == nullptr)
-    return ResourceState::Undefined;
+    return gfx::resource_state::Undefined;
   const MetalTexture *texture = m_state->textures.try_get(handle);
-  return texture != nullptr ? texture->state : ResourceState::Undefined;
+  return texture != nullptr ? texture->state : gfx::resource_state::Undefined;
 }
 
-u32 MetalDevice::texture_index(const TextureHandle handle) const noexcept {
+u32 MetalDevice::texture_index(const gfx::texture_handle handle) const noexcept {
   if (m_state == nullptr)
     return BINDLESS_INVALID_INDEX;
   const MetalTexture *texture = m_state->textures.try_get(handle);
   return texture != nullptr ? texture->bindless_slot : BINDLESS_INVALID_INDEX;
 }
 
-u32 MetalDevice::rw_texture_index(const TextureHandle handle,
+u32 MetalDevice::rw_texture_index(const gfx::texture_handle handle,
                                   const u32 mip) const noexcept {
   if (m_state == nullptr)
     return BINDLESS_INVALID_INDEX;
@@ -1177,14 +1177,14 @@ u32 MetalDevice::rw_texture_index(const TextureHandle handle,
   return texture->uav_slots[mip];
 }
 
-u32 MetalDevice::sampler_index(const SamplerHandle handle) const noexcept {
+u32 MetalDevice::sampler_index(const gfx::sampler_handle handle) const noexcept {
   if (m_state == nullptr)
     return BINDLESS_INVALID_INDEX;
   const MetalSampler *sampler = m_state->samplers.try_get(handle);
   return sampler != nullptr ? sampler->bindless_slot : BINDLESS_INVALID_INDEX;
 }
 
-void *MetalDevice::buffer_mapped(const BufferHandle handle) const noexcept {
+void *MetalDevice::buffer_mapped(const gfx::buffer_handle handle) const noexcept {
   if (m_state == nullptr)
     return nullptr;
   const MetalBuffer *buffer = m_state->buffers.try_get(handle);
@@ -1192,7 +1192,7 @@ void *MetalDevice::buffer_mapped(const BufferHandle handle) const noexcept {
 }
 
 bool MetalCommandContext::copy_texture_to_buffer(
-    const TextureHandle texture_handle, const BufferHandle buffer_handle,
+    const gfx::texture_handle texture_handle, const gfx::buffer_handle buffer_handle,
     const u64 row_pitch, const u32 mip, const u32 layer) {
   if (m_state == nullptr || m_in_render_pass)
     return false;
@@ -1202,9 +1202,9 @@ bool MetalCommandContext::copy_texture_to_buffer(
   const MetalTexture *texture = m_state->textures.try_get(texture_handle);
   const MetalBuffer *buffer = m_state->buffers.try_get(buffer_handle);
   if (texture == nullptr || texture->texture == nil || buffer == nullptr ||
-      buffer->buffer == nil || !(texture->usage & TextureUsage::CopySrc) ||
-      !(buffer->usage & BufferUsage::CopyDst) ||
-      texture->state != ResourceState::CopySrc ||
+      buffer->buffer == nil || !(texture->usage & gfx::texture_usage::CopySrc) ||
+      !(buffer->usage & gfx::buffer_usage::CopyDst) ||
+      texture->state != gfx::resource_state::CopySrc ||
       format_is_depth(texture->format) || format_is_compressed(texture->format) ||
       mip >= texture->mip_levels || layer >= texture->layers)
     return false;
@@ -1234,9 +1234,9 @@ bool MetalCommandContext::copy_texture_to_buffer(
   return true;
 }
 
-bool MetalCommandContext::copy_buffer(const BufferHandle source_handle,
+bool MetalCommandContext::copy_buffer(const gfx::buffer_handle source_handle,
                                       const u64 source_offset,
-                                      const BufferHandle destination_handle,
+                                      const gfx::buffer_handle destination_handle,
                                       const u64 destination_offset,
                                       const u64 size) {
   if (m_state == nullptr || m_in_render_pass)
@@ -1249,8 +1249,8 @@ bool MetalCommandContext::copy_buffer(const BufferHandle source_handle,
       m_state->buffers.try_get(destination_handle);
   if (source == nullptr || source->buffer == nil || destination == nullptr ||
       destination->buffer == nil || size == 0 ||
-      !(source->usage & BufferUsage::CopySrc) ||
-      !(destination->usage & BufferUsage::CopyDst) ||
+      !(source->usage & gfx::buffer_usage::CopySrc) ||
+      !(destination->usage & gfx::buffer_usage::CopyDst) ||
       source_offset > source->size || size > source->size - source_offset ||
       destination_offset > destination->size ||
       size > destination->size - destination_offset)
@@ -1271,7 +1271,7 @@ bool MetalCommandContext::copy_buffer(const BufferHandle source_handle,
   return true;
 }
 
-u64 MetalDevice::buffer_address(const BufferHandle handle) const noexcept {
+u64 MetalDevice::buffer_address(const gfx::buffer_handle handle) const noexcept {
   if (m_state == nullptr)
     return 0;
   const MetalBuffer *buffer = m_state->buffers.try_get(handle);
@@ -1286,7 +1286,7 @@ MetalContextSlot &MetalCommandContext::ctx_slot() const noexcept {
   return m_state->contexts[m_slot];
 }
 
-void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
+void MetalCommandContext::begin_render_pass(const gfx::render_pass_desc &desc) {
   if (m_state == nullptr || ctx_slot().cmd == nil)
     return;
   if (m_in_render_pass) {
@@ -1304,7 +1304,7 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     u32 pass_height = 0;
 
     for (u32 i = 0; i < desc.color_count && i < MAX_COLOR_ATTACHMENTS; ++i) {
-      const RenderAttachment &attachment = desc.color[i];
+      const gfx::render_attachment &attachment = desc.color[i];
       const MetalTexture *texture =
           m_state->textures.try_get(attachment.texture);
       if (texture == nullptr || texture->texture == nil) {
@@ -1333,7 +1333,7 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
               m_state->textures.try_get(attachment.resolve_target);
           resolve != nullptr && resolve->texture != nil) {
         color.resolveTexture = resolve->texture;
-        color.storeAction = attachment.store == StoreOp::Store
+        color.storeAction = attachment.store == gfx::store_op::Store
                                 ? MTLStoreActionStoreAndMultisampleResolve
                                 : MTLStoreActionMultisampleResolve;
       }
@@ -1341,7 +1341,7 @@ void MetalCommandContext::begin_render_pass(const RenderPassDesc &desc) {
     }
 
     if (desc.has_depth_stencil) {
-      const RenderAttachment &attachment = desc.depth_stencil;
+      const gfx::render_attachment &attachment = desc.depth_stencil;
       const MetalTexture *texture =
           m_state->textures.try_get(attachment.texture);
       if (texture == nullptr || texture->texture == nil) {
@@ -1464,7 +1464,7 @@ void MetalCommandContext::end_compute_pass() {
   ctx_slot().has_bound_pipeline = false;
 }
 
-void MetalCommandContext::set_viewport(const Viewport &viewport) {
+void MetalCommandContext::set_viewport(const gfx::viewport &viewport) {
   if (m_state == nullptr || ctx_slot().encoder == nil)
     return;
 
@@ -1474,19 +1474,19 @@ void MetalCommandContext::set_viewport(const Viewport &viewport) {
                                                 viewport.max_depth)];
 }
 
-void MetalCommandContext::set_scissor(const Rect2D &rect) {
+void MetalCommandContext::set_scissor(const gfx::rect2d &rect) {
   if (m_state == nullptr || ctx_slot().encoder == nil)
     return;
 
   [ctx_slot().encoder setScissorRect:to_mtl_scissor(rect)];
 }
 
-void MetalCommandContext::barrier(const TextureBarrier *textures,
+void MetalCommandContext::barrier(const gfx::texture_barrier *textures,
                                   const u32 texture_count,
-                                  const BufferBarrier *buffers,
+                                  const gfx::buffer_barrier *buffers,
                                   const u32 buffer_count,
-                                  const StateTracking tracking) {
-  if (m_state == nullptr || tracking == StateTracking::Skip)
+                                  const gfx::state_tracking tracking) {
+  if (m_state == nullptr || tracking == gfx::state_tracking::Skip)
     return;
 
   // Metal tracks read-after-write hazards between encoders itself, so there is no barrier to

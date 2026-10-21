@@ -1,7 +1,7 @@
 
 #include "rendering/rhi/metal/mtl_internal.h"
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 constexpr u64 SLOT_SIZE = sizeof(MTLResourceID);
@@ -53,7 +53,7 @@ void clear_slot(const MetalDeviceState &state, const u64 offset, const u32 slot,
 
 }
 
-bool create_bindless_heap(MetalDeviceState &state, const DeviceCaps &caps) {
+bool create_bindless_heap(MetalDeviceState &state, const gfx::device_caps &caps) {
   if (!caps.descriptor_indexing) {
     nx::loge(log_rhi,
              "bindless: this GPU only supports argument buffer tier 1, which "

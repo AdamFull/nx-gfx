@@ -3,7 +3,7 @@
 
 #include "core/foundation/platform/filesystem.h"
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 NSURL *archive_url(const nx::string_view path) noexcept {
@@ -12,64 +12,64 @@ NSURL *archive_url(const nx::string_view path) noexcept {
   return [NSURL fileURLWithPath:to_ns_string(path)];
 }
 
-MTLPrimitiveType to_mtl_topology(const PrimitiveTopology topology) noexcept {
+MTLPrimitiveType to_mtl_topology(const gfx::primitive_topology topology) noexcept {
   switch (topology) {
-  case PrimitiveTopology::TriangleStrip:
+  case gfx::primitive_topology::TriangleStrip:
     return MTLPrimitiveTypeTriangleStrip;
-  case PrimitiveTopology::LineList:
+  case gfx::primitive_topology::LineList:
     return MTLPrimitiveTypeLine;
-  case PrimitiveTopology::LineStrip:
+  case gfx::primitive_topology::LineStrip:
     return MTLPrimitiveTypeLineStrip;
-  case PrimitiveTopology::PointList:
+  case gfx::primitive_topology::PointList:
     return MTLPrimitiveTypePoint;
-  case PrimitiveTopology::TriangleList:
+  case gfx::primitive_topology::TriangleList:
   default:
     return MTLPrimitiveTypeTriangle;
   }
 }
 
 MTLPrimitiveTopologyClass
-to_mtl_topology_class(const PrimitiveTopology topology) noexcept {
+to_mtl_topology_class(const gfx::primitive_topology topology) noexcept {
   switch (topology) {
-  case PrimitiveTopology::PointList:
+  case gfx::primitive_topology::PointList:
     return MTLPrimitiveTopologyClassPoint;
-  case PrimitiveTopology::LineList:
-  case PrimitiveTopology::LineStrip:
+  case gfx::primitive_topology::LineList:
+  case gfx::primitive_topology::LineStrip:
     return MTLPrimitiveTopologyClassLine;
   default:
     return MTLPrimitiveTopologyClassTriangle;
   }
 }
 
-MTLCullMode to_mtl_cull(const CullMode cull) noexcept {
+MTLCullMode to_mtl_cull(const gfx::cull_mode cull) noexcept {
   switch (cull) {
-  case CullMode::Front:
+  case gfx::cull_mode::Front:
     return MTLCullModeFront;
-  case CullMode::Back:
+  case gfx::cull_mode::Back:
     return MTLCullModeBack;
-  case CullMode::None:
+  case gfx::cull_mode::None:
   default:
     return MTLCullModeNone;
   }
 }
 
-MTLWinding to_mtl_winding(const FrontFace face) noexcept {
-  return face == FrontFace::Clockwise ? MTLWindingClockwise
+MTLWinding to_mtl_winding(const gfx::front_face face) noexcept {
+  return face == gfx::front_face::Clockwise ? MTLWindingClockwise
                                       : MTLWindingCounterClockwise;
 }
 
-/// Translates a BlendMode preset into Metal's factor/op pairs. The RHI names
+/// Translates a gfx::blend_mode preset into Metal's factor/op pairs. The RHI names
 /// intent rather than factors, so this is the one place the presets are
 /// spelled out.
 void apply_blend(MTLRenderPipelineColorAttachmentDescriptor *attachment,
-                 const BlendState &blend) noexcept {
+                 const gfx::blend_state &blend) noexcept {
   attachment.writeMask =
       (blend.write_mask & 0x1 ? MTLColorWriteMaskRed : MTLColorWriteMaskNone) |
       (blend.write_mask & 0x2 ? MTLColorWriteMaskGreen : MTLColorWriteMaskNone) |
       (blend.write_mask & 0x4 ? MTLColorWriteMaskBlue : MTLColorWriteMaskNone) |
       (blend.write_mask & 0x8 ? MTLColorWriteMaskAlpha : MTLColorWriteMaskNone);
 
-  if (!blend.enabled || blend.mode == BlendMode::Opaque) {
+  if (!blend.enabled || blend.mode == gfx::blend_mode::Opaque) {
     attachment.blendingEnabled = NO;
     return;
   }
@@ -79,43 +79,43 @@ void apply_blend(MTLRenderPipelineColorAttachmentDescriptor *attachment,
   attachment.alphaBlendOperation = MTLBlendOperationAdd;
 
   switch (blend.mode) {
-  case BlendMode::AlphaBlend:
+  case gfx::blend_mode::AlphaBlend:
     attachment.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
     attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
     attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     break;
-  case BlendMode::Premultiplied:
+  case gfx::blend_mode::Premultiplied:
     attachment.sourceRGBBlendFactor = MTLBlendFactorOne;
     attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
     attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     break;
-  case BlendMode::Additive:
+  case gfx::blend_mode::Additive:
     attachment.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
     attachment.destinationRGBBlendFactor = MTLBlendFactorOne;
     attachment.sourceAlphaBlendFactor = MTLBlendFactorZero;
     attachment.destinationAlphaBlendFactor = MTLBlendFactorOne;
     break;
-  case BlendMode::PremultipliedAdditive:
+  case gfx::blend_mode::PremultipliedAdditive:
     attachment.sourceRGBBlendFactor = MTLBlendFactorOne;
     attachment.destinationRGBBlendFactor = MTLBlendFactorOne;
     attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
     attachment.destinationAlphaBlendFactor = MTLBlendFactorOne;
     break;
-  case BlendMode::Screen:
+  case gfx::blend_mode::Screen:
     attachment.sourceRGBBlendFactor = MTLBlendFactorOne;
     attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
     attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
     attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     break;
-  case BlendMode::Multiply:
+  case gfx::blend_mode::Multiply:
     attachment.sourceRGBBlendFactor = MTLBlendFactorDestinationColor;
     attachment.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
     attachment.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     break;
-  case BlendMode::Opaque:
+  case gfx::blend_mode::Opaque:
   default:
     attachment.blendingEnabled = NO;
     break;
@@ -123,7 +123,7 @@ void apply_blend(MTLRenderPipelineColorAttachmentDescriptor *attachment,
 }
 
 id<MTLFunction> lookup_function(const MetalDeviceState &state,
-                                const ShaderEntry &entry,
+                                const gfx::shader_entry &entry,
                                 const nx::string_view pipeline_name,
                                 const char *stage) noexcept {
   const MetalShader *shader = state.shaders.try_get(entry.shader);
@@ -150,16 +150,16 @@ struct MetalGraphicsPipelineJob {
   id<MTLBinaryArchive> archive = nil;
   nx::mutex *compile_lock = nullptr;
   MTLPixelFormat color_formats[MAX_COLOR_ATTACHMENTS] = {};
-  BlendState blend[MAX_COLOR_ATTACHMENTS] = {};
+  gfx::blend_state blend[MAX_COLOR_ATTACHMENTS] = {};
   u32 color_count = 0;
   MTLPixelFormat depth_format = MTLPixelFormatInvalid;
   bool depth_has_stencil = false;
-  PrimitiveTopology topology = PrimitiveTopology::TriangleList;
-  CullMode cull = CullMode::None;
-  FrontFace front_face = FrontFace::CounterClockwise;
+  gfx::primitive_topology topology = gfx::primitive_topology::TriangleList;
+  gfx::cull_mode cull = gfx::cull_mode::None;
+  gfx::front_face front_face = gfx::front_face::CounterClockwise;
   bool depth_test = false;
   bool depth_write = false;
-  CompareOp depth_compare = CompareOp::LessOrEqual;
+  gfx::compare_op depth_compare = gfx::compare_op::LessOrEqual;
   u32 sample_count = 1;
 };
 
@@ -173,7 +173,7 @@ struct MetalComputePipelineJob {
 };
 
 [[nodiscard]] bool prepare_graphics_pipeline(
-    MetalDeviceState &state, const GraphicsPipelineDesc &desc,
+    MetalDeviceState &state, const gfx::graphics_pipeline_desc &desc,
     MetalGraphicsPipelineJob &out) {
   MetalGraphicsPipelineJob job;
   job.name = nx::string(desc.name);
@@ -201,7 +201,7 @@ struct MetalComputePipelineJob {
     }
     job.blend[i] = desc.blend[i];
   }
-  if (desc.depth_format != Format::Unknown) {
+  if (desc.depth_format != gfx::format::Unknown) {
     job.depth_format = to_mtl_format(desc.depth_format);
     if (job.depth_format == MTLPixelFormatInvalid) {
       nx::loge(log_rhi,
@@ -224,7 +224,7 @@ struct MetalComputePipelineJob {
 }
 
 [[nodiscard]] bool prepare_compute_pipeline(
-    MetalDeviceState &state, const ComputePipelineDesc &desc,
+    MetalDeviceState &state, const gfx::compute_pipeline_desc &desc,
     MetalComputePipelineJob &out) {
   MetalComputePipelineJob job;
   job.name = nx::string(desc.name);
@@ -439,7 +439,7 @@ bool save_pipeline_archive(MetalDeviceState &state) noexcept {
   return true;
 }
 
-ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {
+gfx::shader_handle MetalDevice::create_shader(const gfx::shader_desc &desc) {
   if (m_state == nullptr)
     return {};
 
@@ -474,16 +474,16 @@ ShaderHandle MetalDevice::create_shader(const ShaderDesc &desc) {
   return m_state->shaders.insert(std::move(shader));
 }
 
-const ShaderReflection &
-MetalDevice::reflection(const ShaderHandle handle) const noexcept {
-  static const ShaderReflection empty;
+const gfx::shader_reflection &
+MetalDevice::reflection(const gfx::shader_handle handle) const noexcept {
+  static const gfx::shader_reflection empty;
   if (m_state == nullptr)
     return empty;
   const MetalShader *shader = m_state->shaders.try_get(handle);
   return shader != nullptr ? shader->reflection : empty;
 }
 
-void MetalDevice::destroy_shader(const ShaderHandle handle) noexcept {
+void MetalDevice::destroy_shader(const gfx::shader_handle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
   retire(*m_state, {.shader = handle});
@@ -491,7 +491,7 @@ void MetalDevice::destroy_shader(const ShaderHandle handle) noexcept {
 
 namespace {
 
-/// A PipelineJob's payload: the snapshot to compile and, once compiled, the
+/// A gfx::pipeline_job's payload: the snapshot to compile and, once compiled, the
 /// pipeline it made.
 struct MetalPipelineJob {
   const MetalDeviceState *state = nullptr;
@@ -511,31 +511,31 @@ bool compile_job(void *const payload) {
 
 } // namespace
 
-PipelineJob MetalDevice::prepare_pipeline(const GraphicsPipelineDesc &desc) {
+gfx::pipeline_job MetalDevice::prepare_pipeline(const gfx::graphics_pipeline_desc &desc) {
   if (m_state == nullptr)
     return {};
   MetalPipelineJob job{.state = m_state};
   if (!prepare_graphics_pipeline(*m_state, desc, job.graphics))
     return {};
-  return detail::PipelineJobAccess::adopt(std::move(job), &compile_job,
+  return detail::pipeline_job_access::adopt(std::move(job), &compile_job,
                                           &m_pipeline_compile_workload);
 }
 
-PipelineJob MetalDevice::prepare_pipeline(const ComputePipelineDesc &desc) {
+gfx::pipeline_job MetalDevice::prepare_pipeline(const gfx::compute_pipeline_desc &desc) {
   if (m_state == nullptr)
     return {};
   MetalPipelineJob job{.state = m_state, .compute = true};
   if (!prepare_compute_pipeline(*m_state, desc, job.compute_work))
     return {};
-  return detail::PipelineJobAccess::adopt(std::move(job), &compile_job,
+  return detail::pipeline_job_access::adopt(std::move(job), &compile_job,
                                           &m_pipeline_compile_workload);
 }
 
-PipelineHandle MetalDevice::publish_pipeline(PipelineJob &&opaque) {
+gfx::pipeline_handle MetalDevice::publish_pipeline(gfx::pipeline_job &&opaque) {
   if (m_state == nullptr)
     return {};
   MetalPipelineJob job =
-      detail::PipelineJobAccess::take<MetalPipelineJob>(opaque);
+      detail::pipeline_job_access::take<MetalPipelineJob>(opaque);
   MetalPipeline &native = job.compiled;
   if (job.state != m_state || (!native.is_compute && native.render == nil) ||
       (native.is_compute && native.compute == nil))
@@ -543,13 +543,13 @@ PipelineHandle MetalDevice::publish_pipeline(PipelineJob &&opaque) {
   return m_state->pipelines.insert(std::move(native));
 }
 
-void MetalDevice::destroy_pipeline(const PipelineHandle handle) noexcept {
+void MetalDevice::destroy_pipeline(const gfx::pipeline_handle handle) noexcept {
   if (m_state == nullptr || !handle.valid())
     return;
   retire(*m_state, {.pipeline = handle});
 }
 
-void MetalCommandContext::bind_pipeline(const PipelineHandle handle) {
+void MetalCommandContext::bind_pipeline(const gfx::pipeline_handle handle) {
   if (m_state == nullptr)
     return;
 
@@ -587,12 +587,12 @@ void MetalCommandContext::bind_pipeline(const PipelineHandle handle) {
   ctx_slot().has_bound_pipeline = true;
 }
 
-void MetalCommandContext::set_cull_mode(const CullMode cull) {
+void MetalCommandContext::set_cull_mode(const gfx::cull_mode cull) {
   if (m_state != nullptr && ctx_slot().encoder != nil)
     [ctx_slot().encoder setCullMode:to_mtl_cull(cull)];
 }
 
-void MetalCommandContext::set_front_face(const FrontFace face) {
+void MetalCommandContext::set_front_face(const gfx::front_face face) {
   if (m_state != nullptr && ctx_slot().encoder != nil)
     [ctx_slot().encoder setFrontFacingWinding:to_mtl_winding(face)];
 }
@@ -647,8 +647,8 @@ void MetalCommandContext::draw(const u32 vertex_count, const u32 instance_count,
                       baseInstance:first_instance];
 }
 
-void MetalCommandContext::bind_index_buffer(const BufferHandle handle,
-                                            const IndexType type,
+void MetalCommandContext::bind_index_buffer(const gfx::buffer_handle handle,
+                                            const gfx::index_type type,
                                             const u64 offset) {
   if (m_state == nullptr)
     return;
@@ -661,8 +661,8 @@ void MetalCommandContext::bind_index_buffer(const BufferHandle handle,
 
   ctx_slot().index_buffer = buffer->buffer;
   ctx_slot().index_type =
-      type == IndexType::U32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
-  ctx_slot().index_stride = type == IndexType::U32 ? 4u : 2u;
+      type == gfx::index_type::U32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+  ctx_slot().index_stride = type == gfx::index_type::U32 ? 4u : 2u;
   ctx_slot().index_buffer_offset = offset;
 }
 
@@ -716,7 +716,7 @@ void MetalCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
           threadsPerThreadgroup:ctx_slot().bound_threads_per_group];
 }
 
-void MetalCommandContext::draw_indirect(const BufferHandle handle,
+void MetalCommandContext::draw_indirect(const gfx::buffer_handle handle,
                                         const u64 offset, const u32 draw_count,
                                         const u32 stride) {
   if (m_state == nullptr || ctx_slot().encoder == nil || draw_count == 0)
@@ -730,7 +730,7 @@ void MetalCommandContext::draw_indirect(const BufferHandle handle,
     return;
 
   const u64 step =
-      stride != 0 ? stride : nx::cast<u64>(sizeof(DrawIndirectCommand));
+      stride != 0 ? stride : nx::cast<u64>(sizeof(gfx::draw_indirect_command));
   for (u32 i = 0; i < draw_count; ++i) {
     [ctx_slot().encoder drawPrimitives:ctx_slot().bound_topology
                        indirectBuffer:buffer->buffer
@@ -738,12 +738,12 @@ void MetalCommandContext::draw_indirect(const BufferHandle handle,
   }
 }
 
-void MetalCommandContext::draw_mesh_tasks_indirect(BufferHandle, u64, u32,
+void MetalCommandContext::draw_mesh_tasks_indirect(gfx::buffer_handle, u64, u32,
                                                    u32) {
   nx::loge(log_rhi, "draw_mesh_tasks_indirect: Metal has no mesh pipelines");
 }
 
-void MetalCommandContext::draw_indexed_indirect(const BufferHandle handle,
+void MetalCommandContext::draw_indexed_indirect(const gfx::buffer_handle handle,
                                                 const u64 offset,
                                                 const u32 draw_count,
                                                 const u32 stride) {
@@ -762,7 +762,7 @@ void MetalCommandContext::draw_indexed_indirect(const BufferHandle handle,
     return;
 
   const u64 step =
-      stride != 0 ? stride : nx::cast<u64>(sizeof(DrawIndexedIndirectCommand));
+      stride != 0 ? stride : nx::cast<u64>(sizeof(gfx::draw_indexed_indirect_command));
   for (u32 i = 0; i < draw_count; ++i) {
     [ctx_slot().encoder drawIndexedPrimitives:ctx_slot().bound_topology
                                     indexType:ctx_slot().index_type
@@ -774,7 +774,7 @@ void MetalCommandContext::draw_indexed_indirect(const BufferHandle handle,
   }
 }
 
-void MetalCommandContext::dispatch_indirect(const BufferHandle handle,
+void MetalCommandContext::dispatch_indirect(const gfx::buffer_handle handle,
                                             const u64 offset) {
   if (m_state == nullptr)
     return;

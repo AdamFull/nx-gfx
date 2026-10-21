@@ -7,7 +7,7 @@
 
 #include <cstring>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 constexpr usize MAX_FAULTS = 64;
@@ -95,7 +95,7 @@ void copy_text(char (&out)[N], const nx::string_view text) noexcept {
   out[count] = '\0';
 }
 
-void append_address(GpuCrashReport &out,
+void append_address(gfx::gpu_crash_report &out,
                     const VkDeviceFaultAddressInfoKHR &address) {
   if (address.addressType == VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_KHR)
     return;
@@ -103,7 +103,7 @@ void append_address(GpuCrashReport &out,
                            address.reportedAddress, address.addressPrecision});
 }
 
-void append_vendor(GpuCrashReport &out,
+void append_vendor(gfx::gpu_crash_report &out,
                    const VkDeviceFaultVendorInfoKHR &vendor) {
   out.vendor_faults.push_back({nx::string(vendor.description),
                                vendor.vendorFaultCode, vendor.vendorFaultData});
@@ -112,9 +112,10 @@ void append_vendor(GpuCrashReport &out,
 } // namespace
 
 void VulkanGpuCrashReporter::configure(
-    const GpuCrashMode mode, const bool break_on_validation_error) noexcept {
-  m_enabled = mode != GpuCrashMode::Disabled;
-  m_detailed = mode == GpuCrashMode::Detailed;
+    const gfx::gpu_crash_mode mode,
+    const bool break_on_validation_error) noexcept {
+  m_enabled = mode != gfx::gpu_crash_mode::Disabled;
+  m_detailed = mode == gfx::gpu_crash_mode::Detailed;
   m_break_on_validation_error = break_on_validation_error;
 }
 
@@ -249,8 +250,8 @@ void VulkanGpuCrashReporter::report_device_lost(const char *const call,
                                                 const char *const file,
                                                 const i32 line,
                                                 const u64 frame) {
-  GpuCrashReport report;
-  report.backend = GpuBackend::Vulkan;
+  gfx::gpu_crash_report report;
+  report.backend = gfx::gpu_backend::Vulkan;
   report.device = m_device_name;
   report.operation = call;
   report.result = "VK_ERROR_DEVICE_LOST";
@@ -269,7 +270,7 @@ void VulkanGpuCrashReporter::report_device_lost(const char *const call,
              gpu_crash_json(report));
 }
 
-void VulkanGpuCrashReporter::collect_khr(GpuCrashReport &out) {
+void VulkanGpuCrashReporter::collect_khr(gfx::gpu_crash_report &out) {
   if (vkGetDeviceFaultReportsKHR == nullptr)
     return;
   u32 count = 0;
@@ -320,7 +321,7 @@ void VulkanGpuCrashReporter::collect_khr(GpuCrashReport &out) {
     out.vendor_binary = {};
 }
 
-void VulkanGpuCrashReporter::collect_ext(GpuCrashReport &out) {
+void VulkanGpuCrashReporter::collect_ext(gfx::gpu_crash_report &out) {
   if (vkGetDeviceFaultInfoEXT == nullptr)
     return;
   VkDeviceFaultCountsEXT counts{VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
@@ -363,7 +364,8 @@ void VulkanGpuCrashReporter::collect_ext(GpuCrashReport &out) {
     append_vendor(out, vendors[i]);
 }
 
-void VulkanGpuCrashReporter::append_objects_and_bindings(GpuCrashReport &out) {
+void VulkanGpuCrashReporter::append_objects_and_bindings(
+    gfx::gpu_crash_report &out) {
   BindingEvent snapshot[BINDING_CAPACITY];
   ObjectNameEvent object_snapshot[OBJECT_CAPACITY];
   u64 bindings_written = 0;
@@ -418,4 +420,4 @@ void VulkanGpuCrashReporter::append_objects_and_bindings(GpuCrashReport &out) {
   }
 }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

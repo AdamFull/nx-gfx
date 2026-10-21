@@ -1,18 +1,19 @@
 #pragma once
 
 #include "core/foundation/threading/sync.h"
-#include "rendering/rhi/gpu_crash.h"
+#include "nx/gfx/crash.h"
 #include "rendering/rhi/vulkan/vk_common.h"
 
 #include <atomic>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 enum class VulkanFaultRoute : u8 { None, Khr, Ext };
 
 class VulkanGpuCrashReporter {
 public:
-  void configure(GpuCrashMode mode, bool break_on_validation_error) noexcept;
+  void configure(gfx::gpu_crash_mode mode,
+                 bool break_on_validation_error) noexcept;
   void attach(VkDevice device, nx::string_view device_name,
               VulkanFaultRoute route, bool vendor_binary,
               bool address_tracking);
@@ -20,9 +21,10 @@ public:
 
   [[nodiscard]] bool enabled() const noexcept { return m_enabled; }
   [[nodiscard]] bool detailed() const noexcept { return m_detailed; }
-  [[nodiscard]] GpuDeviceStatus status() const noexcept {
-    return m_lost.load(std::memory_order_acquire) ? GpuDeviceStatus::Lost
-                                                  : GpuDeviceStatus::Ready;
+  [[nodiscard]] gfx::gpu_device_status status() const noexcept {
+    return m_lost.load(std::memory_order_acquire)
+               ? gfx::gpu_device_status::Lost
+               : gfx::gpu_device_status::Ready;
   }
 
   VkBool32
@@ -60,9 +62,9 @@ private:
                         const VkDeviceAddressBindingCallbackDataEXT &binding);
   void report_device_lost(const char *call, const char *file, i32 line,
                           u64 frame);
-  void collect_khr(GpuCrashReport &out);
-  void collect_ext(GpuCrashReport &out);
-  void append_objects_and_bindings(GpuCrashReport &out);
+  void collect_khr(gfx::gpu_crash_report &out);
+  void collect_ext(gfx::gpu_crash_report &out);
+  void append_objects_and_bindings(gfx::gpu_crash_report &out);
 
   VkDevice m_device = VK_NULL_HANDLE;
   nx::string m_device_name;
@@ -81,4 +83,4 @@ private:
   bool m_address_tracking = false;
 };
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

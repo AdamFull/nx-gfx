@@ -9,11 +9,12 @@
 #include <iterator>
 #include <span>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 /// Owner-thread snapshot of everything vkCreateGraphicsPipelines needs. Shader
-/// modules are immutable Vulkan objects; their ShaderHandle owners remain live
-/// until the worker finishes. No engine handle table is touched by the worker.
+/// modules are immutable Vulkan objects; their gfx::shader_handle owners remain
+/// live until the worker finishes. No engine handle table is touched by the
+/// worker.
 struct VulkanGraphicsPipelineCompileJob {
   nx::string name;
   /// The vertex or mesh stage.
@@ -22,16 +23,16 @@ struct VulkanGraphicsPipelineCompileJob {
   nx::string fragment_entry;
   VkShaderModule primitive = VK_NULL_HANDLE;
   VkShaderModule fragment = VK_NULL_HANDLE;
-  Format color_formats[MAX_COLOR_ATTACHMENTS] = {};
+  gfx::format color_formats[MAX_COLOR_ATTACHMENTS] = {};
   u32 color_count = 0;
-  Format depth_format = Format::Unknown;
-  BlendState blend[MAX_COLOR_ATTACHMENTS] = {};
-  PrimitiveTopology topology = PrimitiveTopology::TriangleList;
-  CullMode cull = CullMode::None;
-  FrontFace front_face = FrontFace::CounterClockwise;
+  gfx::format depth_format = gfx::format::Unknown;
+  gfx::blend_state blend[MAX_COLOR_ATTACHMENTS] = {};
+  gfx::primitive_topology topology = gfx::primitive_topology::TriangleList;
+  gfx::cull_mode cull = gfx::cull_mode::None;
+  gfx::front_face front_face = gfx::front_face::CounterClockwise;
   bool depth_test = false;
   bool depth_write = false;
-  CompareOp depth_compare = CompareOp::LessOrEqual;
+  gfx::compare_op depth_compare = gfx::compare_op::LessOrEqual;
   u32 sample_count = 1;
   bool sample_shading = false;
 };
@@ -98,8 +99,8 @@ private:
   nx::string m_name;
 };
 
-/// A PipelineJob's payload: the snapshot to compile and, once compiled, the
-/// native pipeline it made.
+/// A gfx::pipeline_job's payload: the snapshot to compile and, once compiled,
+/// the native pipeline it made.
 struct VulkanPipelineJob {
   const VulkanDevice *device = nullptr;
   bool compute = false;
@@ -110,39 +111,40 @@ struct VulkanPipelineJob {
 
 namespace {
 
-VkPrimitiveTopology to_vk_topology(const PrimitiveTopology topology) noexcept {
+VkPrimitiveTopology
+to_vk_topology(const gfx::primitive_topology topology) noexcept {
   switch (topology) {
-  case PrimitiveTopology::TriangleList:
+  case gfx::primitive_topology::TriangleList:
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-  case PrimitiveTopology::TriangleStrip:
+  case gfx::primitive_topology::TriangleStrip:
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-  case PrimitiveTopology::LineList:
+  case gfx::primitive_topology::LineList:
     return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-  case PrimitiveTopology::LineStrip:
+  case gfx::primitive_topology::LineStrip:
     return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
   default:
     return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
   }
 }
 
-VkCullModeFlags to_vk_cull(const CullMode cull) noexcept {
+VkCullModeFlags to_vk_cull(const gfx::cull_mode cull) noexcept {
   switch (cull) {
-  case CullMode::Front:
+  case gfx::cull_mode::Front:
     return VK_CULL_MODE_FRONT_BIT;
-  case CullMode::Back:
+  case gfx::cull_mode::Back:
     return VK_CULL_MODE_BACK_BIT;
   default:
     return VK_CULL_MODE_NONE;
   }
 }
 
-VkFrontFace to_vk_front_face(const FrontFace face) noexcept {
-  return face == FrontFace::Clockwise ? VK_FRONT_FACE_CLOCKWISE
-                                      : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+VkFrontFace to_vk_front_face(const gfx::front_face face) noexcept {
+  return face == gfx::front_face::Clockwise ? VK_FRONT_FACE_CLOCKWISE
+                                            : VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
 
 VkPipelineColorBlendAttachmentState
-to_vk_blend(const BlendState &state) noexcept {
+to_vk_blend(const gfx::blend_state &state) noexcept {
   VkPipelineColorBlendAttachmentState out{};
   out.colorWriteMask = 0;
   if (state.write_mask & 0x1)
@@ -161,34 +163,34 @@ to_vk_blend(const BlendState &state) noexcept {
   out.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 
   switch (state.mode) {
-  case BlendMode::AlphaBlend:
+  case gfx::blend_mode::AlphaBlend:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     break;
-  case BlendMode::Premultiplied:
+  case gfx::blend_mode::Premultiplied:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     break;
-  case BlendMode::Additive:
+  case gfx::blend_mode::Additive:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
     out.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     break;
-  case BlendMode::PremultipliedAdditive:
+  case gfx::blend_mode::PremultipliedAdditive:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
     out.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     break;
-  case BlendMode::Multiply:
+  case gfx::blend_mode::Multiply:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     break;
-  case BlendMode::Screen:
+  case gfx::blend_mode::Screen:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
     break;
-  case BlendMode::Opaque:
-  case BlendMode::Count:
+  case gfx::blend_mode::Opaque:
+  case gfx::blend_mode::Count:
     out.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
     out.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
     break;
@@ -243,7 +245,7 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
 }
 
 bool VulkanDevice::save_pipeline_cache() noexcept {
-  if (device_status() == GpuDeviceStatus::Lost ||
+  if (device_status() == gfx::gpu_device_status::Lost ||
       m_pipeline_cache == VK_NULL_HANDLE || m_pipeline_cache_path.empty())
     return false;
 
@@ -332,7 +334,7 @@ void collect_entry_points(const void *const code, const usize bytes,
 
 } // namespace
 
-ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
+gfx::shader_handle VulkanDevice::create_shader(const gfx::shader_desc &desc) {
   if (desc.code == nullptr || desc.code_size == 0 || desc.code_size % 4 != 0) {
     nx::loge(nx::log::rhi, "create_shader('{}'): invalid SPIR-V blob", desc.name);
     return {};
@@ -348,7 +350,8 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   if (desc.reflection != nullptr)
     shader.reflection = *desc.reflection;
 
-  for (const ReflectComputeEntry &e : shader.reflection.compute_entries) {
+  for (const gfx::reflect_compute_entry &e :
+       shader.reflection.compute_entries) {
     VulkanShader::ComputeEntry entry;
     entry.name = nx::string(e.name.view());
     entry.local_size[0] = e.local_size[0];
@@ -362,33 +365,35 @@ ShaderHandle VulkanDevice::create_shader(const ShaderDesc &desc) {
   return m_shaders.insert(std::move(shader));
 }
 
-const ShaderReflection &
-VulkanDevice::reflection(const ShaderHandle handle) const noexcept {
-  static const ShaderReflection empty;
+const gfx::shader_reflection &
+VulkanDevice::reflection(const gfx::shader_handle handle) const noexcept {
+  static const gfx::shader_reflection empty;
   const VulkanShader *shader = m_shaders.try_get(handle);
   return shader != nullptr ? shader->reflection : empty;
 }
 
-void VulkanDevice::destroy_shader(const ShaderHandle handle) noexcept {
+void VulkanDevice::destroy_shader(const gfx::shader_handle handle) noexcept {
   if (VulkanShader *shader = m_shaders.try_get(handle)) {
     vkDestroyShaderModule(m_device, shader->module, nullptr);
     m_shaders.erase(handle);
   }
 }
 
-PipelineJob VulkanDevice::prepare_pipeline(const GraphicsPipelineDesc &desc) {
+gfx::pipeline_job
+VulkanDevice::prepare_pipeline(const gfx::graphics_pipeline_desc &desc) {
   VulkanPipelineJob job{.device = this};
   if (!prepare_graphics_pipeline(desc, job.graphics))
     return {};
-  return detail::PipelineJobAccess::adopt(
+  return detail::pipeline_job_access::adopt(
       std::move(job), &VulkanDevice::compile_job, &m_pipeline_compile_workload);
 }
 
-PipelineJob VulkanDevice::prepare_pipeline(const ComputePipelineDesc &desc) {
+gfx::pipeline_job
+VulkanDevice::prepare_pipeline(const gfx::compute_pipeline_desc &desc) {
   VulkanPipelineJob job{.device = this, .compute = true};
   if (!prepare_compute_pipeline(desc, job.compute_work))
     return {};
-  return detail::PipelineJobAccess::adopt(
+  return detail::pipeline_job_access::adopt(
       std::move(job), &VulkanDevice::compile_job, &m_pipeline_compile_workload);
 }
 
@@ -401,7 +406,7 @@ bool VulkanDevice::compile_job(void *const payload) {
 }
 
 bool VulkanDevice::prepare_graphics_pipeline(
-    const GraphicsPipelineDesc &desc,
+    const gfx::graphics_pipeline_desc &desc,
     VulkanGraphicsPipelineCompileJob &out) const {
   const bool mesh = desc.mesh.shader.valid();
   if (mesh && desc.vertex.shader.valid()) {
@@ -416,7 +421,7 @@ bool VulkanDevice::prepare_graphics_pipeline(
              desc.name);
     return false;
   }
-  const ShaderEntry &primitive = mesh ? desc.mesh : desc.vertex;
+  const gfx::shader_entry &primitive = mesh ? desc.mesh : desc.vertex;
   const nx::string_view stage_name = mesh ? "mesh" : "vertex";
   const VulkanShader *ps = m_shaders.try_get(primitive.shader);
   if (ps == nullptr) {
@@ -549,7 +554,7 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
       VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
   rendering.colorAttachmentCount = job.color_count;
   rendering.pColorAttachmentFormats = color_formats;
-  if (job.depth_format != Format::Unknown) {
+  if (job.depth_format != gfx::format::Unknown) {
     rendering.depthAttachmentFormat = to_vk_format(job.depth_format);
     if (format_is_stencil(job.depth_format))
       rendering.stencilAttachmentFormat = to_vk_format(job.depth_format);
@@ -589,7 +594,7 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
 }
 
 bool VulkanDevice::prepare_compute_pipeline(
-    const ComputePipelineDesc &desc,
+    const gfx::compute_pipeline_desc &desc,
     VulkanComputePipelineCompileJob &out) const {
   const VulkanShader *cs = m_shaders.try_get(desc.compute.shader);
   if (cs == nullptr) {
@@ -663,9 +668,10 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
   return compiled;
 }
 
-PipelineHandle VulkanDevice::publish_pipeline(PipelineJob &&opaque) {
+gfx::pipeline_handle
+VulkanDevice::publish_pipeline(gfx::pipeline_job &&opaque) {
   VulkanPipelineJob job =
-      detail::PipelineJobAccess::take<VulkanPipelineJob>(opaque);
+      detail::pipeline_job_access::take<VulkanPipelineJob>(opaque);
   VulkanCompiledPipeline &compiled = job.compiled;
   if (job.device != this || !compiled.valid())
     return {};
@@ -677,7 +683,7 @@ PipelineHandle VulkanDevice::publish_pipeline(PipelineJob &&opaque) {
   const nx::string name = std::move(compiled.m_name);
   compiled.m_device = VK_NULL_HANDLE;
   compiled.m_pipeline = VK_NULL_HANDLE;
-  PipelineHandle handle;
+  gfx::pipeline_handle handle;
   {
     const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
     handle = m_pipelines.insert(VulkanPipeline(pipeline));
@@ -691,7 +697,8 @@ PipelineHandle VulkanDevice::publish_pipeline(PipelineJob &&opaque) {
   return handle;
 }
 
-void VulkanDevice::destroy_pipeline(const PipelineHandle handle) noexcept {
+void VulkanDevice::destroy_pipeline(
+    const gfx::pipeline_handle handle) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
   if (!m_pipelines.contains(handle))
     return;
@@ -699,11 +706,11 @@ void VulkanDevice::destroy_pipeline(const PipelineHandle handle) noexcept {
 }
 
 const VulkanPipeline *
-VulkanDevice::pipeline(const PipelineHandle handle) const noexcept {
+VulkanDevice::pipeline(const gfx::pipeline_handle handle) const noexcept {
   return m_pipelines.try_get(handle);
 }
 
-void VulkanCommandContext::bind_pipeline(const PipelineHandle handle) {
+void VulkanCommandContext::bind_pipeline(const gfx::pipeline_handle handle) {
   if (m_device == nullptr)
     return;
   const VulkanPipeline *pipeline = m_device->pipeline(handle);
@@ -716,12 +723,12 @@ void VulkanCommandContext::bind_pipeline(const PipelineHandle handle) {
   }
 }
 
-void VulkanCommandContext::set_cull_mode(const CullMode cull) {
+void VulkanCommandContext::set_cull_mode(const gfx::cull_mode cull) {
   if (m_cmd != VK_NULL_HANDLE)
     vkCmdSetCullModeEXT(m_cmd, to_vk_cull(cull));
 }
 
-void VulkanCommandContext::set_front_face(const FrontFace face) {
+void VulkanCommandContext::set_front_face(const gfx::front_face face) {
   if (m_cmd != VK_NULL_HANDLE)
     vkCmdSetFrontFaceEXT(m_cmd, to_vk_front_face(face));
 }
@@ -734,8 +741,8 @@ void VulkanCommandContext::push_constants(const void *data, const u32 size,
                      offset, size, data);
 }
 
-void VulkanCommandContext::bind_index_buffer(const BufferHandle handle,
-                                             const IndexType type,
+void VulkanCommandContext::bind_index_buffer(const gfx::buffer_handle handle,
+                                             const gfx::index_type type,
                                              const u64 offset) {
   if (m_device == nullptr)
     return;
@@ -745,8 +752,8 @@ void VulkanCommandContext::bind_index_buffer(const BufferHandle handle,
     return;
   }
   vkCmdBindIndexBuffer(m_cmd, buffer->buffer, offset,
-                       type == IndexType::U32 ? VK_INDEX_TYPE_UINT32
-                                              : VK_INDEX_TYPE_UINT16);
+                       type == gfx::index_type::U32 ? VK_INDEX_TYPE_UINT32
+                                                    : VK_INDEX_TYPE_UINT16);
 }
 
 void VulkanCommandContext::draw(const u32 vertex_count,
@@ -776,7 +783,7 @@ void VulkanCommandContext::dispatch(const u32 groups_x, const u32 groups_y,
   vkCmdDispatch(m_cmd, groups_x, groups_y, groups_z);
 }
 
-void VulkanCommandContext::draw_indirect(const BufferHandle buffer,
+void VulkanCommandContext::draw_indirect(const gfx::buffer_handle buffer,
                                          const u64 offset, const u32 draw_count,
                                          const u32 stride) {
   if (m_device == nullptr)
@@ -784,15 +791,14 @@ void VulkanCommandContext::draw_indirect(const BufferHandle buffer,
   const VulkanBuffer *buf = m_device->buffer(buffer);
   if (buf == nullptr)
     return;
-  vkCmdDrawIndirect(m_cmd, buf->buffer, offset, draw_count,
-                    stride != 0 ? stride
-                                : nx::cast<u32>(sizeof(DrawIndirectCommand)));
+  vkCmdDrawIndirect(
+      m_cmd, buf->buffer, offset, draw_count,
+      stride != 0 ? stride : nx::cast<u32>(sizeof(gfx::draw_indirect_command)));
 }
 
-void VulkanCommandContext::draw_mesh_tasks_indirect(const BufferHandle buffer,
-                                                    const u64 offset,
-                                                    const u32 draw_count,
-                                                    const u32 stride) {
+void VulkanCommandContext::draw_mesh_tasks_indirect(
+    const gfx::buffer_handle buffer, const u64 offset, const u32 draw_count,
+    const u32 stride) {
   if (m_device == nullptr || !m_device->caps().mesh_shaders)
     return;
   const VulkanBuffer *buf = m_device->buffer(buffer);
@@ -800,14 +806,14 @@ void VulkanCommandContext::draw_mesh_tasks_indirect(const BufferHandle buffer,
     return;
   vkCmdDrawMeshTasksIndirectEXT(
       m_cmd, buf->buffer, offset, draw_count,
-      stride != 0 ? stride
-                  : nx::cast<u32>(sizeof(DrawMeshTasksIndirectCommand)));
+      stride != 0
+          ? stride
+          : nx::cast<u32>(sizeof(gfx::draw_mesh_tasks_indirect_command)));
 }
 
-void VulkanCommandContext::draw_indexed_indirect(const BufferHandle buffer,
-                                                 const u64 offset,
-                                                 const u32 draw_count,
-                                                 const u32 stride) {
+void VulkanCommandContext::draw_indexed_indirect(
+    const gfx::buffer_handle buffer, const u64 offset, const u32 draw_count,
+    const u32 stride) {
   if (m_device == nullptr)
     return;
   const VulkanBuffer *buf = m_device->buffer(buffer);
@@ -815,10 +821,11 @@ void VulkanCommandContext::draw_indexed_indirect(const BufferHandle buffer,
     return;
   vkCmdDrawIndexedIndirect(
       m_cmd, buf->buffer, offset, draw_count,
-      stride != 0 ? stride : nx::cast<u32>(sizeof(DrawIndexedIndirectCommand)));
+      stride != 0 ? stride
+                  : nx::cast<u32>(sizeof(gfx::draw_indexed_indirect_command)));
 }
 
-void VulkanCommandContext::dispatch_indirect(const BufferHandle buffer,
+void VulkanCommandContext::dispatch_indirect(const gfx::buffer_handle buffer,
                                              const u64 offset) {
   if (m_device == nullptr)
     return;
@@ -838,4 +845,4 @@ void VulkanCommandContext::begin_compute_pass(const nx::string_view name) {
 
 void VulkanCommandContext::end_compute_pass() { pop_debug_group(); }
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

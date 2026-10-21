@@ -7,7 +7,7 @@
 
 #include <span>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 namespace {
 
 [[nodiscard]] bool surface_resized(VkPhysicalDevice physical,
@@ -25,7 +25,7 @@ namespace {
 
 [[nodiscard]] VkCompositeAlphaFlagBitsKHR
 pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported,
-                     const SurfaceAlpha requested) noexcept {
+                     const gfx::surface_alpha requested) noexcept {
   constexpr VkCompositeAlphaFlagBitsKHR opaque_order[] = {
       VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
       VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
@@ -40,7 +40,7 @@ pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported,
       VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
   };
   const std::span<const VkCompositeAlphaFlagBitsKHR> order =
-      requested == SurfaceAlpha::Opaque
+      requested == gfx::surface_alpha::Opaque
           ? std::span<const VkCompositeAlphaFlagBitsKHR>(opaque_order)
           : std::span<const VkCompositeAlphaFlagBitsKHR>(transparent_order);
   for (const VkCompositeAlphaFlagBitsKHR bit : order) {
@@ -52,17 +52,17 @@ pick_composite_alpha(const VkCompositeAlphaFlagsKHR supported,
   return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 }
 
-[[nodiscard]] SurfaceAlpha
+[[nodiscard]] gfx::surface_alpha
 from_vk_composite_alpha(const VkCompositeAlphaFlagBitsKHR bit) noexcept {
   switch (bit) {
   case VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR:
-    return SurfaceAlpha::Premultiplied;
+    return gfx::surface_alpha::Premultiplied;
   case VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR:
-    return SurfaceAlpha::Unmultiplied;
+    return gfx::surface_alpha::Unmultiplied;
   case VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR:
-    return SurfaceAlpha::WindowSystem;
+    return gfx::surface_alpha::WindowSystem;
   default:
-    return SurfaceAlpha::Opaque;
+    return gfx::surface_alpha::Opaque;
   }
 }
 
@@ -131,8 +131,9 @@ VkSurfaceKHR create_surface(VkInstance instance,
 
 } // namespace
 
-SwapchainHandle VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
-  if (device_status() == GpuDeviceStatus::Lost ||
+gfx::swapchain_handle
+VulkanDevice::create_swapchain(const gfx::swapchain_desc &desc) {
+  if (device_status() == gfx::gpu_device_status::Lost ||
       desc.window.kind == nx::NativeWindowKind::None ||
       desc.window.window == nullptr) {
     return {};
@@ -147,8 +148,8 @@ SwapchainHandle VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
     VkBool32 present_supported = VK_FALSE;
     NX_VK_TRY(vkGetPhysicalDeviceSurfaceSupportKHR(
         m_physical_device,
-        m_queue_families[nx::cast<usize>(QueueType::Graphics)], sc.surface,
-        &present_supported));
+        m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)],
+        sc.surface, &present_supported));
     if (present_supported != VK_TRUE) {
       nx::logc(nx::log::rhi, "graphics queue cannot present to this surface");
       return false;
@@ -206,14 +207,14 @@ SwapchainHandle VulkanDevice::create_swapchain(const SwapchainDesc &desc) {
     }
     if (!fixed) {
       m_swapchain_format = from_vk_format(chosen->format);
-      if (m_swapchain_format == Format::Unknown)
+      if (m_swapchain_format == gfx::format::Unknown)
         nx::logw(nx::log::rhi, "surface format {} has no portable equivalent",
                  nx::cast<i32>(chosen->format));
     }
 
     sc.requested_alpha = desc.alpha;
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
-    if (desc.alpha == SurfaceAlpha::Premultiplied) {
+    if (desc.alpha == gfx::surface_alpha::Premultiplied) {
       VkSurfaceCapabilitiesKHR caps{};
       NX_VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device,
                                                           sc.surface, &caps));
@@ -241,13 +242,13 @@ bool VulkanDevice::make_offscreen_images(VulkanSwapchain &sc, const u32 width,
                                          const u32 height) {
   for (u32 i = 0; i < m_frames_in_flight; ++i) {
     const nx::string name = nx::format("offscreen backbuffer {}", i);
-    const TextureHandle image = create_texture({
+    const gfx::texture_handle image = create_texture({
         .name = name.view(),
         .format = m_swapchain_format,
         .width = width,
         .height = height,
-        .usage = TextureUsage::RenderTarget | TextureUsage::Sampled |
-                 TextureUsage::CopySrc,
+        .usage = gfx::texture_usage::RenderTarget |
+                 gfx::texture_usage::Sampled | gfx::texture_usage::CopySrc,
     });
     if (!image.valid())
       return false;
@@ -260,11 +261,11 @@ bool VulkanDevice::make_offscreen_images(VulkanSwapchain &sc, const u32 width,
   return true;
 }
 
-SwapchainHandle VulkanDevice::create_offscreen_swapchain(const u32 width,
-                                                        const u32 height,
-                                                        const Format format) {
-  if (device_status() == GpuDeviceStatus::Lost || width == 0 || height == 0 ||
-      format == Format::Unknown)
+gfx::swapchain_handle
+VulkanDevice::create_offscreen_swapchain(const u32 width, const u32 height,
+                                         const gfx::format format) {
+  if (device_status() == gfx::gpu_device_status::Lost || width == 0 ||
+      height == 0 || format == gfx::format::Unknown)
     return {};
   if (!m_swapchains.empty() && format != m_swapchain_format) {
     nx::loge(nx::log::rhi,
@@ -381,10 +382,10 @@ bool VulkanDevice::build_swapchain(VulkanSwapchain &sc, const u32 width,
     texture.format = m_swapchain_format;
     texture.width = extent.width;
     texture.height = extent.height;
-    texture.usage = TextureUsage::RenderTarget;
+    texture.usage = gfx::texture_usage::RenderTarget;
     if ((info.imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0)
-      texture.usage |= TextureUsage::CopySrc;
-    texture.state = ResourceState::Undefined;
+      texture.usage |= gfx::texture_usage::CopySrc;
+    texture.state = gfx::resource_state::Undefined;
     texture.owns_image = false;
 
     VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -419,10 +420,10 @@ bool VulkanDevice::build_swapchain(VulkanSwapchain &sc, const u32 width,
   return true;
 }
 
-bool VulkanDevice::resize_swapchain(const SwapchainHandle handle,
+bool VulkanDevice::resize_swapchain(const gfx::swapchain_handle handle,
                                     const u32 width, const u32 height) {
   VulkanSwapchain *const sc = m_swapchains.try_get(handle);
-  if (sc == nullptr || device_status() == GpuDeviceStatus::Lost)
+  if (sc == nullptr || device_status() == gfx::gpu_device_status::Lost)
     return false;
   if (sc->acquired) {
     nx::loge(nx::log::rhi, "resize_swapchain between acquire and end_frame");
@@ -431,12 +432,12 @@ bool VulkanDevice::resize_swapchain(const SwapchainHandle handle,
   if (sc->offscreen && (width == 0 || height == 0))
     return false;
   wait_idle();
-  if (device_status() == GpuDeviceStatus::Lost)
+  if (device_status() == gfx::gpu_device_status::Lost)
     return false;
   sc->stale = false;
 
   if (sc->offscreen) {
-    for (const TextureHandle image : sc->backbuffers)
+    for (const gfx::texture_handle image : sc->backbuffers)
       destroy_texture(image);
     sc->backbuffers.clear();
     return make_offscreen_images(*sc, width, height);
@@ -457,7 +458,7 @@ bool VulkanDevice::resize_swapchain(const SwapchainHandle handle,
 }
 
 void VulkanDevice::destroy_backbuffer_views(VulkanSwapchain &sc) noexcept {
-  for (const TextureHandle handle : sc.backbuffers) {
+  for (const gfx::texture_handle handle : sc.backbuffers) {
     if (const VulkanTexture *texture = m_textures.try_get(handle)) {
       if (texture->rtv != VK_NULL_HANDLE)
         vkDestroyImageView(m_device, texture->rtv, nullptr);
@@ -482,7 +483,7 @@ void VulkanDevice::release_swapchain(VulkanSwapchain &sc) noexcept {
     // These images are this device's own, so they go back the way any texture
     // does - destroy_backbuffer_views() would drop the views and leak the
     // allocations behind them.
-    for (const TextureHandle handle : sc.backbuffers)
+    for (const gfx::texture_handle handle : sc.backbuffers)
       destroy_texture(handle);
     sc.backbuffers.clear();
   }
@@ -501,7 +502,8 @@ void VulkanDevice::release_swapchain(VulkanSwapchain &sc) noexcept {
   sc.extent = {0, 0};
 }
 
-void VulkanDevice::destroy_swapchain(const SwapchainHandle handle) noexcept {
+void VulkanDevice::destroy_swapchain(
+    const gfx::swapchain_handle handle) noexcept {
   VulkanSwapchain *const sc = m_swapchains.try_get(handle);
   if (sc == nullptr)
     return;
@@ -515,33 +517,36 @@ void VulkanDevice::destroy_swapchain(const SwapchainHandle handle) noexcept {
   m_swapchains.erase(handle);
 }
 
-bool VulkanDevice::offscreen_swapchain(const SwapchainHandle handle) const {
+bool VulkanDevice::offscreen_swapchain(
+    const gfx::swapchain_handle handle) const {
   const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
   return sc != nullptr && sc->offscreen;
 }
 
-Extent2D VulkanDevice::swapchain_extent(const SwapchainHandle handle) const {
+gfx::extent2d
+VulkanDevice::swapchain_extent(const gfx::swapchain_handle handle) const {
   const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
-  return sc != nullptr ? Extent2D{sc->extent.width, sc->extent.height}
-                       : Extent2D{};
+  return sc != nullptr ? gfx::extent2d{sc->extent.width, sc->extent.height}
+                       : gfx::extent2d{};
 }
 
-SurfaceAlpha VulkanDevice::swapchain_alpha(const SwapchainHandle handle) const {
+gfx::surface_alpha
+VulkanDevice::swapchain_alpha(const gfx::swapchain_handle handle) const {
   const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
-  return sc != nullptr ? sc->alpha : SurfaceAlpha::Opaque;
+  return sc != nullptr ? sc->alpha : gfx::surface_alpha::Opaque;
 }
 
-bool VulkanDevice::swapchain_stale(const SwapchainHandle handle) const {
+bool VulkanDevice::swapchain_stale(const gfx::swapchain_handle handle) const {
   const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
   return sc != nullptr && sc->stale;
 }
 
-TextureHandle
-VulkanDevice::current_backbuffer(const SwapchainHandle handle) const noexcept {
+gfx::texture_handle VulkanDevice::current_backbuffer(
+    const gfx::swapchain_handle handle) const noexcept {
   const VulkanSwapchain *const sc = m_swapchains.try_get(handle);
   return sc != nullptr && !sc->backbuffers.empty()
              ? sc->backbuffers[sc->image_index]
-             : TextureHandle{};
+             : gfx::texture_handle{};
 }
 
 // A render job that would block in the driver waits on a blocking-service
@@ -569,7 +574,7 @@ VkCommandBuffer VulkanDevice::next_command_buffer(CommandSlot &slot) {
         VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pool_info.queueFamilyIndex =
-        m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+        m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)];
     if (NX_VK_DEVICE_CHECK(*this, vkCreateCommandPool(m_device, &pool_info,
                                                       nullptr, &slot.pool)) !=
         VK_SUCCESS)
@@ -657,8 +662,9 @@ bool VulkanDevice::close_frame(
   return true;
 }
 
-RecordingSplit VulkanDevice::split_frame(VulkanCommandContext &frame_context,
-                                         const u32 count) {
+gfx::recording_split
+VulkanDevice::split_frame(VulkanCommandContext &frame_context,
+                          const u32 count) {
   if (!m_frame_active || count == 0 || frame_context.m_slot != nullptr ||
       frame_context.m_cmd == VK_NULL_HANDLE)
     return {};
@@ -674,15 +680,15 @@ RecordingSplit VulkanDevice::split_frame(VulkanCommandContext &frame_context,
     frame_context.m_cmd = VK_NULL_HANDLE;
     return {};
   }
-  const RecordingSplit split{nx::cast<u32>(frame.order.size()), count};
+  const gfx::recording_split split{nx::cast<u32>(frame.order.size()), count};
   frame.order.resize(frame.order.size() + count, VK_NULL_HANDLE);
   frame_context.m_cmd = next_command_buffer(frame.slot);
   frame.order.push_back(frame_context.m_cmd);
   return split;
 }
 
-bool VulkanDevice::begin_recording(const RecordingSplit split, const u32 index,
-                                   VulkanCommandContext &out) {
+bool VulkanDevice::begin_recording(const gfx::recording_split split,
+                                   const u32 index, VulkanCommandContext &out) {
   if (!m_frame_active || index >= split.count)
     return false;
   FrameContext &frame = m_frames[m_frame_index];
@@ -770,7 +776,7 @@ bool VulkanDevice::open_frame(VulkanCommandContext &out_context) {
 bool VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   NX_PROFILE_ZONE("vk::begin_frame");
   if (m_device == VK_NULL_HANDLE || m_frames.empty() ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return false;
   if (m_frame_active) {
     nx::loge(nx::log::rhi, "begin_frame called twice without an end_frame");
@@ -781,18 +787,18 @@ bool VulkanDevice::begin_frame(VulkanCommandContext &out_context) {
   return open_frame(out_context);
 }
 
-AcquireResult VulkanDevice::acquire(const SwapchainHandle handle) {
+gfx::acquire_result VulkanDevice::acquire(const gfx::swapchain_handle handle) {
   VulkanSwapchain *const sc = m_swapchains.try_get(handle);
   if (!m_frame_active || m_headless_frame || sc == nullptr ||
-      device_status() == GpuDeviceStatus::Lost)
-    return AcquireResult::SurfaceLost;
+      device_status() == gfx::gpu_device_status::Lost)
+    return gfx::acquire_result::SurfaceLost;
   if (sc->acquired) {
     nx::loge(nx::log::rhi, "a swapchain was acquired twice in one frame");
-    return AcquireResult::SurfaceLost;
+    return gfx::acquire_result::SurfaceLost;
   }
   if (sc->extent.width == 0 ||
       (!sc->presents() && !sc->offscreen && !sc->composed()))
-    return AcquireResult::SurfaceLost;
+    return gfx::acquire_result::SurfaceLost;
 
   VkResult acquired = VK_SUCCESS;
   if (sc->offscreen || sc->composed()) {
@@ -812,12 +818,12 @@ AcquireResult VulkanDevice::acquire(const SwapchainHandle handle) {
   }
 
   if (acquired == VK_ERROR_OUT_OF_DATE_KHR)
-    return AcquireResult::OutOfDate;
+    return gfx::acquire_result::OutOfDate;
   if (acquired == VK_ERROR_SURFACE_LOST_KHR)
-    return AcquireResult::SurfaceLost;
+    return gfx::acquire_result::SurfaceLost;
   if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
     NX_VK_DEVICE_CHECK(*this, acquired);
-    return AcquireResult::SurfaceLost;
+    return gfx::acquire_result::SurfaceLost;
   }
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
@@ -830,12 +836,13 @@ AcquireResult VulkanDevice::acquire(const SwapchainHandle handle) {
   const bool suboptimal =
       acquired == VK_SUBOPTIMAL_KHR &&
       surface_resized(m_physical_device, sc->surface, sc->extent);
-  return suboptimal ? AcquireResult::Suboptimal : AcquireResult::Success;
+  return suboptimal ? gfx::acquire_result::Suboptimal
+                    : gfx::acquire_result::Success;
 }
 
 bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
   if (m_device == VK_NULL_HANDLE || m_frame_active || m_frames.empty() ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return false;
   apply_replacements();
   m_acquired.clear();
@@ -847,7 +854,7 @@ bool VulkanDevice::begin_headless_frame(VulkanCommandContext &out_context) {
 
 bool VulkanDevice::end_headless_frame() {
   if (!m_frame_active || !m_headless_frame ||
-      device_status() == GpuDeviceStatus::Lost)
+      device_status() == gfx::gpu_device_status::Lost)
     return false;
   m_frame_active = false;
   m_headless_frame = false;
@@ -891,10 +898,12 @@ bool VulkanDevice::submit_without_present() {
 
   VkResult submitted = VK_SUCCESS;
   {
-    const nx::scoped_lock<nx::mutex> held(queue_lock(QueueType::Graphics));
+    const nx::scoped_lock<nx::mutex> held(
+        queue_lock(gfx::queue_type::Graphics));
     submitted = NX_VK_DEVICE_CHECK(
-        *this, vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
-                                 1, &submit, VK_NULL_HANDLE));
+        *this,
+        vkQueueSubmit2KHR(m_queues[nx::cast<usize>(gfx::queue_type::Graphics)],
+                          1, &submit, VK_NULL_HANDLE));
   }
   if (submitted != VK_SUCCESS)
     return false;
@@ -944,19 +953,19 @@ void VulkanDevice::finish_backbuffer(VulkanSwapchain &sc,
     release.dstAccessMask = 0;
     release.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     release.srcQueueFamilyIndex =
-        m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+        m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)];
     release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
     dependency.pImageMemoryBarriers = &release;
     vkCmdPipelineBarrier2KHR(cmd, &dependency);
-    image->state = ResourceState::General;
+    image->state = gfx::resource_state::General;
     return;
   }
 #endif
   // The image must be in PRESENT_SRC before handing it to the present engine.
-  if (image->state == ResourceState::Present)
+  if (image->state == gfx::resource_state::Present)
     return;
   const VkStateInfo from = state_info(image->state);
-  const VkStateInfo to = state_info(ResourceState::Present);
+  const VkStateInfo to = state_info(gfx::resource_state::Present);
   VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   barrier.srcStageMask = from.stage;
   barrier.srcAccessMask = from.access;
@@ -972,11 +981,11 @@ void VulkanDevice::finish_backbuffer(VulkanSwapchain &sc,
   dependency.imageMemoryBarrierCount = 1;
   dependency.pImageMemoryBarriers = &barrier;
   vkCmdPipelineBarrier2KHR(cmd, &dependency);
-  image->state = ResourceState::Present;
+  image->state = gfx::resource_state::Present;
 }
 
 bool VulkanDevice::end_frame() {
-  if (device_status() == GpuDeviceStatus::Lost)
+  if (device_status() == gfx::gpu_device_status::Lost)
     return false;
   if (!m_frame_active)
     return true;
@@ -990,7 +999,7 @@ bool VulkanDevice::end_frame() {
 
   FrameContext &frame = m_frames[m_frame_index];
   nx::small_vector<VulkanSwapchain *, 4> acquired;
-  for (const SwapchainHandle handle : m_acquired)
+  for (const gfx::swapchain_handle handle : m_acquired)
     if (VulkanSwapchain *const sc = m_swapchains.try_get(handle))
       acquired.push_back(sc);
   m_acquired.clear();
@@ -1054,10 +1063,12 @@ bool VulkanDevice::end_frame() {
   submit.pSignalSemaphoreInfos = signals.data();
   VkResult submitted = VK_SUCCESS;
   {
-    const nx::scoped_lock<nx::mutex> held(queue_lock(QueueType::Graphics));
+    const nx::scoped_lock<nx::mutex> held(
+        queue_lock(gfx::queue_type::Graphics));
     submitted = NX_VK_DEVICE_CHECK(
-        *this, vkQueueSubmit2KHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
-                                 1, &submit, VK_NULL_HANDLE));
+        *this,
+        vkQueueSubmit2KHR(m_queues[nx::cast<usize>(gfx::queue_type::Graphics)],
+                          1, &submit, VK_NULL_HANDLE));
   }
   if (submitted != VK_SUCCESS) {
     let_go();
@@ -1090,9 +1101,10 @@ bool VulkanDevice::end_frame() {
     {
       NX_PROFILE_ZONE("vk::present");
       nx::fiber::run_blocking([&] {
-        const nx::scoped_lock<nx::mutex> held(queue_lock(QueueType::Graphics));
-        (void)vkQueuePresentKHR(m_queues[nx::cast<usize>(QueueType::Graphics)],
-                                &present);
+        const nx::scoped_lock<nx::mutex> held(
+            queue_lock(gfx::queue_type::Graphics));
+        (void)vkQueuePresentKHR(
+            m_queues[nx::cast<usize>(gfx::queue_type::Graphics)], &present);
       });
     }
     for (usize i = 0; i < presented.size(); ++i) {
@@ -1141,9 +1153,10 @@ bool VulkanDevice::end_frame() {
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 
 bool VulkanDevice::create_composed_swapchain(VulkanSwapchain &sc,
-                                             const SwapchainDesc &desc) {
-  if (!m_routes.win32_interop || (m_swapchain_format != Format::BGRA8_UNORM &&
-                                  m_swapchain_format != Format::RGBA8_UNORM))
+                                             const gfx::swapchain_desc &desc) {
+  if (!m_routes.win32_interop ||
+      (m_swapchain_format != gfx::format::BGRA8_UNORM &&
+       m_swapchain_format != gfx::format::RGBA8_UNORM))
     return false;
 
   VkPhysicalDeviceIDProperties id{
@@ -1158,7 +1171,7 @@ bool VulkanDevice::create_composed_swapchain(VulkanSwapchain &sc,
   auto presenter = nx::make_unique<CompositionPresenter>();
   if (!presenter->create(desc.window.window, id.deviceLUID, desc.width,
                          desc.height, m_frames_in_flight,
-                         m_swapchain_format == Format::RGBA8_UNORM))
+                         m_swapchain_format == gfx::format::RGBA8_UNORM))
     return false;
   sc.composition = std::move(presenter);
 
@@ -1201,7 +1214,7 @@ bool VulkanDevice::create_composed_swapchain(VulkanSwapchain &sc,
   vkDestroySurfaceKHR(m_instance, sc.surface, nullptr);
   sc.surface = VK_NULL_HANDLE;
   sc.extent = {desc.width, desc.height};
-  sc.alpha = SurfaceAlpha::Premultiplied;
+  sc.alpha = gfx::surface_alpha::Premultiplied;
   sc.image_index = 0;
   nx::logd(nx::log::rhi,
            "swapchain: {}x{} through DirectComposition, {} images, {}",
@@ -1308,8 +1321,9 @@ bool VulkanDevice::import_composed_images(VulkanSwapchain &sc, const u32 width,
     texture.format = m_swapchain_format;
     texture.width = width;
     texture.height = height;
-    texture.usage = TextureUsage::RenderTarget | TextureUsage::CopySrc;
-    texture.state = ResourceState::Undefined;
+    texture.usage =
+        gfx::texture_usage::RenderTarget | gfx::texture_usage::CopySrc;
+    texture.state = gfx::resource_state::Undefined;
     texture.owns_image = false;
     sc.backbuffers.push_back(m_textures.insert(std::move(texture)));
     sc.composed_memory.push_back(memory);
@@ -1318,7 +1332,7 @@ bool VulkanDevice::import_composed_images(VulkanSwapchain &sc, const u32 width,
 }
 
 void VulkanDevice::release_composed_images(VulkanSwapchain &sc) noexcept {
-  for (const TextureHandle handle : sc.backbuffers) {
+  for (const gfx::texture_handle handle : sc.backbuffers) {
     if (const VulkanTexture *texture = m_textures.try_get(handle)) {
       vkDestroyImageView(m_device, texture->rtv, nullptr);
       vkDestroyImage(m_device, texture->image, nullptr);
@@ -1361,7 +1375,7 @@ void VulkanDevice::acquire_composed_image(VulkanSwapchain &sc,
   barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
   barrier.dstQueueFamilyIndex =
-      m_queue_families[nx::cast<usize>(QueueType::Graphics)];
+      m_queue_families[nx::cast<usize>(gfx::queue_type::Graphics)];
   barrier.image = image->image;
   barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
@@ -1369,9 +1383,9 @@ void VulkanDevice::acquire_composed_image(VulkanSwapchain &sc,
   dependency.pImageMemoryBarriers = &barrier;
   vkCmdPipelineBarrier2KHR(cmd, &dependency);
   // The frame redraws the whole image, so its old contents may go.
-  image->state = ResourceState::Undefined;
+  image->state = gfx::resource_state::Undefined;
 }
 
 #endif
 
-} // namespace nxe::rhi
+} // namespace nx::gfx::detail

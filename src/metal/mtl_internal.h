@@ -17,28 +17,28 @@
 
 #include <atomic>
 
-namespace nxe::rhi {
+namespace nx::gfx::detail {
 
 extern const nx::log::Category log_rhi;
 
-/// Format translation. Format::Unknown maps to MTLPixelFormatInvalid, as does
+/// gfx::format translation. gfx::format::Unknown maps to MTLPixelFormatInvalid, as does
 /// any format Metal has no equivalent for (the BC set on Apple silicon, ASTC on
 /// Intel); callers must check before using the result.
-[[nodiscard]] MTLPixelFormat to_mtl_format(Format format) noexcept;
-[[nodiscard]] Format from_mtl_format(MTLPixelFormat format) noexcept;
+[[nodiscard]] MTLPixelFormat to_mtl_format(gfx::format format) noexcept;
+[[nodiscard]] gfx::format from_mtl_format(MTLPixelFormat format) noexcept;
 
-[[nodiscard]] MTLTextureType to_mtl_texture_type(TextureDimension dimension,
+[[nodiscard]] MTLTextureType to_mtl_texture_type(gfx::texture_dimension dimension,
                                                  u32 layers,
                                                  u32 sample_count) noexcept;
-[[nodiscard]] MTLTextureUsage to_mtl_texture_usage(TextureUsageFlags usage) noexcept;
-[[nodiscard]] MTLStorageMode to_mtl_storage_mode(MemoryUsage memory,
+[[nodiscard]] MTLTextureUsage to_mtl_texture_usage(gfx::texture_usage_flags usage) noexcept;
+[[nodiscard]] MTLStorageMode to_mtl_storage_mode(gfx::memory_usage memory,
                                                  bool transient) noexcept;
-[[nodiscard]] MTLSamplerMinMagFilter to_mtl_filter(FilterMode filter) noexcept;
-[[nodiscard]] MTLSamplerMipFilter to_mtl_mip_filter(FilterMode filter) noexcept;
-[[nodiscard]] MTLSamplerAddressMode to_mtl_address(AddressMode mode) noexcept;
-[[nodiscard]] MTLCompareFunction to_mtl_compare(CompareOp op) noexcept;
-[[nodiscard]] MTLLoadAction to_mtl_load_action(LoadOp op) noexcept;
-[[nodiscard]] MTLStoreAction to_mtl_store_action(StoreOp op) noexcept;
+[[nodiscard]] MTLSamplerMinMagFilter to_mtl_filter(gfx::filter_mode filter) noexcept;
+[[nodiscard]] MTLSamplerMipFilter to_mtl_mip_filter(gfx::filter_mode filter) noexcept;
+[[nodiscard]] MTLSamplerAddressMode to_mtl_address(gfx::address_mode mode) noexcept;
+[[nodiscard]] MTLCompareFunction to_mtl_compare(gfx::compare_op op) noexcept;
+[[nodiscard]] MTLLoadAction to_mtl_load_action(gfx::load_op op) noexcept;
+[[nodiscard]] MTLStoreAction to_mtl_store_action(gfx::store_op op) noexcept;
 
 [[nodiscard]] NSString *to_ns_string(nx::string_view text) noexcept;
 
@@ -49,15 +49,15 @@ struct MetalTexture {
   /// for every container of `id` here.
   nx::vector<id<MTLTexture>> uavs;
   nx::small_vector<u32, 12> uav_slots;
-  Format format = Format::Unknown;
-  TextureDimension dimension = TextureDimension::Tex2D;
+  gfx::format format = gfx::format::Unknown;
+  gfx::texture_dimension dimension = gfx::texture_dimension::Tex2D;
   u32 width = 0;
   u32 height = 0;
   u32 mip_levels = 1;
   u32 layers = 1;
   u32 sample_count = 1;
-  TextureUsageFlags usage = TextureUsage::None;
-  ResourceState state = ResourceState::Undefined;
+  gfx::texture_usage_flags usage = gfx::texture_usage::None;
+  gfx::resource_state state = gfx::resource_state::Undefined;
   u32 bindless_slot = BINDLESS_INVALID_INDEX;
   bool heap_backed = false;
   bool owns_texture = true;
@@ -66,7 +66,7 @@ struct MetalTexture {
 struct MetalBuffer {
   id<MTLBuffer> buffer = nil;
   u64 size = 0;
-  BufferUsageFlags usage = BufferUsage::None;
+  gfx::buffer_usage_flags usage = gfx::buffer_usage::None;
   void *mapped = nullptr;
   bool heap_backed = false;
   bool bindless_visible = false;
@@ -84,7 +84,7 @@ struct MetalHeap {
 
 struct MetalShader {
   id<MTLLibrary> library = nil;
-  ShaderReflection reflection;
+  gfx::shader_reflection reflection;
 };
 
 struct MetalPipeline {
@@ -210,12 +210,12 @@ struct MetalSwapchain {
   /// header; nil on iOS, where the layer is handed to us already attached.
   id layer_host = nil;
   id<CAMetalDrawable> drawable = nil;
-  Extent2D extent = {};
-  PresentMode present_mode = PresentMode::Fifo;
-  SurfaceAlpha alpha = SurfaceAlpha::Opaque;
+  gfx::extent2d extent = {};
+  gfx::present_mode present_mode = gfx::present_mode::Fifo;
+  gfx::surface_alpha alpha = gfx::surface_alpha::Opaque;
   /// One handle for the swapchain's lifetime; the MTLTexture behind it is the
   /// frame's drawable, or the device's own texture offscreen.
-  TextureHandle backbuffer;
+  gfx::texture_handle backbuffer;
   /// The backbuffer is a texture this device made rather than a layer's
   /// drawable, so there is nothing to acquire and nothing to present.
   bool offscreen = false;
@@ -229,11 +229,11 @@ struct MetalDeviceState {
   id gpu_crash_observer = nil;
   bool gpu_crash_detailed = false;
 
-  nx::slot_map<MetalSwapchain, SwapchainHandle> swapchains;
+  nx::slot_map<MetalSwapchain, gfx::swapchain_handle> swapchains;
   /// The swapchains the frame being recorded acquired, in acquire order.
-  nx::small_vector<SwapchainHandle, 4> acquired;
+  nx::small_vector<gfx::swapchain_handle, 4> acquired;
   /// Every swapchain's; see MetalDevice::swapchain_format.
-  Format swapchain_format = Format::Unknown;
+  gfx::format swapchain_format = gfx::format::Unknown;
 
   dispatch_semaphore_t frame_semaphore = nil;
   u32 frames_in_flight = 2;
@@ -255,24 +255,24 @@ struct MetalDeviceState {
   /// Pipeline compilation and archive mutation may run on worker threads.
   nx::mutex pipeline_archive_lock;
 
-  nx::sync_slot_map<MetalTexture, TextureHandle> textures;
-  nx::sync_slot_map<MetalBuffer, BufferHandle> buffers;
-  nx::slot_map<MetalSampler, SamplerHandle> samplers;
-  nx::slot_map<MetalHeap, HeapHandle> heaps;
-  nx::slot_map<MetalShader, ShaderHandle> shaders;
-  nx::sync_slot_map<MetalPipeline, PipelineHandle> pipelines;
+  nx::sync_slot_map<MetalTexture, gfx::texture_handle> textures;
+  nx::sync_slot_map<MetalBuffer, gfx::buffer_handle> buffers;
+  nx::slot_map<MetalSampler, gfx::sampler_handle> samplers;
+  nx::slot_map<MetalHeap, gfx::heap_handle> heaps;
+  nx::slot_map<MetalShader, gfx::shader_handle> shaders;
+  nx::sync_slot_map<MetalPipeline, gfx::pipeline_handle> pipelines;
 
   /// A resource freed during frame N stays alive - handle and bindless slot
   /// included - until the GPU passes N, so a recycled index cannot stomp a slot
   /// still being read.
   struct PendingDelete {
     u64 frame = 0;
-    TextureHandle texture;
-    BufferHandle buffer;
-    SamplerHandle sampler;
-    PipelineHandle pipeline;
-    ShaderHandle shader;
-    HeapHandle heap;
+    gfx::texture_handle texture;
+    gfx::buffer_handle buffer;
+    gfx::sampler_handle sampler;
+    gfx::pipeline_handle pipeline;
+    gfx::shader_handle shader;
+    gfx::heap_handle heap;
     /// The held frame work it waits on first; 0 once only frames are left.
     u64 hold = 0;
   };
@@ -283,8 +283,8 @@ struct MetalDeviceState {
   u64 retire_hold = 0;
   u64 retire_released = 0;
   struct PendingReplace {
-    TextureHandle target;
-    TextureHandle replacement;
+    gfx::texture_handle target;
+    gfx::texture_handle replacement;
     /// The last held frame work that may name the target's old image.
     u64 after = 0;
   };
@@ -300,7 +300,7 @@ inline constexpr u32 PUSH_CONSTANT_BUFFER_INDEX = 0;
 inline constexpr u32 BINDLESS_BUFFER_INDEX = 1;
 
 [[nodiscard]] bool create_bindless_heap(MetalDeviceState &state,
-                                        const DeviceCaps &caps);
+                                        const gfx::device_caps &caps);
 void write_texture_descriptor(MetalDeviceState &state, u32 slot,
                               id<MTLTexture> texture) noexcept;
 void write_rw_texture_descriptor(MetalDeviceState &state, u32 slot,
