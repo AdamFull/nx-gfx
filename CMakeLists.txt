@@ -23,7 +23,9 @@ set(NX_GFX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # points that at a local checkout).
 if (NOT TARGET nx::foundation)
     include(FetchContent)
-    set(NX_FOUNDATION_TESTS ${NX_GFX_TESTS})
+    if (NOT DEFINED NX_FOUNDATION_TESTS)
+        set(NX_FOUNDATION_TESTS ${NX_GFX_TESTS})
+    endif ()
     FetchContent_Declare(nx_foundation
             GIT_REPOSITORY https://github.com/AdamFull/nx-foundation.git
             GIT_TAG b1677f11c4519504f50d64943d08d03429f8f3d2)
