@@ -59,9 +59,12 @@ every command buffer. Pipelines on that route have no layout; each stage maps
 the set's four bindings onto constant heap offsets, so the same SPIR-V runs on
 both, and push constants become push data. `device_caps::descriptor_heap`
 says which. The route is opt-in because no driver passes the suite with it
-yet: NVIDIA 610.62 samples 2D-array and 3D views as zeros through it while
-loads, 2D and cube samples work, and nx2d's engine suite fails six more
-rendering cases on it. `nx_gfx_tests` runs again on it
+yet. On NVIDIA 610.62 a sampled read returns zeros when the same shader also
+reads that image without a sampler (a load or a size query) and its heap index
+is not a constant; the same SPIR-V is correct on the descriptor set, validation
+is silent, and neither the resource masks, the mapping's sampler fields nor
+`NonUniform` change it. That is a driver fault, and the route waits for a fixed
+driver. `nx_gfx_tests` runs again on it
 (`descriptor heaps: ...`).
 
 ## Bindless resources
