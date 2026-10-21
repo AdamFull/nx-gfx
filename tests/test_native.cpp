@@ -14,14 +14,17 @@
 #endif
 #include <vulkan/vulkan.h>
 
-#include <glm/glm.hpp>
-
 #include <atomic>
 #include <cstring>
 
 namespace gfx = nx::gfx;
 
 namespace {
+
+/// The texel the read shader writes out: a float4.
+struct Rgba {
+  float r, g, b, a;
+};
 
 constexpr const char *INSTANCE_EXTENSION = "VK_KHR_get_surface_capabilities2";
 constexpr const char *DEVICE_EXTENSION = "VK_EXT_memory_budget";
@@ -302,14 +305,14 @@ TEST_CASE("rhi native: commands recorded into the device's own command "
     const gfx::buffer_handle out = gfx::create_buffer(
         device, {
                     .name = "native read out",
-                    .size = sizeof(glm::vec4),
+                    .size = sizeof(Rgba),
                     .usage = gfx::buffer_usage::Storage |
                              gfx::buffer_usage::DeviceAddress,
                     .memory = gfx::memory_usage::Readback,
                     .persistently_mapped = true,
                 });
     REQUIRE(out.valid());
-    std::memset(gfx::buffer_mapped(device, out), 0, sizeof(glm::vec4));
+    std::memset(gfx::buffer_mapped(device, out), 0, sizeof(Rgba));
 
     gfx::command_list *cmd = nullptr;
     REQUIRE(((cmd = gfx::begin_headless_frame(device)) != nullptr));
@@ -333,7 +336,7 @@ TEST_CASE("rhi native: commands recorded into the device's own command "
                                    .from = gfx::resource_state::CopyDst,
                                    .to = gfx::resource_state::ShaderReadOnly});
     const Push push{.out = gfx::buffer_address(device, out),
-                    .texture = NxTexture2D<glm::vec4>::from_indices(
+                    .texture = NxTexture2D<Rgba>::from_indices(
                                    gfx::texture_index(device, texture), 0)
                                    .value};
     gfx::bind_pipeline(*cmd, read);
@@ -342,9 +345,9 @@ TEST_CASE("rhi native: commands recorded into the device's own command "
     REQUIRE(gfx::end_headless_frame(device));
     gfx::wait_idle(device);
 
-    glm::vec4 got;
+    Rgba got;
     std::memcpy(&got, gfx::buffer_mapped(device, out), sizeof(got));
-    CHECK(got == glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
+    CHECK((got.r == 0.25f && got.g == 0.5f && got.b == 0.75f && got.a == 1.0f));
 
     gfx::destroy_buffer(device, out);
     gfx::destroy_texture(device, texture);

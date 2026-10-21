@@ -1,8 +1,36 @@
+cmake_minimum_required(VERSION 3.21)
+project(nx_gfx LANGUAGES C CXX)
+
 # nx-gfx: the nx::gfx graphics library over Vulkan (Metal on Apple) and its
 # Slang shader library. Its public headers are include/nx/gfx/; src/ is
 # private and includes itself from this directory ("src/vulkan/...").
+option(NX_GFX_TESTS "Build nx_gfx_tests (on nx-foundation's nxtest)" ${PROJECT_IS_TOP_LEVEL})
+
+if (PROJECT_IS_TOP_LEVEL)
+    set(CMAKE_CXX_STANDARD 20)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    set(CMAKE_CXX_EXTENSIONS OFF)
+    set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+endif ()
+if (APPLE)
+    enable_language(OBJC OBJCXX)
+endif ()
 
 set(NX_GFX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# nx-foundation is the consumer's when it has one; built on its own, nx-gfx
+# fetches the commit it was tested with (FETCHCONTENT_SOURCE_DIR_NX_FOUNDATION
+# points that at a local checkout).
+if (NOT TARGET nx::foundation)
+    include(FetchContent)
+    set(NX_FOUNDATION_TESTS ${NX_GFX_TESTS})
+    FetchContent_Declare(nx_foundation
+            GIT_REPOSITORY https://github.com/AdamFull/nx-foundation.git
+            GIT_TAG b1677f11c4519504f50d64943d08d03429f8f3d2)
+    FetchContent_MakeAvailable(nx_foundation)
+endif ()
+
+add_subdirectory(third_party)
 
 set(NX_GFX_PUBLIC_HEADERS
         include/nx/gfx/bindless.h
@@ -173,7 +201,6 @@ set_target_properties(nx_gfx PROPERTIES FOLDER "nx-gfx")
 source_group(TREE "${NX_GFX_ROOT}"
         FILES ${NX_GFX_PUBLIC_HEADERS} ${NX_GFX_SOURCES} ${NX_GFX_HEADERS})
 
-option(NX_GFX_TESTS "Build nx_gfx_tests (needs nx-foundation's nxtest)" OFF)
 if (NX_GFX_TESTS)
     add_subdirectory(tests)
 endif ()
