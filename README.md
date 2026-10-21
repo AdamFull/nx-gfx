@@ -69,6 +69,7 @@ in the public headers names a backend type.
 | `src/` | the implementation; `src/vulkan/`, `src/metal/` hold the backends |
 | `cmake/NxGfxShaders.cmake` | `nx_gfx_compile_slang`, to build shaders against the library |
 | `tests/` | `nx_gfx_tests`, on nx-foundation's nxtest |
+| `docs/guide.md` | the contracts behind the API: lifetimes, routes, shared types, frames, holds, native interop, crash reports |
 
 ## Shaders
 
