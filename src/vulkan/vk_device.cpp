@@ -93,16 +93,13 @@ template <usize N>
   return false;
 }
 
-/// The routes @p desc turns off, with NX_GFX_DISABLE_ROUTES's
-/// ("dynamic_rendering", comma-separated); none in Shipping.
-[[nodiscard]] gfx::route_flags disabled_routes(const gfx::device_desc &desc) {
-#if NX_BUILD_SHIPPING
-  (void)desc;
-  return gfx::route::None;
-#else
-  gfx::route_flags out = desc.disable_routes;
-  const std::optional<nx::string> env =
-      nx::os::environment_variable("NX_GFX_DISABLE_ROUTES");
+/// The routes the environment variable @p variable names
+/// ("dynamic_rendering", "descriptor_heap", comma-separated); none in
+/// Shipping.
+[[nodiscard]] gfx::route_flags routes_from_environment(const char *variable) {
+  gfx::route_flags out = gfx::route::None;
+#if !NX_BUILD_SHIPPING
+  const std::optional<nx::string> env = nx::os::environment_variable(variable);
   if (!env)
     return out;
   nx::string_view rest = env->view();
@@ -113,11 +110,15 @@ template <usize N>
                                           : rest.substr(comma + 1);
     if (name == "dynamic_rendering")
       out |= gfx::route::DynamicRendering;
+    else if (name == "descriptor_heap")
+      out |= gfx::route::DescriptorHeap;
     else if (!name.empty())
-      nx::logw(nx::log::rhi, "NX_GFX_DISABLE_ROUTES: no route '{}'", name);
+      nx::logw(nx::log::rhi, "{}: no route '{}'", variable, name);
   }
-  return out;
+#else
+  (void)variable;
 #endif
+  return out;
 }
 
 /// The last link of a pNext chain a client may have added to.
@@ -131,6 +132,7 @@ template <usize N>
 } // namespace
 
 DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
+                                        const gfx::route_flags enabled,
                                         VkPhysicalDevice candidate,
                                         const VkPhysicalDeviceProperties &props,
                                         const u32 instance_api_version) {
@@ -170,6 +172,9 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
   const bool ext_imageless_framebuffer =
       listed(available, VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME) &&
       listed(available, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
+  const bool ext_descriptor_heap =
+      listed(available, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME) &&
+      listed(available, VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
   const char *const store_op_none_extension =
       listed(available, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME)
           ? VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME
@@ -223,6 +228,10 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
   VkPhysicalDeviceImagelessFramebufferFeatures imageless{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES};
+  VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptor_heap{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+  VkPhysicalDeviceMaintenance5Features maintenance5{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES};
   VkPhysicalDeviceSynchronization2Features sync2{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
   VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic{
@@ -276,6 +285,10 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
       chain(extended_dynamic);
   }
 
+  if (ext_descriptor_heap) {
+    chain(descriptor_heap);
+    chain(maintenance5);
+  }
   if (ext_device_fault_khr)
     chain(fault_khr);
   else if (ext_device_fault_ext)
@@ -357,6 +370,11 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
   require(out.dynamic_rendering || has_imageless,
           has_dynamic ? "imageless framebuffers (dynamic rendering is disabled)"
                       : "dynamic rendering or imageless framebuffers");
+  out.descriptor_heap = ext_descriptor_heap && out.dynamic_rendering &&
+                        descriptor_heap.descriptorHeap &&
+                        maintenance5.maintenance5 &&
+                        enabled.has_any(gfx::route::DescriptorHeap) &&
+                        !disabled.has_any(gfx::route::DescriptorHeap);
   out.store_op_none = out.core_13 || store_op_none_extension != nullptr;
   out.store_op_none_extension = out.core_13 ? nullptr : store_op_none_extension;
   require(has_sync2, "synchronization2");
@@ -644,8 +662,9 @@ bool VulkanDevice::select_physical_device() {
       continue;
     }
 
-    const DeviceRoutes routes = probe_routes(
-        m_disabled_routes, candidate, props.properties, m_instance_api_version);
+    const DeviceRoutes routes =
+        probe_routes(m_disabled_routes, m_enabled_routes, candidate,
+                     props.properties, m_instance_api_version);
     if (!routes.missing.empty()) {
       nx::string missing;
       for (const nx::string_view feature : routes.missing) {
@@ -739,6 +758,7 @@ bool VulkanDevice::select_physical_device() {
   m_caps.discrete =
       props.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
   m_caps.descriptor_indexing = true;
+  m_caps.descriptor_heap = m_routes.descriptor_heap;
   m_caps.buffer_device_address = true;
   m_caps.dynamic_rendering = m_routes.dynamic_rendering;
   m_caps.synchronization2 = true;
@@ -926,6 +946,10 @@ bool VulkanDevice::create_logical_device(
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
   VkPhysicalDeviceImagelessFramebufferFeatures imageless{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES};
+  VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptor_heap{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+  VkPhysicalDeviceMaintenance5Features maintenance5{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES};
   VkPhysicalDeviceSynchronization2Features sync2{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
   VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic{
@@ -1029,6 +1053,15 @@ bool VulkanDevice::create_logical_device(
     }
     device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
     device_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+  }
+
+  if (m_routes.descriptor_heap) {
+    descriptor_heap.descriptorHeap = VK_TRUE;
+    maintenance5.maintenance5 = VK_TRUE;
+    chain(descriptor_heap);
+    chain(maintenance5);
+    device_extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
   }
 
   if (m_gpu_crash.enabled()) {
@@ -1372,7 +1405,14 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
     }
   }
 
-  m_disabled_routes = disabled_routes(desc);
+#if NX_BUILD_SHIPPING
+  m_disabled_routes = gfx::route::None;
+#else
+  m_disabled_routes =
+      desc.disable_routes | routes_from_environment("NX_GFX_DISABLE_ROUTES");
+#endif
+  m_enabled_routes =
+      desc.enable_routes | routes_from_environment("NX_GFX_ENABLE_ROUTES");
   if (!create_instance(desc) || !select_physical_device() ||
       !create_logical_device(desc.native_clients) || !create_allocator() ||
       !create_bindless_heap() || !create_default_sampler() ||
@@ -1396,8 +1436,9 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
                   "frame timeline");
 
   m_render_passes.init(m_device, m_routes.store_op_none);
-  nx::logi(nx::log::rhi, "passes record through {}",
-           m_routes.dynamic_rendering ? "dynamic rendering" : "render passes");
+  nx::logi(nx::log::rhi, "passes record through {}, bindless slots in {}",
+           m_routes.dynamic_rendering ? "dynamic rendering" : "render passes",
+           m_routes.descriptor_heap ? "descriptor heaps" : "a descriptor set");
 
   if (!m_uploader.init(this)) {
     m_init_error = "The Vulkan upload service could not be initialized.";
@@ -1494,18 +1535,7 @@ void VulkanDevice::shutdown() noexcept {
     m_pipeline_cache = VK_NULL_HANDLE;
   }
 
-  if (m_pipeline_layout != VK_NULL_HANDLE) {
-    vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
-    m_pipeline_layout = VK_NULL_HANDLE;
-  }
-  if (m_bindless.layout != VK_NULL_HANDLE)
-    vkDestroyDescriptorSetLayout(m_device, m_bindless.layout, nullptr);
-  if (m_bindless.pool != VK_NULL_HANDLE)
-    vkDestroyDescriptorPool(m_device, m_bindless.pool, nullptr);
-  if (m_bindless.globals != VK_NULL_HANDLE)
-    vmaDestroyBuffer(m_allocator, m_bindless.globals,
-                     m_bindless.globals_allocation);
-  m_bindless = {};
+  destroy_bindless();
 
   for (auto &frame : m_frames) {
     if (frame.slot.pool != VK_NULL_HANDLE)
@@ -1737,7 +1767,7 @@ void VulkanDevice::collect_garbage(
       texture->srv = pending.view;
       texture->sampled_base_mip = pending.base_mip;
       write_texture_descriptor(nx::cast<u32>(pending.texture.index()),
-                               texture->srv);
+                               *texture);
     }
     m_pending_texture_views.erase(m_pending_texture_views.begin() +
                                   nx::cast<isize>(i));
@@ -1836,11 +1866,7 @@ void *VulkanCommandContext::begin_native() noexcept {
 void VulkanCommandContext::end_native() noexcept {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
     return;
-  const VkDescriptorSet set = m_device->bindless_set();
-  for (const VkPipelineBindPoint point :
-       {VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_BIND_POINT_COMPUTE})
-    vkCmdBindDescriptorSets(m_cmd, point, m_device->pipeline_layout(),
-                            BINDLESS_SET, 1, &set, 0, nullptr);
+  m_device->bind_bindless(m_cmd);
 }
 
 } // namespace nx::gfx::detail

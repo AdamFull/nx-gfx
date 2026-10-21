@@ -33,28 +33,50 @@ VmaAllocationCreateFlags to_vma_flags(const gfx::memory_usage usage,
 
 } // namespace
 
+namespace {
+
+/// Attachment and storage views cannot use a CUBE type; they address the
+/// faces as an array instead.
+[[nodiscard]] VkImageViewCreateInfo flat_view_info(const VulkanTexture &texture,
+                                                   const u32 mip) noexcept {
+  VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  info.image = texture.image;
+  info.viewType = texture.dimension == gfx::texture_dimension::Tex3D
+                      ? VK_IMAGE_VIEW_TYPE_3D
+                  : texture.layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                       : VK_IMAGE_VIEW_TYPE_2D;
+  info.format = to_vk_format(texture.format);
+  info.subresourceRange.aspectMask = to_vk_aspect(texture.format);
+  info.subresourceRange.baseMipLevel = mip;
+  info.subresourceRange.levelCount = 1;
+  info.subresourceRange.layerCount = texture.layers;
+  return info;
+}
+
+} // namespace
+
+VkImageViewCreateInfo sampled_view_info(const VulkanTexture &texture,
+                                        const u32 base_mip) noexcept {
+  VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  info.image = texture.image;
+  info.viewType = to_vk_view_type(texture.dimension);
+  info.format = to_vk_format(texture.format);
+  info.subresourceRange.aspectMask = to_vk_aspect(texture.format);
+  info.subresourceRange.baseMipLevel = base_mip;
+  info.subresourceRange.levelCount = texture.mip_levels - base_mip;
+  info.subresourceRange.layerCount = texture.layers;
+  return info;
+}
+
+VkImageViewCreateInfo storage_view_info(const VulkanTexture &texture,
+                                        const u32 mip) noexcept {
+  return flat_view_info(texture, mip);
+}
+
 bool VulkanDevice::create_texture_views(VulkanTexture &texture,
                                         const nx::string_view name) {
-  const VkFormat format = to_vk_format(texture.format);
-  const VkImageAspectFlags aspect = to_vk_aspect(texture.format);
-
-  // Attachment and storage views cannot use a CUBE type; they address the
-  // faces as an array instead.
-  const VkImageViewType flat_type =
-      texture.dimension == gfx::texture_dimension::Tex3D ? VK_IMAGE_VIEW_TYPE_3D
-      : texture.layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                           : VK_IMAGE_VIEW_TYPE_2D;
-
-  const auto make_view = [&](const VkImageViewType type, const u32 base_mip,
-                             const u32 mip_count, VkImageView &out) -> bool {
-    VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    info.image = texture.image;
-    info.viewType = type;
-    info.format = format;
-    info.subresourceRange.aspectMask = aspect;
-    info.subresourceRange.baseMipLevel = base_mip;
-    info.subresourceRange.levelCount = mip_count;
-    info.subresourceRange.layerCount = texture.layers;
+  const auto make_view = [&](const VkImageViewCreateInfo &info,
+                             VkImageView &out) -> bool {
     return NX_VK_DEVICE_CHECK(*this, vkCreateImageView(m_device, &info, nullptr,
                                                        &out)) == VK_SUCCESS;
   };
@@ -64,8 +86,7 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
       return false;
     const u32 base_mip =
         nx::min(texture.sampled_base_mip, texture.mip_levels - 1u);
-    if (!make_view(to_vk_view_type(texture.dimension), base_mip,
-                   texture.mip_levels - base_mip, texture.srv))
+    if (!make_view(sampled_view_info(texture, base_mip), texture.srv))
       return false;
     set_object_name(vk_handle_value(texture.srv), VK_OBJECT_TYPE_IMAGE_VIEW,
                     nx::format("{}.sampled", name));
@@ -74,7 +95,7 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
   if (texture.usage &
       (gfx::texture_usage::RenderTarget | gfx::texture_usage::DepthStencil |
        gfx::texture_usage::Transient)) {
-    if (!make_view(flat_type, 0, 1, texture.rtv))
+    if (!make_view(flat_view_info(texture, 0), texture.rtv))
       return false;
     set_object_name(vk_handle_value(texture.rtv), VK_OBJECT_TYPE_IMAGE_VIEW,
                     nx::format("{}.attachment", name));
@@ -83,7 +104,7 @@ bool VulkanDevice::create_texture_views(VulkanTexture &texture,
   if (texture.usage & gfx::texture_usage::Storage) {
     for (u32 mip = 0; mip < texture.mip_levels; ++mip) {
       VkImageView uav = VK_NULL_HANDLE;
-      if (!make_view(flat_type, mip, 1, uav))
+      if (!make_view(storage_view_info(texture, mip), uav))
         return false;
       texture.uavs.push_back(uav);
       set_object_name(vk_handle_value(uav), VK_OBJECT_TYPE_IMAGE_VIEW,
@@ -184,8 +205,8 @@ VulkanDevice::create_texture(const gfx::texture_desc &desc) {
                   desc.name);
 
   if (stored.srv != VK_NULL_HANDLE)
-    write_texture_descriptor(nx::cast<u32>(handle.index()), stored.srv);
-  for (const VkImageView uav : stored.uavs) {
+    write_texture_descriptor(nx::cast<u32>(handle.index()), stored);
+  for (u32 mip = 0; mip < stored.uavs.size(); ++mip) {
     const u32 slot = alloc_rw_slot();
     if (slot == BINDLESS_INVALID_INDEX) {
       nx::loge(nx::log::rhi, "'{}': out of rw-texture slots, destroying",
@@ -195,7 +216,7 @@ VulkanDevice::create_texture(const gfx::texture_desc &desc) {
       return {};
     }
     stored.uav_indices.push_back(slot);
-    write_rw_texture_descriptor(slot, uav);
+    write_rw_texture_descriptor(slot, stored, mip);
   }
 
   return handle;
@@ -332,8 +353,8 @@ VulkanDevice::create_texture_in_heap(const gfx::texture_desc &desc,
                   desc.name);
 
   if (stored.srv != VK_NULL_HANDLE)
-    write_texture_descriptor(nx::cast<u32>(handle.index()), stored.srv);
-  for (const VkImageView uav : stored.uavs) {
+    write_texture_descriptor(nx::cast<u32>(handle.index()), stored);
+  for (u32 mip = 0; mip < stored.uavs.size(); ++mip) {
     const u32 slot = alloc_rw_slot();
     if (slot == BINDLESS_INVALID_INDEX) {
       nx::loge(nx::log::rhi, "'{}': out of rw-texture slots, destroying",
@@ -343,7 +364,7 @@ VulkanDevice::create_texture_in_heap(const gfx::texture_desc &desc,
       return {};
     }
     stored.uav_indices.push_back(slot);
-    write_rw_texture_descriptor(slot, uav);
+    write_rw_texture_descriptor(slot, stored, mip);
   }
 
   return handle;
@@ -393,7 +414,7 @@ bool VulkanDevice::swap_texture(
     return false;
   std::swap(*held, *fresh);
   if (held->srv != VK_NULL_HANDLE)
-    write_texture_descriptor(nx::cast<u32>(target.index()), held->srv);
+    write_texture_descriptor(nx::cast<u32>(target.index()), *held);
 
   // replacement now owns the old target allocation. Its handle was never
   // published, so it is safe to consume through the normal deferred path.
@@ -440,14 +461,7 @@ bool VulkanDevice::set_texture_view_base_mip(const gfx::texture_handle handle,
   if (!has_pending && tex->sampled_base_mip == base_mip)
     return true;
 
-  VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-  info.image = tex->image;
-  info.viewType = to_vk_view_type(tex->dimension);
-  info.format = to_vk_format(tex->format);
-  info.subresourceRange.aspectMask = to_vk_aspect(tex->format);
-  info.subresourceRange.baseMipLevel = base_mip;
-  info.subresourceRange.levelCount = tex->mip_levels - base_mip;
-  info.subresourceRange.layerCount = tex->layers;
+  const VkImageViewCreateInfo info = sampled_view_info(*tex, base_mip);
   VkImageView view = VK_NULL_HANDLE;
   if (NX_VK_DEVICE_CHECK(*this, vkCreateImageView(m_device, &info, nullptr,
                                                   &view)) != VK_SUCCESS)
@@ -596,7 +610,8 @@ VulkanDevice::create_sampler(const gfx::sampler_desc &desc) {
   }
   set_object_name(vk_handle_value(sampler.sampler), VK_OBJECT_TYPE_SAMPLER,
                   desc.name);
-  write_sampler_descriptor(nx::cast<u32>(handle.index()), sampler.sampler);
+  write_sampler_descriptor(nx::cast<u32>(handle.index()), sampler.sampler,
+                           info);
   return handle;
 }
 

@@ -595,6 +595,20 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
   info.pColorBlendState = job.color_count > 0 ? &color_blend : nullptr;
   info.pDynamicState = &dynamic;
   info.layout = m_pipeline_layout;
+  // A heap pipeline has no layout: each stage maps the set's bindings onto
+  // the heaps.
+  const VkShaderDescriptorSetAndBindingMappingInfoEXT mappings =
+      heap_mappings();
+  VkPipelineCreateFlags2CreateInfo heap_flags{
+      VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO};
+  if (m_routes.descriptor_heap) {
+    heap_flags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
+    heap_flags.pNext = info.pNext;
+    info.pNext = &heap_flags;
+    info.layout = VK_NULL_HANDLE;
+    for (u32 i = 0; i < stage_count; ++i)
+      stages[i].pNext = &mappings;
+  }
 
   VulkanCompiledPipeline compiled;
   compiled.m_device = m_device;
@@ -674,6 +688,16 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
   info.stage.module = job.shader;
   info.stage.pName = job.entry.c_str();
   info.layout = m_pipeline_layout;
+  const VkShaderDescriptorSetAndBindingMappingInfoEXT mappings =
+      heap_mappings();
+  VkPipelineCreateFlags2CreateInfo heap_flags{
+      VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO};
+  if (m_routes.descriptor_heap) {
+    heap_flags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
+    info.pNext = &heap_flags;
+    info.layout = VK_NULL_HANDLE;
+    info.stage.pNext = &mappings;
+  }
 
   VulkanCompiledPipeline compiled;
   compiled.m_device = m_device;
@@ -758,6 +782,13 @@ void VulkanCommandContext::push_constants(const void *data, const u32 size,
                                           const u32 offset) {
   if (m_device == nullptr)
     return;
+  if (m_device->descriptor_heap()) {
+    VkPushDataInfoEXT push{VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT};
+    push.offset = offset;
+    push.data = {data, size};
+    vkCmdPushDataEXT(m_cmd, &push);
+    return;
+  }
   vkCmdPushConstants(m_cmd, m_device->pipeline_layout(), VK_SHADER_STAGE_ALL,
                      offset, size, data);
 }

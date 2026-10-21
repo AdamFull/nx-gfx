@@ -11,12 +11,16 @@ namespace nx::gfx {
 
 /// Vulkan feature routes a device takes where it has the feature. Disabling
 /// one makes the device take the fallback, so the fallback is tested on any
-/// machine; Shipping builds ignore it.
+/// machine; Shipping builds ignore disabling.
 enum class route : u8 {
   None = 0,
   /// Dynamic rendering; the fallback is render passes over imageless
   /// framebuffers.
   DynamicRendering = 1 << 0,
+  /// Bindless slots in descriptor heaps (VK_EXT_descriptor_heap); the
+  /// fallback is one update-after-bind descriptor set. Taken only when asked
+  /// for (device_desc::enable_routes): no driver passes the suite with it yet.
+  DescriptorHeap = 1 << 1,
 };
 NX_ENUM_FLAGS_DEFINE(route, route_flags)
 
@@ -40,8 +44,12 @@ struct device_desc {
   u32 frames_in_flight = 2;
   /// Asked what to enable before the device is made, and only then.
   std::span<native_device_client *const> native_clients{};
-  /// Outside Shipping, NX_GFX_DISABLE_ROUTES adds to it ("dynamic_rendering").
+  /// Outside Shipping, NX_GFX_DISABLE_ROUTES adds to it ("dynamic_rendering",
+  /// "descriptor_heap").
   route_flags disable_routes = route::None;
+  /// Routes a device takes only when asked, where it has them; outside
+  /// Shipping, NX_GFX_ENABLE_ROUTES adds to it ("descriptor_heap").
+  route_flags enable_routes = route::None;
 };
 
 struct device_caps {
@@ -52,6 +60,9 @@ struct device_caps {
   bool discrete = false;
 
   bool descriptor_indexing = false;
+  /// Whether bindless slots live in descriptor heaps rather than in one
+  /// descriptor set.
+  bool descriptor_heap = false;
   bool buffer_device_address = false;
 
   /// Whether passes record through dynamic rendering. A Vulkan device without

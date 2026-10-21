@@ -97,7 +97,10 @@ rendering records through render passes over imageless framebuffers instead;
 `device_caps::dynamic_rendering` says which. `device_desc::disable_routes` (or
 `NX_GFX_DISABLE_ROUTES=dynamic_rendering`, outside Shipping) puts a device on
 the fallback, so it is tested on any machine: the suite runs again that way
-under the ctest label `routes`. The Metal backend is maintained with
+under the ctest label `routes`. Descriptor heaps
+(`VK_EXT_descriptor_heap`) can hold the bindless slots instead of a descriptor
+set where asked for (`device_desc::enable_routes`); the guide says why that
+route is opt-in. The Metal backend is maintained with
 the Vulkan one but is not exercised by this repository's tests off Apple
 hardware.
 

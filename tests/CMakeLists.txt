@@ -32,3 +32,8 @@ nxtest_discover_tests(nx_gfx_tests LABELS gfx TIMEOUT 180)
 nxtest_discover_tests(nx_gfx_tests PREFIX "render passes: "
         LABELS gfx routes TIMEOUT 180
         ENVIRONMENT NX_GFX_DISABLE_ROUTES=dynamic_rendering)
+# And on the descriptor-heap route, where the device has it; elsewhere this
+# runs the default route again.
+nxtest_discover_tests(nx_gfx_tests PREFIX "descriptor heaps: "
+        LABELS gfx routes TIMEOUT 180
+        ENVIRONMENT NX_GFX_ENABLE_ROUTES=descriptor_heap)

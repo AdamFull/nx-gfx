@@ -73,6 +73,14 @@ struct VulkanTexture {
   bool owns_image = true;
 };
 
+/// The views create_texture_views makes, as create infos: the sampled view
+/// from @p base_mip down, and one storage view per mip. The descriptor-heap
+/// route writes slots from these rather than from the views.
+[[nodiscard]] VkImageViewCreateInfo
+sampled_view_info(const VulkanTexture &texture, u32 base_mip) noexcept;
+[[nodiscard]] VkImageViewCreateInfo
+storage_view_info(const VulkanTexture &texture, u32 mip) noexcept;
+
 struct VulkanBuffer {
   VkBuffer buffer = VK_NULL_HANDLE;
   VmaAllocation allocation = VK_NULL_HANDLE;
@@ -119,10 +127,33 @@ struct VulkanGraphicsPipelineCompileJob;
 struct VulkanComputePipelineCompileJob;
 class VulkanCompiledPipeline;
 
+/// One heap of the descriptor-heap route: a mapped buffer the slots are
+/// written into, with the range the implementation reserves at its end.
+struct DescriptorHeapBuffer {
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VmaAllocation allocation = nullptr;
+  u8 *data = nullptr;
+  VkDeviceAddress address = 0;
+  VkDeviceSize size = 0;
+  VkDeviceSize reserved_offset = 0;
+  VkDeviceSize reserved_size = 0;
+};
+
 struct BindlessHeap {
+  /// The descriptor-set route.
   VkDescriptorPool pool = VK_NULL_HANDLE;
   VkDescriptorSetLayout layout = VK_NULL_HANDLE;
   VkDescriptorSet set = VK_NULL_HANDLE;
+  /// The descriptor-heap route: textures, then storage textures, then the
+  /// globals uniform in the resource heap; samplers in the sampler heap.
+  /// Every pipeline maps the set's bindings onto these offsets.
+  DescriptorHeapBuffer resources;
+  DescriptorHeapBuffer samplers;
+  VkDeviceSize image_stride = 0;
+  VkDeviceSize sampler_stride = 0;
+  VkDeviceSize rw_offset = 0;
+  VkDeviceSize globals_offset = 0;
+  VkDescriptorSetAndBindingMappingEXT mappings[4] = {};
   /// The globals uniform, followed by the null page its address names.
   VkBuffer globals = VK_NULL_HANDLE;
   VmaAllocation globals_allocation = nullptr;
@@ -144,6 +175,8 @@ struct DeviceRoutes {
   /// extension named here.
   bool store_op_none = false;
   const char *store_op_none_extension = nullptr;
+  /// Bindless slots in descriptor heaps (with maintenance5, which they need).
+  bool descriptor_heap = false;
   bool draw_indirect_count = false;
   bool storage_image_extended_formats = false;
   /// Optional features 3D uses, enabled when the device has them.
@@ -341,7 +374,8 @@ public:
   ~VulkanDevice();
 
   [[nodiscard]] static DeviceRoutes
-  probe_routes(gfx::route_flags disabled, VkPhysicalDevice candidate,
+  probe_routes(gfx::route_flags disabled, gfx::route_flags enabled,
+               VkPhysicalDevice candidate,
                const VkPhysicalDeviceProperties &props,
                u32 instance_api_version);
 
@@ -628,6 +662,15 @@ public:
   [[nodiscard]] VkDescriptorSet bindless_set() const noexcept {
     return m_bindless.set;
   }
+  [[nodiscard]] bool descriptor_heap() const noexcept {
+    return m_routes.descriptor_heap;
+  }
+  /// Binds the bindless slots, set or heaps, for every bind point.
+  void bind_bindless(VkCommandBuffer cmd) const noexcept;
+  /// What a pipeline on the descriptor-heap route maps the bindless set's
+  /// bindings with; chained into each of its stages.
+  [[nodiscard]] VkShaderDescriptorSetAndBindingMappingInfoEXT
+  heap_mappings() const noexcept;
   [[nodiscard]] const VulkanPipeline *
   pipeline(gfx::pipeline_handle handle) const noexcept;
 
@@ -662,6 +705,11 @@ private:
   bool create_bindless_heap();
   bool create_default_sampler();
   bool create_bindless_globals();
+  bool create_descriptor_heaps();
+  bool create_descriptor_heap_buffer(DescriptorHeapBuffer &heap,
+                                     VkDeviceSize alignment,
+                                     nx::string_view name);
+  void destroy_bindless() noexcept;
   bool create_pipeline_cache(nx::string_view path);
   bool create_frame_contexts(u32 frames_in_flight);
 
@@ -701,9 +749,14 @@ private:
   [[nodiscard]] VkResult wait_timeline(u64 value) noexcept;
   void destroy_texture_now(VulkanTexture &texture) noexcept;
 
-  void write_texture_descriptor(u32 index, VkImageView view) noexcept;
-  void write_rw_texture_descriptor(u32 index, VkImageView view) noexcept;
-  void write_sampler_descriptor(u32 index, VkSampler sampler) noexcept;
+  void write_texture_descriptor(u32 index,
+                                const VulkanTexture &texture) noexcept;
+  void write_rw_texture_descriptor(u32 index, const VulkanTexture &texture,
+                                   u32 mip) noexcept;
+  void write_sampler_descriptor(u32 index, VkSampler sampler,
+                                const VkSamplerCreateInfo &info) noexcept;
+  void write_heap_descriptor(const VkResourceDescriptorInfoEXT &resource,
+                             VkDeviceSize offset) noexcept;
   [[nodiscard]] u32 alloc_rw_slot() noexcept;
   void free_rw_slot(u32 slot) noexcept;
 
@@ -714,6 +767,7 @@ private:
   DeviceRoutes m_routes;
   mutable VulkanRenderPasses m_render_passes;
   gfx::route_flags m_disabled_routes = gfx::route::None;
+  gfx::route_flags m_enabled_routes = gfx::route::None;
   VkDevice m_device = VK_NULL_HANDLE;
   VmaAllocator m_allocator = VK_NULL_HANDLE;
   gfx::device_caps m_caps;

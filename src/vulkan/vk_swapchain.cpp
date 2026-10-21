@@ -607,12 +607,7 @@ VkCommandBuffer VulkanDevice::next_command_buffer(CommandSlot &slot) {
     return VK_NULL_HANDLE;
   ++slot.used;
 
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          m_pipeline_layout, BINDLESS_SET, 1, &m_bindless.set,
-                          0, nullptr);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          m_pipeline_layout, BINDLESS_SET, 1, &m_bindless.set,
-                          0, nullptr);
+  bind_bindless(cmd);
   return cmd;
 }
 

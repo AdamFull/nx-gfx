@@ -50,6 +50,20 @@ puts a device that has dynamic rendering on the fallback, so the fallback is
 tested on any machine; Shipping builds ignore both. `nx_gfx_tests` runs every
 case again that way (ctest label `routes`).
 
+Bindless slots live in one update-after-bind descriptor set, or, where a
+device has `VK_EXT_descriptor_heap` and it is asked for
+(`device_desc::enable_routes`, or `NX_GFX_ENABLE_ROUTES=descriptor_heap`
+outside Shipping), in a resource heap and a sampler heap: host-visible
+buffers the slots are written into and bound by address at the start of
+every command buffer. Pipelines on that route have no layout; each stage maps
+the set's four bindings onto constant heap offsets, so the same SPIR-V runs on
+both, and push constants become push data. `device_caps::descriptor_heap`
+says which. The route is opt-in because no driver passes the suite with it
+yet: NVIDIA 610.62 samples 2D-array and 3D views as zeros through it while
+loads, 2D and cube samples work, and nx2d's engine suite fails six more
+rendering cases on it. `nx_gfx_tests` runs again on it
+(`descriptor heaps: ...`).
+
 ## Bindless resources
 
 Every texture, storage view and sampler gets a slot in one bindless table,
