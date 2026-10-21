@@ -216,7 +216,14 @@ VkCommandBuffer VulkanUploader::ensure_batch() {
   return m_batch_cmd;
 }
 
-void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value) {
+void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value,
+                                   const bool after_frames) {
+  VkSemaphoreSubmitInfo frames{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  frames.semaphore = m_device->m_timeline;
+  frames.value = m_device->m_timeline_value;
+  frames.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  const bool wait = after_frames && frames.value > 0;
+
   VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
   signal.semaphore = m_timeline;
   signal.value = value;
@@ -227,6 +234,8 @@ void VulkanUploader::submit_signal(const VkCommandBuffer cmd, const u64 value) {
   cmd_info.commandBuffer = cmd;
 
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  submit.waitSemaphoreInfoCount = wait ? 1u : 0u;
+  submit.pWaitSemaphoreInfos = wait ? &frames : nullptr;
   submit.commandBufferInfoCount = 1;
   submit.pCommandBufferInfos = &cmd_info;
   submit.signalSemaphoreInfoCount = 1;
@@ -833,7 +842,7 @@ VulkanUploader::read_buffer(const gfx::buffer_handle handle, const u64 offset,
   m_device->copy_profiler().end_zone();
   NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(cmd));
   const u64 value = ++m_value;
-  submit_signal(cmd, value);
+  submit_signal(cmd, value, true);
   chunk->value = value;
   return {{value}, chunk->mapped, size};
 }
@@ -921,7 +930,7 @@ VulkanUploader::read_texture(const gfx::texture_handle handle, const u32 mip,
   m_device->copy_profiler().end_zone();
   NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(cmd));
   const u64 value = ++m_value;
-  submit_signal(cmd, value);
+  submit_signal(cmd, value, true);
   chunk->value = value;
   return {{value}, chunk->mapped, size};
 }

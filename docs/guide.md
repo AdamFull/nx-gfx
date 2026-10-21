@@ -197,7 +197,9 @@ work, and a replacement swaps at once.
 copy queue (or the graphics queue where there is none) and return an
 `upload_ticket`; `upload_complete`,
 `wait_upload` and `wait_uploads` observe them, and `upload_stats` counts the
-work; `read_buffer` and `read_texture` read back. A texture upload may take a
+work; `read_buffer` and `read_texture` read back, after the frames submitted
+before them on the GPU, so a readback sees what those frames and the client
+queues they wait on wrote. A texture upload may take a
 `texture_data`: a byte span and its subresource
 table, validated (`validate_image_upload`) before anything is copied.
 

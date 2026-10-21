@@ -110,8 +110,10 @@ upload_buffer(device &dev, buffer_handle buffer, u64 dst_offset,
 clear_buffer(device &dev, buffer_handle buffer,
              resource_state final_state = resource_state::ShaderReadOnly);
 
-// The source must not be in use on the graphics queue: read after
-// wait_idle(), or from a resource only uploads touch.
+// A readback waits on the GPU for the frames submitted before it and sees what
+// they wrote, and through their waits (vk::wait_before_frame) what client
+// queues wrote. A frame recorded after it must not write the source until the
+// readback is complete.
 [[nodiscard]] readback_result read_buffer(device &dev, buffer_handle buffer,
                                           u64 offset, u64 size);
 [[nodiscard]] readback_result read_texture(device &dev, texture_handle texture,

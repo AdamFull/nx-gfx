@@ -146,7 +146,8 @@ private:
   u8 *ring_alloc(u64 size, u64 alignment, u64 *out_offset);
   Chunk *acquire_chunk(u64 size, bool host_read);
   VkCommandBuffer begin_cmd();
-  void submit_signal(VkCommandBuffer cmd, u64 value);
+  /// A readback first waits for the frames submitted before it.
+  void submit_signal(VkCommandBuffer cmd, u64 value, bool after_frames = false);
   void wait_value(u64 value) noexcept;
   void wait_graphics(u64 value) noexcept;
 
