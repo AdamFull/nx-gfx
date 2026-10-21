@@ -206,5 +206,6 @@ source_group(TREE "${NX_GFX_ROOT}"
         FILES ${NX_GFX_PUBLIC_HEADERS} ${NX_GFX_SOURCES} ${NX_GFX_HEADERS})
 
 if (NX_GFX_TESTS)
+    enable_testing()
     add_subdirectory(tests)
 endif ()
