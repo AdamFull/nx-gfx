@@ -5,6 +5,7 @@ add_executable(nx_gfx_tests
         gfx_interop_probe.h
         owned_device.h
         pipeline_test_utils.h
+        test_frame_wait.cpp
         test_gfx_api.cpp
         test_gfx_interop_layout.cpp
         test_gpu_crash.cpp

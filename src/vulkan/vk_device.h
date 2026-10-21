@@ -521,6 +521,9 @@ public:
   create_texture(const gfx::texture_desc &desc);
   [[nodiscard]] gfx::texture_handle
   wrap_texture(const gfx::vk::wrapped_image &image);
+  [[nodiscard]] VkSemaphore acquire_frame_wait() noexcept;
+  void wait_before_frame(const gfx::vk::timeline_point &point) noexcept;
+  void release_frame_wait(VkSemaphore semaphore) noexcept;
   void destroy_texture(gfx::texture_handle handle) noexcept;
   /// Gives @p target @p replacement's image under its own handle and
   /// bindless index, and takes ownership of @p replacement. Under a hold the
@@ -839,6 +842,22 @@ private:
   /// Copy-timeline value the current frame's graphics submit must wait on so
   /// that resources uploaded before the frame are ready; 0 when none pending.
   u64 m_frame_upload_wait = 0;
+
+  /// A client's timeline that every frame waits on.
+  struct FrameWait {
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    u64 value = 0;
+    bool released = false;
+    /// Once released, the first frame submitted without it.
+    u64 retire_after = 0;
+  };
+  static constexpr usize MAX_FRAME_WAITS = 8;
+  // The frame thread, submitting frame @p frame_value.
+  void add_frame_waits(nx::small_vector<VkSemaphoreSubmitInfo, 8> &waits,
+                       u64 frame_value) noexcept;
+  void collect_frame_waits(u64 completed_timeline_value) noexcept;
+  nx::mutex m_frame_wait_lock;
+  nx::fixed_vector<FrameWait, MAX_FRAME_WAITS> m_frame_waits;
 
   struct PendingDelete {
     u64 timeline_value = 0;

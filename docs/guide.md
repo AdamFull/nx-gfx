@@ -252,6 +252,15 @@ held work can use it, the device drops its views and calls the image's
 from, never uploaded into: uploads hand images between the copy and graphics
 families.
 
+A client whose queue writes what frames read makes frames wait on the GPU
+rather than waiting on the CPU itself. `vk::acquire_frame_wait` hands it a
+timeline semaphore the device owns, at most eight per device; the client
+signals it on its own queue and names each value with `vk::wait_before_frame`,
+after submitting that signal. Every frame submitted from then on waits for the
+newest value named, which costs nothing once reached. `vk::release_frame_wait`
+stops the waits, and the device destroys the semaphore once the first frame
+submitted without it has completed, or with the device.
+
 ## GPU crash reporting
 
 `device_desc::gpu_crash_mode` selects the crash service. `Disabled` collects

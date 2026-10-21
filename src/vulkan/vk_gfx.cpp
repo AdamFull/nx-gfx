@@ -32,6 +32,18 @@ texture_handle wrap(device &dev, const wrapped_image &image) {
   return be(dev).wrap_texture(image);
 }
 
+VkSemaphore acquire_frame_wait(device &dev) {
+  return be(dev).acquire_frame_wait();
+}
+
+void wait_before_frame(device &dev, const timeline_point point) noexcept {
+  be(dev).wait_before_frame(point);
+}
+
+void release_frame_wait(device &dev, const VkSemaphore semaphore) noexcept {
+  be(dev).release_frame_wait(semaphore);
+}
+
 VkResult submit_graphics(device &dev,
                          const std::span<const VkSubmitInfo> submits,
                          const VkFence fence) noexcept {

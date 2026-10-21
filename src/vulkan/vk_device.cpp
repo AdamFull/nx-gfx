@@ -1552,6 +1552,10 @@ void VulkanDevice::shutdown() noexcept {
   }
   m_frames.clear();
 
+  for (const FrameWait &wait : m_frame_waits)
+    vkDestroySemaphore(m_device, wait.semaphore, nullptr);
+  m_frame_waits.clear();
+
   if (m_timeline != VK_NULL_HANDLE) {
     vkDestroySemaphore(m_device, m_timeline, nullptr);
     m_timeline = VK_NULL_HANDLE;
@@ -1756,9 +1760,79 @@ void VulkanDevice::release_retirements(const u64 serial) noexcept {
     }
 }
 
+VkSemaphore VulkanDevice::acquire_frame_wait() noexcept {
+  VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+  type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+  VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+  info.pNext = &type;
+  const nx::scoped_lock<nx::mutex> held(m_frame_wait_lock);
+  if (m_frame_waits.full()) {
+    nx::logw(nx::log::rhi, "acquire_frame_wait: the device has {} already",
+             MAX_FRAME_WAITS);
+    return VK_NULL_HANDLE;
+  }
+  VkSemaphore semaphore = VK_NULL_HANDLE;
+  if (NX_VK_DEVICE_CHECK(*this, vkCreateSemaphore(m_device, &info, nullptr,
+                                                  &semaphore)) != VK_SUCCESS)
+    return VK_NULL_HANDLE;
+  set_object_name(vk_handle_value(semaphore), VK_OBJECT_TYPE_SEMAPHORE,
+                  "frame wait");
+  m_frame_waits.push_back({.semaphore = semaphore});
+  return semaphore;
+}
+
+void VulkanDevice::wait_before_frame(
+    const gfx::vk::timeline_point &point) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_frame_wait_lock);
+  for (FrameWait &wait : m_frame_waits)
+    if (wait.semaphore == point.semaphore && !wait.released)
+      wait.value = nx::max(wait.value, point.value);
+}
+
+void VulkanDevice::release_frame_wait(const VkSemaphore semaphore) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_frame_wait_lock);
+  for (FrameWait &wait : m_frame_waits)
+    if (wait.semaphore == semaphore)
+      wait.released = true;
+}
+
+void VulkanDevice::add_frame_waits(
+    nx::small_vector<VkSemaphoreSubmitInfo, 8> &waits,
+    const u64 frame_value) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_frame_wait_lock);
+  for (FrameWait &wait : m_frame_waits) {
+    if (wait.released) {
+      if (wait.retire_after == 0)
+        wait.retire_after = frame_value;
+      continue;
+    }
+    if (wait.value == 0)
+      continue;
+    VkSemaphoreSubmitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    info.semaphore = wait.semaphore;
+    info.value = wait.value;
+    info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    waits.push_back(info);
+  }
+}
+
+void VulkanDevice::collect_frame_waits(
+    const u64 completed_timeline_value) noexcept {
+  const nx::scoped_lock<nx::mutex> held(m_frame_wait_lock);
+  for (usize i = m_frame_waits.size(); i > 0; --i) {
+    const FrameWait &wait = m_frame_waits[i - 1];
+    if (!wait.released || wait.retire_after == 0 ||
+        wait.retire_after > completed_timeline_value)
+      continue;
+    vkDestroySemaphore(m_device, wait.semaphore, nullptr);
+    m_frame_waits.erase(m_frame_waits.begin() + nx::cast<isize>(i - 1));
+  }
+}
+
 void VulkanDevice::collect_garbage(
     const u64 completed_timeline_value) noexcept {
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
+  collect_frame_waits(completed_timeline_value);
   for (usize i = 0; i < m_pending_texture_views.size();) {
     const PendingTextureView pending = m_pending_texture_views[i];
     if (pending.publish_after > completed_timeline_value) {

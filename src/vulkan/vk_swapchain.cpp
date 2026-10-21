@@ -868,16 +868,17 @@ bool VulkanDevice::submit_without_present() {
   frame.timeline_value = m_timeline_value;
 
   // No acquire semaphore to wait on and no release semaphore to signal - there
-  // is no swapchain in either direction. Only the upload timeline still
-  // matters, when this frame reads something the transfer queue wrote.
-  VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-  u32 wait_count = 0;
+  // is no swapchain in either direction. Only the upload timeline and the
+  // clients' still matter, when this frame reads what their queues wrote.
+  nx::small_vector<VkSemaphoreSubmitInfo, 8> waits;
   if (m_frame_upload_wait > 0) {
+    VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     wait_info.semaphore = m_uploader.timeline();
     wait_info.value = m_frame_upload_wait;
     wait_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    wait_count = 1;
+    waits.push_back(wait_info);
   }
+  add_frame_waits(waits, m_timeline_value);
 
   VkSemaphoreSubmitInfo signal_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
   signal_info.semaphore = m_timeline;
@@ -885,8 +886,8 @@ bool VulkanDevice::submit_without_present() {
   signal_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
   VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-  submit.waitSemaphoreInfoCount = wait_count;
-  submit.pWaitSemaphoreInfos = wait_count > 0 ? &wait_info : nullptr;
+  submit.waitSemaphoreInfoCount = nx::cast<u32>(waits.size());
+  submit.pWaitSemaphoreInfos = waits.empty() ? nullptr : waits.data();
   submit.commandBufferInfoCount = nx::cast<u32>(cmd_infos.size());
   submit.pCommandBufferInfos = cmd_infos.data();
   submit.signalSemaphoreInfoCount = 1;
@@ -1018,8 +1019,9 @@ bool VulkanDevice::end_frame() {
   m_report_frame.store(m_timeline_value, std::memory_order_release);
   frame.timeline_value = m_timeline_value;
 
-  // Every acquired image, and - when the transfer queue uploaded resources this
-  // frame consumes - the upload timeline too.
+  // Every acquired image, every client timeline frames wait on, and - when the
+  // transfer queue uploaded resources this frame consumes - the upload
+  // timeline too.
   const auto semaphore = [](const VkSemaphore handle, const u64 value) {
     VkSemaphoreSubmitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     info.semaphore = handle;
@@ -1031,6 +1033,7 @@ bool VulkanDevice::end_frame() {
   nx::small_vector<VkSemaphoreSubmitInfo, 8> signals;
   if (m_frame_upload_wait > 0)
     waits.push_back(semaphore(m_uploader.timeline(), m_frame_upload_wait));
+  add_frame_waits(waits, m_timeline_value);
   bool offscreen_only = !acquired.empty();
   for (VulkanSwapchain *const sc : acquired) {
     if (sc->presents()) {

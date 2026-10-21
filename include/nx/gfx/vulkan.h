@@ -40,6 +40,22 @@ struct wrapped_image {
 /// release instead of freeing the image.
 [[nodiscard]] texture_handle wrap(device &dev, const wrapped_image &image);
 
+struct timeline_point {
+  VkSemaphore semaphore = VK_NULL_HANDLE;
+  u64 value = 0;
+};
+
+/// A timeline semaphore the device owns and its frames wait on, for a client
+/// that signals it from a queue of its own. Null once the device has eight.
+[[nodiscard]] VkSemaphore acquire_frame_wait(device &dev);
+/// Every frame submitted from now on waits for @p point, until a later value
+/// of the same semaphore replaces it; a wait already met costs nothing. Name
+/// only a value whose signal the client has submitted, or frames wait forever.
+void wait_before_frame(device &dev, timeline_point point) noexcept;
+/// Frames stop waiting on @p semaphore, and the device destroys it once none
+/// submitted can still wait on it. The client's own signals must be done.
+void release_frame_wait(device &dev, VkSemaphore semaphore) noexcept;
+
 /// Submits to the graphics queue, which the device's frames submit to, under
 /// the same lock: Vulkan requires a queue's submits to be serialized.
 [[nodiscard]] VkResult submit_graphics(device &dev,
