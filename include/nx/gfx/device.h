@@ -9,6 +9,17 @@
 
 namespace nx::gfx {
 
+/// Vulkan feature routes a device takes where it has the feature. Disabling
+/// one makes the device take the fallback, so the fallback is tested on any
+/// machine; Shipping builds ignore it.
+enum class route : u8 {
+  None = 0,
+  /// Dynamic rendering; the fallback is render passes over imageless
+  /// framebuffers.
+  DynamicRendering = 1 << 0,
+};
+NX_ENUM_FLAGS_DEFINE(route, route_flags)
+
 struct device_desc {
   nx::string_view application_name;
   u32 application_version = 0;
@@ -29,6 +40,8 @@ struct device_desc {
   u32 frames_in_flight = 2;
   /// Asked what to enable before the device is made, and only then.
   std::span<native_device_client *const> native_clients{};
+  /// Outside Shipping, NX_GFX_DISABLE_ROUTES adds to it ("dynamic_rendering").
+  route_flags disable_routes = route::None;
 };
 
 struct device_caps {
@@ -41,15 +54,12 @@ struct device_caps {
   bool descriptor_indexing = false;
   bool buffer_device_address = false;
 
-  /// True on every backend in practice, for different reasons: Vulkan
-  /// requires all three at physical-device selection (device creation fails
-  /// otherwise, so this is a fact, not a probe), and Metal has never had a
-  /// render-pass-object or pipeline-barrier API to opt into in the first
-  /// place - its baseline behaviour already is what these name. Present for
-  /// diagnostics and ModuleCapability completeness; no code branches on
-  /// these being false because on a successfully-initialized device they
-  /// never are.
+  /// Whether passes record through dynamic rendering. A Vulkan device without
+  /// it (or with route::DynamicRendering disabled) records through render
+  /// passes instead; Metal always has it.
   bool dynamic_rendering = false;
+  /// True on every device that initialized: Vulkan requires both, and Metal's
+  /// baseline already is what they name.
   bool synchronization2 = false;
   bool timeline_semaphores = false;
 

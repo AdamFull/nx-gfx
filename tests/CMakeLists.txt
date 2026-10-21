@@ -27,3 +27,8 @@ endif ()
 set_target_properties(nx_gfx_tests PROPERTIES FOLDER "nx-gfx")
 
 nxtest_discover_tests(nx_gfx_tests LABELS gfx TIMEOUT 180)
+# Again on the render-pass route, which a device with dynamic rendering takes
+# only when told to.
+nxtest_discover_tests(nx_gfx_tests PREFIX "render passes: "
+        LABELS gfx routes TIMEOUT 180
+        ENVIRONMENT NX_GFX_DISABLE_ROUTES=dynamic_rendering)

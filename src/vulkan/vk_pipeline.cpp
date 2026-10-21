@@ -562,7 +562,28 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
 
   VkGraphicsPipelineCreateInfo info{
       VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-  info.pNext = &rendering;
+  if (m_routes.dynamic_rendering) {
+    info.pNext = &rendering;
+  } else {
+    // Any pass with these formats and sample counts is compatible: a single
+    // subpass ignores resolves, and compatibility ignores load and store ops.
+    RenderPassKey compatible;
+    compatible.color_count = job.color_count;
+    const auto samples = nx::cast<VkSampleCountFlagBits>(job.sample_count);
+    for (u32 i = 0; i < job.color_count; ++i)
+      compatible.colors[i] = {.format = color_formats[i], .samples = samples};
+    if (job.depth_format != gfx::format::Unknown) {
+      compatible.has_depth = true;
+      compatible.depth = {.format = to_vk_format(job.depth_format),
+                          .samples = samples};
+    }
+    info.renderPass = m_render_passes.pass(compatible);
+    if (info.renderPass == VK_NULL_HANDLE) {
+      nx::loge(nx::log::rhi, "create_graphics_pipeline('{}'): no render pass",
+               job.name);
+      return {};
+    }
+  }
   info.stageCount = stage_count;
   info.pStages = stages;
   info.pVertexInputState = &vertex_input;

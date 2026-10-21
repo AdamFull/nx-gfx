@@ -91,7 +91,12 @@ pipeline.
 ## Platforms
 
 Vulkan 1.1 with buffer device addresses and descriptor indexing on Windows,
-Linux and Android; Metal on macOS and iOS. The Metal backend is maintained with
+Linux and Android; Metal on macOS and iOS. A Vulkan device without dynamic
+rendering records through render passes over imageless framebuffers instead;
+`device_caps::dynamic_rendering` says which. `device_desc::disable_routes` (or
+`NX_GFX_DISABLE_ROUTES=dynamic_rendering`, outside Shipping) puts a device on
+the fallback, so it is tested on any machine: the suite runs again that way
+under the ctest label `routes`. The Metal backend is maintained with
 the Vulkan one but is not exercised by this repository's tests off Apple
 hardware.
 

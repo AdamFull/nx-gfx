@@ -28,7 +28,7 @@ if (NOT TARGET nx::foundation)
     endif ()
     FetchContent_Declare(nx_foundation
             GIT_REPOSITORY https://github.com/AdamFull/nx-foundation.git
-            GIT_TAG b1677f11c4519504f50d64943d08d03429f8f3d2)
+            GIT_TAG ae90369b5ff1c583ce89a38588e961db43790d46)
     FetchContent_MakeAvailable(nx_foundation)
 endif ()
 
@@ -108,6 +108,7 @@ else ()
             src/vulkan/vk_gpu_profiler.h
             src/vulkan/vk_device.h
             src/vulkan/vk_mem_alloc_include.h
+            src/vulkan/vk_render_pass.h
             src/vulkan/vk_upload.h)
     list(APPEND NX_GFX_SOURCES
             src/vulkan/vk_bindless.cpp
@@ -117,6 +118,7 @@ else ()
             src/vulkan/vk_device.cpp
             src/vulkan/vk_gfx.cpp
             src/vulkan/vk_pipeline.cpp
+            src/vulkan/vk_render_pass.cpp
             src/vulkan/vk_resources.cpp
             src/vulkan/vk_swapchain.cpp
             src/vulkan/vk_upload.cpp

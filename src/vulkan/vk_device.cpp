@@ -6,6 +6,7 @@
 #include "core/foundation/core/scope_guard.h"
 #include "core/foundation/diagnostics/diagnostic.h"
 #include "core/foundation/diagnostics/log.h"
+#include "core/foundation/platform/os.h"
 
 namespace nx::gfx::detail {
 namespace {
@@ -92,6 +93,33 @@ template <usize N>
   return false;
 }
 
+/// The routes @p desc turns off, with NX_GFX_DISABLE_ROUTES's
+/// ("dynamic_rendering", comma-separated); none in Shipping.
+[[nodiscard]] gfx::route_flags disabled_routes(const gfx::device_desc &desc) {
+#if NX_BUILD_SHIPPING
+  (void)desc;
+  return gfx::route::None;
+#else
+  gfx::route_flags out = desc.disable_routes;
+  const std::optional<nx::string> env =
+      nx::os::environment_variable("NX_GFX_DISABLE_ROUTES");
+  if (!env)
+    return out;
+  nx::string_view rest = env->view();
+  while (!rest.empty()) {
+    const usize comma = rest.find(',');
+    const nx::string_view name = rest.substr(0, comma);
+    rest = comma == nx::string_view::npos ? nx::string_view{}
+                                          : rest.substr(comma + 1);
+    if (name == "dynamic_rendering")
+      out |= gfx::route::DynamicRendering;
+    else if (!name.empty())
+      nx::logw(nx::log::rhi, "NX_GFX_DISABLE_ROUTES: no route '{}'", name);
+  }
+  return out;
+#endif
+}
+
 /// The last link of a pNext chain a client may have added to.
 [[nodiscard]] void **chain_end(void **link) noexcept {
   while (*link != nullptr)
@@ -102,7 +130,8 @@ template <usize N>
 
 } // namespace
 
-DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
+DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
+                                        VkPhysicalDevice candidate,
                                         const VkPhysicalDeviceProperties &props,
                                         const u32 instance_api_version) {
   DeviceRoutes out;
@@ -138,6 +167,15 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       listed(available, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
   const bool ext_depth_stencil_resolve =
       listed(available, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+  const bool ext_imageless_framebuffer =
+      listed(available, VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME) &&
+      listed(available, VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
+  const char *const store_op_none_extension =
+      listed(available, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME)
+          ? VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME
+      : listed(available, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME)
+          ? VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME
+          : nullptr;
   const bool ext_extended_dynamic_state =
       listed(available, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
   const bool ext_device_fault_khr =
@@ -183,6 +221,8 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
   VkPhysicalDeviceDynamicRenderingFeatures dynamic{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
+  VkPhysicalDeviceImagelessFramebufferFeatures imageless{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES};
   VkPhysicalDeviceSynchronization2Features sync2{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
   VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic{
@@ -221,6 +261,8 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
       chain(timeline);
     if (ext_scalar_block_layout)
       chain(scalar);
+    if (ext_imageless_framebuffer)
+      chain(imageless);
   }
 
   if (out.core_13) {
@@ -289,6 +331,10 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
                         (out.core_12 ||
                          (ext_render_pass2 && ext_depth_stencil_resolve)) &&
                         dynamic.dynamicRendering != 0;
+  const bool has_imageless =
+      out.core_12
+          ? features12.imagelessFramebuffer != 0
+          : ext_imageless_framebuffer && imageless.imagelessFramebuffer != 0;
   const bool has_sync2 =
       out.core_13 ? features13.synchronization2 != 0
                   : ext_synchronization2 && sync2.synchronization2 != 0;
@@ -305,7 +351,14 @@ DeviceRoutes VulkanDevice::probe_routes(VkPhysicalDevice candidate,
   require(has_address, "buffer device address");
   require(has_timeline, "timeline semaphores");
   require(has_scalar_layout, "scalar block layout");
-  require(has_dynamic, "dynamic rendering");
+  out.dynamic_rendering =
+      has_dynamic && !disabled.has_any(gfx::route::DynamicRendering);
+  out.imageless_framebuffer = has_imageless;
+  require(out.dynamic_rendering || has_imageless,
+          has_dynamic ? "imageless framebuffers (dynamic rendering is disabled)"
+                      : "dynamic rendering or imageless framebuffers");
+  out.store_op_none = out.core_13 || store_op_none_extension != nullptr;
+  out.store_op_none_extension = out.core_13 ? nullptr : store_op_none_extension;
   require(has_sync2, "synchronization2");
   require(has_extended_dynamic, "extended dynamic state");
   require(draw_params.shaderDrawParameters != 0, "shader draw parameters");
@@ -591,8 +644,8 @@ bool VulkanDevice::select_physical_device() {
       continue;
     }
 
-    const DeviceRoutes routes =
-        probe_routes(candidate, props.properties, m_instance_api_version);
+    const DeviceRoutes routes = probe_routes(
+        m_disabled_routes, candidate, props.properties, m_instance_api_version);
     if (!routes.missing.empty()) {
       nx::string missing;
       for (const nx::string_view feature : routes.missing) {
@@ -687,7 +740,7 @@ bool VulkanDevice::select_physical_device() {
       props.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
   m_caps.descriptor_indexing = true;
   m_caps.buffer_device_address = true;
-  m_caps.dynamic_rendering = true;
+  m_caps.dynamic_rendering = m_routes.dynamic_rendering;
   m_caps.synchronization2 = true;
   m_caps.timeline_semaphores = true;
   m_caps.max_texture_2d = props.properties.limits.maxImageDimension2D;
@@ -871,6 +924,8 @@ bool VulkanDevice::create_logical_device(
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES};
   VkPhysicalDeviceDynamicRenderingFeatures dynamic{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
+  VkPhysicalDeviceImagelessFramebufferFeatures imageless{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES};
   VkPhysicalDeviceSynchronization2Features sync2{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
   VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic{
@@ -938,12 +993,24 @@ bool VulkanDevice::create_logical_device(
     device_extensions.push_back(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
     if (m_routes.draw_indirect_count)
       device_extensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+    if (m_routes.dynamic_rendering) {
+      device_extensions.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+      device_extensions.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+    } else {
+      imageless.imagelessFramebuffer = VK_TRUE;
+      chain(imageless);
+      device_extensions.push_back(VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME);
+      device_extensions.push_back(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME);
+    }
   }
+  if (m_routes.core_12 && !m_routes.dynamic_rendering)
+    features12.imagelessFramebuffer = VK_TRUE;
+  if (!m_routes.dynamic_rendering && m_routes.store_op_none_extension)
+    device_extensions.push_back(m_routes.store_op_none_extension);
 
   if (m_routes.core_13) {
-    features13.dynamicRendering = VK_TRUE;
+    features13.dynamicRendering =
+        m_routes.dynamic_rendering ? VK_TRUE : VK_FALSE;
     features13.synchronization2 = VK_TRUE;
     features13.subgroupSizeControl =
         m_routes.subgroup_size_control ? VK_TRUE : VK_FALSE;
@@ -951,13 +1018,15 @@ bool VulkanDevice::create_logical_device(
         m_routes.subgroup_size_control ? VK_TRUE : VK_FALSE;
     chain(features13);
   } else {
-    dynamic.dynamicRendering = VK_TRUE;
     sync2.synchronization2 = VK_TRUE;
     extended_dynamic.extendedDynamicState = VK_TRUE;
-    chain(dynamic);
     chain(sync2);
     chain(extended_dynamic);
-    device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    if (m_routes.dynamic_rendering) {
+      dynamic.dynamicRendering = VK_TRUE;
+      chain(dynamic);
+      device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    }
     device_extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
     device_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
   }
@@ -1200,8 +1269,10 @@ bool VulkanDevice::route_promoted_entry_points() noexcept {
   require(vkGetBufferDeviceAddressKHR, "vkGetBufferDeviceAddressKHR");
   require(vkGetSemaphoreCounterValueKHR, "vkGetSemaphoreCounterValueKHR");
   require(vkWaitSemaphoresKHR, "vkWaitSemaphoresKHR");
-  require(vkCmdBeginRenderingKHR, "vkCmdBeginRenderingKHR");
-  require(vkCmdEndRenderingKHR, "vkCmdEndRenderingKHR");
+  if (m_routes.dynamic_rendering) {
+    require(vkCmdBeginRenderingKHR, "vkCmdBeginRenderingKHR");
+    require(vkCmdEndRenderingKHR, "vkCmdEndRenderingKHR");
+  }
   require(vkCmdPipelineBarrier2KHR, "vkCmdPipelineBarrier2KHR");
   require(vkCmdWriteTimestamp2KHR, "vkCmdWriteTimestamp2KHR");
   require(vkQueueSubmit2KHR, "vkQueueSubmit2KHR");
@@ -1301,6 +1372,7 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
     }
   }
 
+  m_disabled_routes = disabled_routes(desc);
   if (!create_instance(desc) || !select_physical_device() ||
       !create_logical_device(desc.native_clients) || !create_allocator() ||
       !create_bindless_heap() || !create_default_sampler() ||
@@ -1322,6 +1394,10 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
                                             &m_timeline));
   set_object_name(vk_handle_value(m_timeline), VK_OBJECT_TYPE_SEMAPHORE,
                   "frame timeline");
+
+  m_render_passes.init(m_device, m_routes.store_op_none);
+  nx::logi(nx::log::rhi, "passes record through {}",
+           m_routes.dynamic_rendering ? "dynamic rendering" : "render passes");
 
   if (!m_uploader.init(this)) {
     m_init_error = "The Vulkan upload service could not be initialized.";
@@ -1410,6 +1486,7 @@ void VulkanDevice::shutdown() noexcept {
       vkDestroyPipeline(m_device, pipeline.pipeline, nullptr);
   });
   m_pipelines.clear();
+  m_render_passes.shutdown();
 
   save_pipeline_cache();
   if (m_pipeline_cache != VK_NULL_HANDLE) {

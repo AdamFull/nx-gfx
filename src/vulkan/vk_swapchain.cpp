@@ -383,6 +383,7 @@ bool VulkanDevice::build_swapchain(VulkanSwapchain &sc, const u32 width,
     texture.width = extent.width;
     texture.height = extent.height;
     texture.usage = gfx::texture_usage::RenderTarget;
+    texture.image_usage = info.imageUsage;
     if ((info.imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0)
       texture.usage |= gfx::texture_usage::CopySrc;
     texture.state = gfx::resource_state::Undefined;
@@ -1323,6 +1324,7 @@ bool VulkanDevice::import_composed_images(VulkanSwapchain &sc, const u32 width,
     texture.height = height;
     texture.usage =
         gfx::texture_usage::RenderTarget | gfx::texture_usage::CopySrc;
+    texture.image_usage = info.usage;
     texture.state = gfx::resource_state::Undefined;
     texture.owns_image = false;
     sc.backbuffers.push_back(m_textures.insert(std::move(texture)));

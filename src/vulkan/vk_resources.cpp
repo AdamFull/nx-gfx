@@ -161,6 +161,9 @@ VulkanDevice::create_texture(const gfx::texture_desc &desc) {
                           : 0u;
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
+  texture.image_usage = info.usage;
+  texture.image_flags = info.flags;
+  texture.samples = nx::cast<u32>(info.samples);
   texture.state = gfx::resource_state::Undefined;
   texture.owns_image = true;
 
@@ -305,6 +308,9 @@ VulkanDevice::create_texture_in_heap(const gfx::texture_desc &desc,
                           : 0u;
   texture.layers = info.arrayLayers;
   texture.usage = desc.usage;
+  texture.image_usage = info.usage;
+  texture.image_flags = info.flags;
+  texture.samples = nx::cast<u32>(info.samples);
   texture.state = gfx::resource_state::Undefined;
   texture.owns_image = true;
   texture.allocation = VK_NULL_HANDLE;
@@ -886,6 +892,154 @@ void VulkanCommandContext::barrier(const gfx::texture_barrier *textures,
   vkCmdPipelineBarrier2KHR(m_cmd, &dependency);
 }
 
+namespace {
+
+struct PassColor {
+  const VulkanTexture *texture = nullptr;
+  const VulkanTexture *resolve = nullptr;
+  VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  VkAttachmentStoreOp store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  VkClearValue clear{};
+};
+
+struct PassDepth {
+  const VulkanTexture *texture = nullptr;
+  bool read_only = false;
+  VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  VkAttachmentStoreOp store = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  VkClearValue clear{};
+};
+
+[[nodiscard]] VkSampleCountFlagBits
+samples_of(const VulkanTexture &texture) noexcept {
+  return nx::cast<VkSampleCountFlagBits>(nx::max(texture.samples, 1u));
+}
+
+void begin_rendering(const VkCommandBuffer cmd,
+                     const std::span<const PassColor> colors,
+                     const PassDepth &depth, const VkRect2D area) {
+  nx::fixed_vector<VkRenderingAttachmentInfo, MAX_COLOR_ATTACHMENTS> infos;
+  for (const PassColor &color : colors) {
+    VkRenderingAttachmentInfo info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    info.imageView = color.texture->rtv;
+    info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    info.loadOp = color.load;
+    info.storeOp = color.store;
+    info.clearValue = color.clear;
+    if (color.resolve != nullptr) {
+      info.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+      info.resolveImageView = color.resolve->rtv;
+      info.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+    infos.push_back(info);
+  }
+
+  VkRenderingAttachmentInfo depth_info{
+      VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  if (depth.texture != nullptr) {
+    depth_info.imageView = depth.texture->rtv;
+    depth_info.imageLayout =
+        depth.read_only ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                        : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth_info.loadOp = depth.load;
+    depth_info.storeOp =
+        depth.read_only ? VK_ATTACHMENT_STORE_OP_NONE : depth.store;
+    depth_info.clearValue = depth.clear;
+  }
+
+  VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  info.renderArea = area;
+  info.layerCount = 1;
+  info.colorAttachmentCount = nx::cast<u32>(infos.size());
+  info.pColorAttachments = infos.data();
+  info.pDepthAttachment = depth.texture != nullptr ? &depth_info : nullptr;
+  vkCmdBeginRenderingKHR(cmd, &info);
+}
+
+[[nodiscard]] FramebufferAttachment
+framebuffer_attachment(const VulkanTexture &texture) noexcept {
+  return {.usage = texture.image_usage,
+          .flags = texture.image_flags,
+          .width = texture.width,
+          .height = texture.height,
+          .layers = texture.layers,
+          .format = to_vk_format(texture.format)};
+}
+
+/// The same pass as begin_rendering, as a render pass over an imageless
+/// framebuffer; false if either could not be made.
+[[nodiscard]] bool begin_pass_object(const VkCommandBuffer cmd,
+                                     VulkanRenderPasses &passes,
+                                     const std::span<const PassColor> colors,
+                                     const PassDepth &depth,
+                                     const VkRect2D area) {
+  RenderPassKey pass_key;
+  FramebufferKey framebuffer_key;
+  VkImageView views[MAX_PASS_ATTACHMENTS] = {};
+  VkClearValue clears[MAX_PASS_ATTACHMENTS] = {};
+  u32 count = 0;
+  const auto attach = [&](const VulkanTexture &texture,
+                          const VkClearValue clear) {
+    framebuffer_key.attachments[count] = framebuffer_attachment(texture);
+    views[count] = texture.rtv;
+    clears[count] = clear;
+    ++count;
+  };
+
+  pass_key.color_count = nx::cast<u32>(colors.size());
+  for (usize i = 0; i < colors.size(); ++i) {
+    const PassColor &color = colors[i];
+    pass_key.colors[i] = {.format = to_vk_format(color.texture->format),
+                          .samples = samples_of(*color.texture),
+                          .load = color.load,
+                          .store = color.store,
+                          .resolve_format =
+                              color.resolve != nullptr
+                                  ? to_vk_format(color.resolve->format)
+                                  : VK_FORMAT_UNDEFINED};
+    attach(*color.texture, color.clear);
+  }
+  for (const PassColor &color : colors)
+    if (color.resolve != nullptr)
+      attach(*color.resolve, {});
+  if (depth.texture != nullptr) {
+    pass_key.has_depth = true;
+    pass_key.depth_read_only = depth.read_only;
+    pass_key.depth = {.format = to_vk_format(depth.texture->format),
+                      .samples = samples_of(*depth.texture),
+                      .load = depth.load,
+                      .store = depth.store};
+    attach(*depth.texture, depth.clear);
+  }
+
+  framebuffer_key.pass = passes.pass(pass_key);
+  if (framebuffer_key.pass == VK_NULL_HANDLE)
+    return false;
+  // Every attachment is at least as large as the area drawn.
+  framebuffer_key.width = nx::cast<u32>(area.offset.x) + area.extent.width;
+  framebuffer_key.height = nx::cast<u32>(area.offset.y) + area.extent.height;
+  framebuffer_key.attachment_count = count;
+  const VkFramebuffer framebuffer = passes.framebuffer(framebuffer_key);
+  if (framebuffer == VK_NULL_HANDLE)
+    return false;
+
+  VkRenderPassAttachmentBeginInfo attachments{
+      VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO};
+  attachments.attachmentCount = count;
+  attachments.pAttachments = views;
+  VkRenderPassBeginInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+  info.pNext = &attachments;
+  info.renderPass = framebuffer_key.pass;
+  info.framebuffer = framebuffer;
+  info.renderArea = area;
+  info.clearValueCount = count;
+  info.pClearValues = clears;
+  vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+  return true;
+}
+
+} // namespace
+
 void VulkanCommandContext::begin_render_pass(
     const gfx::render_pass_desc &desc) {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE || m_in_render_pass)
@@ -893,7 +1047,7 @@ void VulkanCommandContext::begin_render_pass(
 
   push_debug_group(desc.name);
 
-  nx::fixed_vector<VkRenderingAttachmentInfo, MAX_COLOR_ATTACHMENTS> colors;
+  nx::fixed_vector<PassColor, MAX_COLOR_ATTACHMENTS> colors;
   u32 width = desc.render_area.extent.width;
   u32 height = desc.render_area.extent.height;
 
@@ -908,62 +1062,46 @@ void VulkanCommandContext::begin_render_pass(
       height = texture->height;
     }
 
-    VkRenderingAttachmentInfo info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    info.imageView = texture->rtv;
-    info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    info.loadOp = to_vk_load_op(attachment.load);
-    info.storeOp = to_vk_store_op(attachment.store);
-    std::memcpy(info.clearValue.color.float32, attachment.clear.color,
+    PassColor color;
+    color.texture = texture;
+    color.load = to_vk_load_op(attachment.load);
+    color.store = to_vk_store_op(attachment.store);
+    std::memcpy(color.clear.color.float32, attachment.clear.color,
                 sizeof(f32) * 4);
-
     if (const VulkanTexture *resolve =
             m_device->texture(attachment.resolve_target);
-        resolve != nullptr && resolve->rtv != VK_NULL_HANDLE) {
-      info.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-      info.resolveImageView = resolve->rtv;
-      info.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    }
-
-    colors.push_back(info);
+        resolve != nullptr && resolve->rtv != VK_NULL_HANDLE)
+      color.resolve = resolve;
+    colors.push_back(color);
   }
 
-  VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  bool has_depth = false;
+  PassDepth depth;
   if (desc.has_depth_stencil) {
-    if (const VulkanTexture *texture =
-            m_device->texture(desc.depth_stencil.texture)) {
-      depth.imageView = texture->rtv;
-      // As the graph's barrier left it: a read-only attachment stays in the
-      // read-only layout, and storing would be a write.
-      const bool read_only = desc.depth_stencil.read_only;
-      depth.imageLayout =
-          read_only ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-      depth.loadOp = to_vk_load_op(desc.depth_stencil.load);
-      depth.storeOp = read_only ? VK_ATTACHMENT_STORE_OP_NONE
-                                : to_vk_store_op(desc.depth_stencil.store);
-      depth.clearValue.depthStencil.depth =
-          desc.depth_stencil.clear.depth_stencil.depth;
-      depth.clearValue.depthStencil.stencil =
-          desc.depth_stencil.clear.depth_stencil.stencil;
-      has_depth = true;
-      if (width == 0 || height == 0) {
-        width = texture->width;
-        height = texture->height;
-      }
+    depth.texture = m_device->texture(desc.depth_stencil.texture);
+    if (depth.texture != nullptr && (width == 0 || height == 0)) {
+      width = depth.texture->width;
+      height = depth.texture->height;
     }
+    // As the graph's barrier left it: a read-only attachment stays in the
+    // read-only layout, and storing would be a write.
+    depth.read_only = desc.depth_stencil.read_only;
+    depth.load = to_vk_load_op(desc.depth_stencil.load);
+    depth.store = to_vk_store_op(desc.depth_stencil.store);
+    depth.clear.depthStencil.depth =
+        desc.depth_stencil.clear.depth_stencil.depth;
+    depth.clear.depthStencil.stencil =
+        desc.depth_stencil.clear.depth_stencil.stencil;
   }
 
-  VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  info.renderArea.offset = {desc.render_area.offset.x,
-                            desc.render_area.offset.y};
-  info.renderArea.extent = {width, height};
-  info.layerCount = 1;
-  info.colorAttachmentCount = nx::cast<u32>(colors.size());
-  info.pColorAttachments = colors.data();
-  info.pDepthAttachment = has_depth ? &depth : nullptr;
-
-  vkCmdBeginRenderingKHR(m_cmd, &info);
+  const VkRect2D area{{desc.render_area.offset.x, desc.render_area.offset.y},
+                      {width, height}};
+  if (m_device->dynamic_rendering()) {
+    begin_rendering(m_cmd, colors, depth, area);
+  } else if (!begin_pass_object(m_cmd, m_device->render_passes(), colors, depth,
+                                area)) {
+    pop_debug_group();
+    return;
+  }
   m_in_render_pass = true;
 
   const gfx::viewport viewport{
@@ -975,7 +1113,10 @@ void VulkanCommandContext::begin_render_pass(
 void VulkanCommandContext::end_render_pass() {
   if (!m_in_render_pass)
     return;
-  vkCmdEndRenderingKHR(m_cmd);
+  if (m_device->dynamic_rendering())
+    vkCmdEndRenderingKHR(m_cmd);
+  else
+    vkCmdEndRenderPass(m_cmd);
   m_in_render_pass = false;
   pop_debug_group();
 }

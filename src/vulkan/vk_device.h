@@ -18,6 +18,7 @@
 #include "src/vulkan/vk_gpu_crash.h"
 #include "src/vulkan/vk_gpu_profiler.h"
 #include "src/vulkan/vk_mem_alloc_include.h"
+#include "src/vulkan/vk_render_pass.h"
 #include "src/vulkan/vk_upload.h"
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 #include "src/vulkan/vk_composition_win32.h"
@@ -62,7 +63,11 @@ struct VulkanTexture {
   u32 mip_levels = 1;
   u32 sampled_base_mip = 0;
   u32 layers = 1;
+  u32 samples = 1;
   gfx::texture_usage_flags usage = gfx::texture_usage::None;
+  /// As the image was created; an imageless framebuffer is made for them.
+  VkImageUsageFlags image_usage = 0;
+  VkImageCreateFlags image_flags = 0;
   gfx::resource_state state = gfx::resource_state::Undefined;
   ImageOwner owner = ImageOwner::Unknown;
   bool owns_image = true;
@@ -131,6 +136,14 @@ struct BindlessHeap {
 struct DeviceRoutes {
   bool core_12 = false;
   bool core_13 = false;
+  /// Passes record through dynamic rendering; otherwise through render passes
+  /// over imageless framebuffers.
+  bool dynamic_rendering = false;
+  bool imageless_framebuffer = false;
+  /// VK_ATTACHMENT_STORE_OP_NONE in a render pass: core from 1.3, else the
+  /// extension named here.
+  bool store_op_none = false;
+  const char *store_op_none_extension = nullptr;
   bool draw_indirect_count = false;
   bool storage_image_extended_formats = false;
   /// Optional features 3D uses, enabled when the device has them.
@@ -328,7 +341,7 @@ public:
   ~VulkanDevice();
 
   [[nodiscard]] static DeviceRoutes
-  probe_routes(VkPhysicalDevice candidate,
+  probe_routes(gfx::route_flags disabled, VkPhysicalDevice candidate,
                const VkPhysicalDeviceProperties &props,
                u32 instance_api_version);
 
@@ -569,6 +582,14 @@ public:
   }
 
   [[nodiscard]] VkDevice vk_device() const noexcept { return m_device; }
+  /// Passes record through dynamic rendering, or through render passes.
+  [[nodiscard]] bool dynamic_rendering() const noexcept {
+    return m_routes.dynamic_rendering;
+  }
+  /// The render-pass route's passes and framebuffers; any thread.
+  [[nodiscard]] VulkanRenderPasses &render_passes() const noexcept {
+    return m_render_passes;
+  }
 
   /// The device's own objects (see native.h).
   [[nodiscard]] gfx::native_device native() const noexcept;
@@ -691,6 +712,8 @@ private:
   VkDebugUtilsMessengerEXT m_messenger = VK_NULL_HANDLE;
   VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
   DeviceRoutes m_routes;
+  mutable VulkanRenderPasses m_render_passes;
+  gfx::route_flags m_disabled_routes = gfx::route::None;
   VkDevice m_device = VK_NULL_HANDLE;
   VmaAllocator m_allocator = VK_NULL_HANDLE;
   gfx::device_caps m_caps;
