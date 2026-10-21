@@ -222,7 +222,9 @@ decoder) reaches them through `nx/gfx/native.h` and, on Vulkan,
 instance, adapter, device, graphics queue and the loader's proc-address
 functions as opaque pointers tagged with their API; `native(dev, texture)` a
 texture's image, sampled view and format; `native_layout` the image layout a
-resource state stands for. Between render passes `begin_native` hands out the
+resource state stands for. A texture in a copy state may take any transfer
+command in that layout, a clear, blit or resolve as well as a copy: the
+state's barriers cover them all. Between render passes `begin_native` hands out the
 command buffer and `end_native` takes it back, binding again what the library may have
 bound over the device's own. A library that frees at once what earlier frames
 used is first given `wait_submitted`, which waits for the frames submitted so
