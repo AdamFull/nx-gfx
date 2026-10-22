@@ -197,6 +197,12 @@ struct DeviceRoutes {
   VulkanFaultRoute device_fault = VulkanFaultRoute::None;
   bool device_fault_vendor_binary = false;
   bool address_binding_report = false;
+  /// NVIDIA's diagnostics config and checkpoints, which Nsight Aftermath
+  /// reads.
+  bool diagnostics_config = false;
+  /// SPIR-V's non-semantic instructions, as shaders built with debug
+  /// information hold: core from 1.3, else this extension.
+  bool non_semantic_info = false;
   /// Only taken up by a profiling build, where Tracy calibrates against these
   /// and resets the copy queue's queries from the host.
   VulkanCalibrationRoute calibrated_timestamps = VulkanCalibrationRoute::None;
@@ -410,6 +416,9 @@ public:
   }
   [[nodiscard]] gfx::gpu_device_status device_status() const noexcept {
     return m_gpu_crash.status();
+  }
+  [[nodiscard]] VulkanAftermath &aftermath() const noexcept {
+    return m_gpu_crash.aftermath();
   }
 
   [[nodiscard]] u32 frames_in_flight() const noexcept {

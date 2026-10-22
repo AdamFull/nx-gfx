@@ -346,6 +346,7 @@ gfx::shader_handle VulkanDevice::create_shader(const gfx::shader_desc &desc) {
     return {};
 
   collect_entry_points(desc.code, desc.code_size, shader.entry_points);
+  aftermath().shader(desc.code, desc.code_size, desc.name);
 
   if (desc.reflection != nullptr)
     shader.reflection = *desc.reflection;

@@ -100,30 +100,38 @@ nx::string gpu_crash_json(const gpu_crash_report &report) {
               nx::json::value(report.vendor_binary.empty()
                                   ? nx::string_view{}
                                   : nx::string_view("gpu-vendor.bin")));
+  nx::json::value attachments = nx::json::value::make_array();
+  attachments.reserve(report.attachments.size());
+  for (const gpu_crash_attachment &attachment : report.attachments)
+    attachments.push_back(nx::json::value(attachment.name));
+  root.insert("attachments", std::move(attachments));
   return nx::json::write(root, {.indent = 2});
 }
 
 bool report_gpu_crash(const gpu_crash_report &report) noexcept {
   try {
     const nx::string json = gpu_crash_json(report);
-    nx::crash::Attachment attachments[2];
-    usize attachment_count = 0;
-    attachments[attachment_count++] = {
+    nx::vector<nx::crash::Attachment> attachments;
+    attachments.push_back({
         .name = "gpu-report.json",
         .bytes = {reinterpret_cast<const u8 *>(json.data()), json.size()},
-    };
+    });
     if (!report.vendor_binary.empty()) {
-      attachments[attachment_count++] = {
+      attachments.push_back({
           .name = "gpu-vendor.bin",
           .bytes = {report.vendor_binary.data(), report.vendor_binary.size()},
-      };
+      });
     }
+    for (const gpu_crash_attachment &attachment : report.attachments)
+      attachments.push_back(
+          {.name = attachment.name,
+           .bytes = {attachment.bytes.data(), attachment.bytes.size()}});
 
     return nx::crash::report({.reason = "GPU command execution failed",
                               .detail = "Structured diagnostics are attached "
                                         "as gpu-report.json.",
                               .kind = "gpu-crash",
-                              .attachments = {attachments, attachment_count}});
+                              .attachments = attachments});
   } catch (...) {
     nx::loge(nx::log::gpu,
              "GPU crash diagnostics could not be assembled or persisted");

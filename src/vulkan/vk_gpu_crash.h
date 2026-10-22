@@ -2,6 +2,7 @@
 
 #include "core/foundation/threading/sync.h"
 #include "nx/gfx/crash.h"
+#include "src/vulkan/vk_aftermath.h"
 #include "src/vulkan/vk_common.h"
 
 #include <atomic>
@@ -12,14 +13,17 @@ enum class VulkanFaultRoute : u8 { None, Khr, Ext };
 
 class VulkanGpuCrashReporter {
 public:
-  void configure(gfx::gpu_crash_mode mode,
-                 bool break_on_validation_error) noexcept;
+  /// Starts Nsight Aftermath, where it is built in, when @p mode is
+  /// Detailed, naming dumps as @p application's.
+  void configure(gfx::gpu_crash_mode mode, bool break_on_validation_error,
+                 nx::string_view application = {}) noexcept;
   void attach(VkDevice device, nx::string_view device_name,
               VulkanFaultRoute route, bool vendor_binary,
               bool address_tracking);
   void reset() noexcept;
 
   [[nodiscard]] bool enabled() const noexcept { return m_enabled; }
+  [[nodiscard]] VulkanAftermath &aftermath() noexcept { return m_aftermath; }
   [[nodiscard]] bool detailed() const noexcept { return m_detailed; }
   [[nodiscard]] gfx::gpu_device_status status() const noexcept {
     return m_lost.load(std::memory_order_acquire)
@@ -81,6 +85,7 @@ private:
   bool m_break_on_validation_error = false;
   bool m_vendor_binary = false;
   bool m_address_tracking = false;
+  VulkanAftermath m_aftermath;
 };
 
 } // namespace nx::gfx::detail

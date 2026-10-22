@@ -1234,6 +1234,7 @@ void VulkanCommandContext::push_debug_group(const nx::string_view name,
     return;
   if (m_zones != nullptr)
     m_device->gpu_profiler().begin_zone(*m_zones, m_cmd, name);
+  m_device->aftermath().checkpoint(m_cmd, name);
   if (!m_device->debug_utils_enabled())
     return;
 

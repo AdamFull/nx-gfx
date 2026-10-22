@@ -287,7 +287,21 @@ still writes the basic report; Detailed mode adds vendor binary data and a
 bounded history from `VK_EXT_device_address_binding_report`. Metal observes
 every command buffer through its completion handler, and Detailed mode adds
 encoder labels, states and debug signposts. Either backend publishes at most
-one report per device.
+one report per device. A report lists the further files it carries in the
+JSON's `attachments`.
+
+On Vulkan, Detailed mode also starts NVIDIA Nsight Aftermath where the build
+found its SDK (`NX_GFX_AFTERMATH_SDK`, found under an installed Nsight
+Graphics by default) and its library loads at run time; elsewhere it is off
+and costs nothing. Aftermath must start before the device is made: the device
+then enables `VK_NV_device_diagnostics_config` and checkpoints, and each debug
+group marks a checkpoint resolved to its label. Every shader module's SPIR-V
+is kept, and the driver's debug information for shaders is collected as
+deferred callbacks, so on device loss the report adds the decoded
+`gpu-aftermath.json` (faulting warps resolved to a shader, its instruction
+and, for SPIR-V built with source debug information, the file and line), the
+raw `gpu-aftermath.nv-gpudmp` and the `.nvdbg` files Nsight Graphics opens it
+with. The wait for the dump is bounded.
 
 ## Testing
 

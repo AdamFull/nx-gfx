@@ -112,11 +112,13 @@ void append_vendor(gfx::gpu_crash_report &out,
 } // namespace
 
 void VulkanGpuCrashReporter::configure(
-    const gfx::gpu_crash_mode mode,
-    const bool break_on_validation_error) noexcept {
+    const gfx::gpu_crash_mode mode, const bool break_on_validation_error,
+    const nx::string_view application) noexcept {
   m_enabled = mode != gfx::gpu_crash_mode::Disabled;
   m_detailed = mode == gfx::gpu_crash_mode::Detailed;
   m_break_on_validation_error = break_on_validation_error;
+  if (m_detailed)
+    (void)m_aftermath.start(application);
 }
 
 void VulkanGpuCrashReporter::attach(const VkDevice device,
@@ -265,6 +267,7 @@ void VulkanGpuCrashReporter::report_device_lost(const char *const call,
       collect_ext(report);
   }
   append_objects_and_bindings(report);
+  m_aftermath.collect(report);
   if (!report_gpu_crash(report))
     nx::loge(nx::log::rhi, "GPU crash report could not be persisted: {}",
              gpu_crash_json(report));

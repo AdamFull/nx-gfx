@@ -52,6 +52,13 @@ struct gpu_encoder_fault {
   nx::vector<nx::string> debug_signposts;
 };
 
+/// A file a report carries beyond its JSON, as a vendor tool's own dump.
+/// The name is a filename component: ASCII letters, digits, '.', '_', '-'.
+struct gpu_crash_attachment {
+  nx::string name;
+  nx::blob<u8> bytes;
+};
+
 /// Backend-neutral crash payload. Backends translate native diagnostics into
 /// this bounded representation; persistence remains owned by nx::crash.
 struct gpu_crash_report {
@@ -67,6 +74,7 @@ struct gpu_crash_report {
   nx::vector<gpu_vendor_fault> vendor_faults;
   nx::vector<gpu_encoder_fault> encoders;
   nx::blob<u8> vendor_binary;
+  nx::vector<gpu_crash_attachment> attachments;
 };
 
 [[nodiscard]] nx::string gpu_crash_json(const gpu_crash_report &report);

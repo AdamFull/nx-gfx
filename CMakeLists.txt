@@ -103,6 +103,7 @@ else ()
     set(NX_GFX_BACKEND "Vulkan")
     list(APPEND NX_GFX_HEADERS
             include/nx/gfx/vulkan.h
+            src/vulkan/vk_aftermath.h
             src/vulkan/vk_common.h
             src/vulkan/vk_gpu_crash.h
             src/vulkan/vk_gpu_profiler.h
@@ -111,6 +112,7 @@ else ()
             src/vulkan/vk_render_pass.h
             src/vulkan/vk_upload.h)
     list(APPEND NX_GFX_SOURCES
+            src/vulkan/vk_aftermath.cpp
             src/vulkan/vk_bindless.cpp
             src/vulkan/vk_common.cpp
             src/vulkan/vk_gpu_crash.cpp
@@ -174,6 +176,7 @@ else ()
 
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set_source_files_properties(
+                src/vulkan/vk_aftermath.cpp
                 src/vulkan/vk_bindless.cpp
                 src/vulkan/vk_common.cpp
                 src/vulkan/vk_gpu_crash.cpp
@@ -191,6 +194,37 @@ else ()
             VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
 
     target_link_libraries(nx_gfx PUBLIC nx::volk nx::vma nx::vulkan_headers)
+
+    # Nsight Aftermath: GPU crash dumps on NVIDIA, where its SDK is found (an
+    # installed Nsight Graphics carries one). Its library is loaded at run
+    # time, from beside the executable or else from the SDK, so a machine
+    # without it runs without dumps.
+    if (WIN32 OR (UNIX AND NOT ANDROID AND NOT APPLE))
+        set(_nx_gfx_aftermath_guess "")
+        if (WIN32)
+            file(TO_CMAKE_PATH "$ENV{ProgramFiles}" _nx_gfx_program_files)
+            file(GLOB _nx_gfx_aftermath_found LIST_DIRECTORIES true
+                    "${_nx_gfx_program_files}/NVIDIA Corporation/Nsight Graphics */SDKs/NsightAftermathSDK/*")
+            if (_nx_gfx_aftermath_found)
+                list(SORT _nx_gfx_aftermath_found COMPARE NATURAL ORDER DESCENDING)
+                list(GET _nx_gfx_aftermath_found 0 _nx_gfx_aftermath_guess)
+            endif ()
+        endif ()
+        set(NX_GFX_AFTERMATH_SDK "${_nx_gfx_aftermath_guess}" CACHE PATH
+                "Nsight Aftermath SDK for GPU crash dumps on NVIDIA; empty for none")
+        if (NX_GFX_AFTERMATH_SDK AND EXISTS "${NX_GFX_AFTERMATH_SDK}/include/GFSDK_Aftermath.h")
+            if (WIN32)
+                set(_nx_gfx_aftermath_library "${NX_GFX_AFTERMATH_SDK}/lib/x64/GFSDK_Aftermath_Lib.x64.dll")
+            else ()
+                set(_nx_gfx_aftermath_library "${NX_GFX_AFTERMATH_SDK}/lib/x64/libGFSDK_Aftermath_Lib.x64.so")
+            endif ()
+            target_include_directories(nx_gfx SYSTEM PRIVATE "${NX_GFX_AFTERMATH_SDK}/include")
+            target_compile_definitions(nx_gfx PRIVATE
+                    NX_GFX_AFTERMATH=1
+                    "NX_GFX_AFTERMATH_LIBRARY=\"${_nx_gfx_aftermath_library}\"")
+            message(STATUS "nx_gfx: Nsight Aftermath from ${NX_GFX_AFTERMATH_SDK}")
+        endif ()
+    endif ()
     if (WIN32)
         target_link_libraries(nx_gfx PRIVATE d3d11 dxgi dcomp)
     endif ()

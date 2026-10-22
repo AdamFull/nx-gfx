@@ -190,6 +190,11 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
       listed(available, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
   const bool ext_address_binding =
       listed(available, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
+  const bool ext_non_semantic_info =
+      listed(available, VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
+  const bool ext_diagnostics =
+      listed(available, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME) &&
+      listed(available, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
   const bool ext_calibrated_khr =
       listed(available, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
   const bool ext_calibrated_ext =
@@ -247,6 +252,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
   VkPhysicalDeviceAddressBindingReportFeaturesEXT address_binding{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
+  VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnostics{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};
   VkPhysicalDeviceMeshShaderFeaturesEXT mesh{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
   VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT image_atomic_int64{
@@ -296,6 +303,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
     chain(fault_ext);
   if (ext_address_binding)
     chain(address_binding);
+  if (ext_diagnostics)
+    chain(diagnostics);
   if (ext_mesh_shader)
     chain(mesh);
   if (ext_image_atomic_int64)
@@ -420,6 +429,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
   }
   out.address_binding_report =
       ext_address_binding && address_binding.reportAddressBinding;
+  out.diagnostics_config = ext_diagnostics && diagnostics.diagnosticsConfig;
+  out.non_semantic_info = out.core_13 || ext_non_semantic_info;
   out.host_query_reset = out.core_12 && features12.hostQueryReset;
   out.calibrated_timestamps = ext_calibrated_khr ? VulkanCalibrationRoute::Khr
                               : ext_calibrated_ext
@@ -966,6 +977,8 @@ bool VulkanDevice::create_logical_device(
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
   VkPhysicalDeviceAddressBindingReportFeaturesEXT address_binding{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
+  VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnostics{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};
   VkPhysicalDeviceMeshShaderFeaturesEXT mesh{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
   VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT image_atomic_int64{
@@ -976,6 +989,9 @@ bool VulkanDevice::create_logical_device(
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayQueryFeaturesKHR ray_query{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+
+  VkDeviceDiagnosticsConfigCreateInfoNV diagnostics_config{
+      VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV};
 
   nx::small_vector<const char *, 24> device_extensions;
   device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
@@ -1070,6 +1086,9 @@ bool VulkanDevice::create_logical_device(
     device_extensions.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
   }
 
+  if (!m_routes.core_13 && m_routes.non_semantic_info)
+    device_extensions.push_back(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
+
   if (m_gpu_crash.enabled()) {
     if (m_routes.device_fault == VulkanFaultRoute::Khr) {
       fault_khr.deviceFault = VK_TRUE;
@@ -1087,6 +1106,16 @@ bool VulkanDevice::create_logical_device(
               : VK_FALSE;
       chain(fault_ext);
       device_extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    }
+    if (m_gpu_crash.aftermath().active() && m_routes.diagnostics_config) {
+      diagnostics.diagnosticsConfig = VK_TRUE;
+      chain(diagnostics);
+      diagnostics_config.flags = VulkanAftermath::diagnostics_flags();
+      chain(diagnostics_config);
+      device_extensions.push_back(
+          VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+      device_extensions.push_back(
+          VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
     }
     if (m_gpu_crash.detailed() && m_debug_utils &&
         m_routes.address_binding_report) {
@@ -1235,6 +1264,8 @@ bool VulkanDevice::create_logical_device(
                           m_debug_utils && m_routes.address_binding_report;
   if (address_tracking)
     address_tracking = rebuild_debug_messenger(true);
+  m_gpu_crash.aftermath().enable_checkpoints(m_gpu_crash.aftermath().active() &&
+                                             m_routes.diagnostics_config);
   m_gpu_crash.attach(m_device, m_device_name, m_routes.device_fault,
                      m_gpu_crash.detailed() &&
                          m_routes.device_fault_vendor_binary,
@@ -1369,7 +1400,8 @@ bool VulkanDevice::create_frame_contexts(const u32 frames_in_flight) {
 bool VulkanDevice::init(const gfx::device_desc &desc) {
   m_init_error.clear();
   m_init_report = {.failure = gfx::device_init_failure::Failed};
-  m_gpu_crash.configure(desc.gpu_crash_mode, desc.break_on_validation_error);
+  m_gpu_crash.configure(desc.gpu_crash_mode, desc.break_on_validation_error,
+                        desc.application_name);
   m_report_frame.store(0, std::memory_order_relaxed);
 
   if (desc.native_driver.custom()) {
