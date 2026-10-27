@@ -67,6 +67,14 @@ is silent, and neither the resource masks, the mapping's sampler fields nor
 driver. `nx_gfx_tests` runs again on it
 (`descriptor heaps: ...`).
 
+Outside Shipping, `NX_GFX_PIPELINE_STATISTICS` (any value) has every pipeline
+compile log what the driver reports of its executables, a line each
+(`pipeline '<name>' <executable>, <statistic> <value>, ...`), where the device
+has `VK_KHR_pipeline_executable_properties`: on NVIDIA, among others, the
+registers a thread takes, which bound how many warps a multiprocessor holds.
+It is for profiling: capturing the statistics may slow compiles. Metal reports
+nothing.
+
 ## Bindless resources
 
 Every texture, storage view and sampler gets a slot in one bindless table,

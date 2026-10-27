@@ -210,6 +210,9 @@ struct DeviceRoutes {
   /// Win32 memory and semaphore import, for presenting through
   /// DirectComposition when the surface cannot composite alpha.
   bool win32_interop = false;
+  /// What a pipeline's compile reports of its executables, such as their
+  /// registers (VK_KHR_pipeline_executable_properties).
+  bool pipeline_statistics = false;
   /// Empty when the device can do everything the engine needs.
   nx::small_vector<nx::string_view, 16> missing;
 };
@@ -713,6 +716,8 @@ private:
   compile_graphics_pipeline(const VulkanGraphicsPipelineCompileJob &job) const;
   [[nodiscard]] VulkanCompiledPipeline
   compile_compute_pipeline(const VulkanComputePipelineCompileJob &job) const;
+  /// Logs what @p pipeline's compile reported of each of its executables.
+  void log_pipeline_statistics(VkPipeline pipeline, nx::string_view name) const;
   /// gfx::pipeline_job's compile step, on a VulkanPipelineJob payload.
   static bool compile_job(void *payload);
 
@@ -789,6 +794,9 @@ private:
   mutable VulkanRenderPasses m_render_passes;
   gfx::route_flags m_disabled_routes = gfx::route::None;
   gfx::route_flags m_enabled_routes = gfx::route::None;
+  /// Outside Shipping, NX_GFX_PIPELINE_STATISTICS asks each compile to log
+  /// its pipeline's statistics, where the device has them.
+  bool m_pipeline_statistics = false;
   VkDevice m_device = VK_NULL_HANDLE;
   VmaAllocator m_allocator = VK_NULL_HANDLE;
   gfx::device_caps m_caps;

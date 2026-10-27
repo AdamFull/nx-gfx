@@ -212,6 +212,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
       listed(available, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
   const bool ext_ray_query = ext_acceleration_structure &&
                              listed(available, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+  const bool ext_executables =
+      listed(available, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
 
   // A feature struct may only be chained when the version or the extension that
   // defines it is there, so the chain is built from what this device has.
@@ -264,6 +266,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayQueryFeaturesKHR ray_query{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executables{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
 
   chain(draw_params);
 
@@ -315,6 +319,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
     chain(acceleration);
   if (ext_ray_query)
     chain(ray_query);
+  if (ext_executables)
+    chain(executables);
 
   vkGetPhysicalDeviceFeatures2(candidate, &features);
 
@@ -416,6 +422,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
       ext_acceleration_structure && acceleration.accelerationStructure;
   out.ray_queries =
       ext_ray_query && out.acceleration_structures && ray_query.rayQuery;
+  out.pipeline_statistics =
+      ext_executables && executables.pipelineExecutableInfo;
   out.storage_image_extended_formats =
       features.features.shaderStorageImageExtendedFormats != 0;
   out.sample_rate_shading = features.features.sampleRateShading != 0;
@@ -989,6 +997,8 @@ bool VulkanDevice::create_logical_device(
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayQueryFeaturesKHR ray_query{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executables{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
 
   VkDeviceDiagnosticsConfigCreateInfoNV diagnostics_config{
       VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV};
@@ -1154,6 +1164,13 @@ bool VulkanDevice::create_logical_device(
     ray_query.rayQuery = VK_TRUE;
     chain(ray_query);
     device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+  }
+  m_pipeline_statistics = m_pipeline_statistics && m_routes.pipeline_statistics;
+  if (m_pipeline_statistics) {
+    executables.pipelineExecutableInfo = VK_TRUE;
+    chain(executables);
+    device_extensions.push_back(
+        VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
   }
 
 #if NX_PROFILE_ENABLED
@@ -1412,7 +1429,8 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
       m_init_error = nx::format(
           "Graphics driver '{}' does not export vkGetInstanceProcAddr.",
           desc.native_driver.identity);
-      nx::logc(nx::log::rhi, "graphics driver '{}' has no vkGetInstanceProcAddr",
+      nx::logc(nx::log::rhi,
+               "graphics driver '{}' has no vkGetInstanceProcAddr",
                desc.native_driver.identity);
       return false;
     }
@@ -1422,7 +1440,8 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
           "Graphics driver '{}' does not expose the required Vulkan loader "
           "entry points.",
           desc.native_driver.identity);
-      nx::logc(nx::log::rhi, "graphics driver '{}' has an incomplete Vulkan loader",
+      nx::logc(nx::log::rhi,
+               "graphics driver '{}' has an incomplete Vulkan loader",
                desc.native_driver.identity);
       return false;
     }
@@ -1451,6 +1470,10 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
 #endif
   m_enabled_routes =
       desc.enable_routes | routes_from_environment("NX_GFX_ENABLE_ROUTES");
+#if !NX_BUILD_SHIPPING
+  m_pipeline_statistics =
+      nx::os::environment_variable("NX_GFX_PIPELINE_STATISTICS").has_value();
+#endif
   if (!create_instance(desc) || !select_physical_device() ||
       !create_logical_device(desc.native_clients) || !create_allocator() ||
       !create_bindless_heap() || !create_default_sampler() ||

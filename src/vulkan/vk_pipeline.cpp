@@ -225,7 +225,8 @@ bool VulkanDevice::create_pipeline_cache(const nx::string_view path) {
       if (initial.size() >= 16 + VK_UUID_SIZE) {
         const u8 *uuid = initial.data() + 16;
         if (std::memcmp(uuid, props.pipelineCacheUUID, VK_UUID_SIZE) != 0) {
-          nx::logd(nx::log::rhi, "pipeline cache is for another device, ignoring");
+          nx::logd(nx::log::rhi,
+                   "pipeline cache is for another device, ignoring");
           initial = {};
         }
       }
@@ -336,7 +337,8 @@ void collect_entry_points(const void *const code, const usize bytes,
 
 gfx::shader_handle VulkanDevice::create_shader(const gfx::shader_desc &desc) {
   if (desc.code == nullptr || desc.code_size == 0 || desc.code_size % 4 != 0) {
-    nx::loge(nx::log::rhi, "create_shader('{}'): invalid SPIR-V blob", desc.name);
+    nx::loge(nx::log::rhi, "create_shader('{}'): invalid SPIR-V blob",
+             desc.name);
     return {};
   }
 
@@ -611,6 +613,11 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
       stages[i].pNext = &mappings;
   }
 
+  if (m_pipeline_statistics) {
+    info.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+    heap_flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+  }
+
   VulkanCompiledPipeline compiled;
   compiled.m_device = m_device;
   compiled.m_bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -626,6 +633,8 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
     nx::loge(nx::log::rhi, "create_graphics_pipeline('{}') failed", job.name);
     return {};
   }
+  if (m_pipeline_statistics)
+    log_pipeline_statistics(compiled.m_pipeline, job.name);
   return compiled;
 }
 
@@ -700,6 +709,11 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
     info.stage.pNext = &mappings;
   }
 
+  if (m_pipeline_statistics) {
+    info.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+    heap_flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+  }
+
   VulkanCompiledPipeline compiled;
   compiled.m_device = m_device;
   compiled.m_bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
@@ -711,7 +725,60 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
     nx::loge(nx::log::rhi, "create_compute_pipeline('{}') failed", job.name);
     return {};
   }
+  if (m_pipeline_statistics)
+    log_pipeline_statistics(compiled.m_pipeline, job.name);
   return compiled;
+}
+
+void VulkanDevice::log_pipeline_statistics(const VkPipeline pipeline,
+                                           const nx::string_view name) const {
+  VkPipelineInfoKHR info{VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+  info.pipeline = pipeline;
+  u32 count = 0;
+  if (vkGetPipelineExecutablePropertiesKHR(m_device, &info, &count, nullptr) !=
+      VK_SUCCESS)
+    return;
+  nx::small_vector<VkPipelineExecutablePropertiesKHR, 4> executables(count);
+  for (VkPipelineExecutablePropertiesKHR &executable : executables)
+    executable = {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR};
+  if (vkGetPipelineExecutablePropertiesKHR(m_device, &info, &count,
+                                           executables.data()) != VK_SUCCESS)
+    return;
+  for (u32 e = 0; e < count; ++e) {
+    VkPipelineExecutableInfoKHR executable{
+        VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
+    executable.pipeline = pipeline;
+    executable.executableIndex = e;
+    u32 stat_count = 0;
+    if (vkGetPipelineExecutableStatisticsKHR(m_device, &executable, &stat_count,
+                                             nullptr) != VK_SUCCESS)
+      continue;
+    nx::small_vector<VkPipelineExecutableStatisticKHR, 16> stats(stat_count);
+    for (VkPipelineExecutableStatisticKHR &stat : stats)
+      stat = {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR};
+    if (vkGetPipelineExecutableStatisticsKHR(m_device, &executable, &stat_count,
+                                             stats.data()) != VK_SUCCESS)
+      continue;
+    nx::string line;
+    for (const VkPipelineExecutableStatisticKHR &stat : stats) {
+      switch (stat.format) {
+      case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:
+        line = nx::format("{}, {} {}", line, stat.name, stat.value.b32 != 0);
+        break;
+      case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:
+        line = nx::format("{}, {} {}", line, stat.name, stat.value.i64);
+        break;
+      case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:
+        line = nx::format("{}, {} {}", line, stat.name, stat.value.u64);
+        break;
+      default:
+        line = nx::format("{}, {} {}", line, stat.name, stat.value.f64);
+        break;
+      }
+    }
+    nx::logi(nx::log::rhi, "pipeline '{}' {}{}", name, executables[e].name,
+             line);
+  }
 }
 
 gfx::pipeline_handle
@@ -890,7 +957,8 @@ void VulkanCommandContext::dispatch_indirect(const gfx::buffer_handle buffer,
 
 void VulkanCommandContext::begin_compute_pass(const nx::string_view name) {
   if (m_in_render_pass) {
-    nx::loge(nx::log::rhi, "begin_compute_pass('{}') inside a render pass", name);
+    nx::loge(nx::log::rhi, "begin_compute_pass('{}') inside a render pass",
+             name);
     return;
   }
   push_debug_group(name);
