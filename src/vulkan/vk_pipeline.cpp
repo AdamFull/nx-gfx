@@ -617,6 +617,11 @@ VulkanCompiledPipeline VulkanDevice::compile_graphics_pipeline(
     info.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     heap_flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
   }
+  if (!m_pipeline_representations.empty()) {
+    info.flags |= VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+    heap_flags.flags |=
+        VK_PIPELINE_CREATE_2_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+  }
 
   VulkanCompiledPipeline compiled;
   compiled.m_device = m_device;
@@ -713,6 +718,11 @@ VulkanCompiledPipeline VulkanDevice::compile_compute_pipeline(
     info.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     heap_flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
   }
+  if (!m_pipeline_representations.empty()) {
+    info.flags |= VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+    heap_flags.flags |=
+        VK_PIPELINE_CREATE_2_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+  }
 
   VulkanCompiledPipeline compiled;
   compiled.m_device = m_device;
@@ -778,6 +788,55 @@ void VulkanDevice::log_pipeline_statistics(const VkPipeline pipeline,
     }
     nx::logi(nx::log::rhi, "pipeline '{}' {}{}", name, executables[e].name,
              line);
+    if (!m_pipeline_representations.empty())
+      write_pipeline_representations(executable, name, executables[e].name);
+  }
+}
+
+void VulkanDevice::write_pipeline_representations(
+    const VkPipelineExecutableInfoKHR &executable, const nx::string_view name,
+    const nx::string_view stage) const {
+  u32 count = 0;
+  if (vkGetPipelineExecutableInternalRepresentationsKHR(
+          m_device, &executable, &count, nullptr) != VK_SUCCESS ||
+      count == 0)
+    return;
+  nx::small_vector<VkPipelineExecutableInternalRepresentationKHR, 4> found(
+      count);
+  for (VkPipelineExecutableInternalRepresentationKHR &one : found)
+    one = {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR};
+  if (vkGetPipelineExecutableInternalRepresentationsKHR(
+          m_device, &executable, &count, found.data()) != VK_SUCCESS)
+    return;
+  nx::small_vector<nx::blob<u8>, 4> data;
+  for (VkPipelineExecutableInternalRepresentationKHR &one : found) {
+    data.emplace_back(one.dataSize);
+    one.pData = data.back().data();
+  }
+  const VkResult filled = vkGetPipelineExecutableInternalRepresentationsKHR(
+      m_device, &executable, &count, found.data());
+  if (filled != VK_SUCCESS && filled != VK_INCOMPLETE)
+    return;
+  // A file name from the pipeline's, its stage's and the representation's.
+  const auto file_name = [](const nx::string_view text) {
+    nx::string out(text);
+    for (char &c : out)
+      if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-'))
+        c = '_';
+    return out;
+  };
+  for (u32 i = 0; i < count; ++i) {
+    const nx::string path =
+        nx::format("{}/{}.{}.{}.{}", m_pipeline_representations,
+                   file_name(name), file_name(stage), file_name(found[i].name),
+                   found[i].isText != VK_FALSE ? "txt" : "bin");
+    // Text arrives with its terminating zero.
+    usize size = found[i].dataSize;
+    if (found[i].isText != VK_FALSE && size > 0 && data[i][size - 1] == 0)
+      --size;
+    if (!nx::fs::file_write_atomic(path, {data[i].data(), size}))
+      nx::logw(nx::log::rhi, "pipeline '{}': could not write {}", name, path);
   }
 }
 

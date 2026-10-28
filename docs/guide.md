@@ -73,7 +73,10 @@ compile log what the driver reports of its executables, a line each
 has `VK_KHR_pipeline_executable_properties`: on NVIDIA, among others, the
 registers a thread takes, which bound how many warps a multiprocessor holds.
 It is for profiling: capturing the statistics may slow compiles. Metal reports
-nothing.
+nothing. `NX_GFX_PIPELINE_REPRESENTATIONS=<folder>` logs them too and writes
+what the driver says it compiled each executable into, a file each
+representation (`<pipeline>.<executable>.<representation>.txt`, or `.bin`),
+where the driver offers any: Mesa's drivers do; NVIDIA's offers none.
 
 ## Bindless resources
 

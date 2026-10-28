@@ -1471,8 +1471,12 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
   m_enabled_routes =
       desc.enable_routes | routes_from_environment("NX_GFX_ENABLE_ROUTES");
 #if !NX_BUILD_SHIPPING
+  m_pipeline_representations =
+      nx::os::environment_variable("NX_GFX_PIPELINE_REPRESENTATIONS")
+          .value_or(nx::string{});
   m_pipeline_statistics =
-      nx::os::environment_variable("NX_GFX_PIPELINE_STATISTICS").has_value();
+      nx::os::environment_variable("NX_GFX_PIPELINE_STATISTICS").has_value() ||
+      !m_pipeline_representations.empty();
 #endif
   if (!create_instance(desc) || !select_physical_device() ||
       !create_logical_device(desc.native_clients) || !create_allocator() ||

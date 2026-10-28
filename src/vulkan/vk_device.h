@@ -718,6 +718,10 @@ private:
   compile_compute_pipeline(const VulkanComputePipelineCompileJob &job) const;
   /// Logs what @p pipeline's compile reported of each of its executables.
   void log_pipeline_statistics(VkPipeline pipeline, nx::string_view name) const;
+  void
+  write_pipeline_representations(const VkPipelineExecutableInfoKHR &executable,
+                                 nx::string_view name,
+                                 nx::string_view stage) const;
   /// gfx::pipeline_job's compile step, on a VulkanPipelineJob payload.
   static bool compile_job(void *payload);
 
@@ -795,8 +799,11 @@ private:
   gfx::route_flags m_disabled_routes = gfx::route::None;
   gfx::route_flags m_enabled_routes = gfx::route::None;
   /// Outside Shipping, NX_GFX_PIPELINE_STATISTICS asks each compile to log
-  /// its pipeline's statistics, where the device has them.
+  /// its pipeline's statistics, where the device has them; and
+  /// NX_GFX_PIPELINE_REPRESENTATIONS, a folder, to write there too what the
+  /// driver says it compiled each into, a file each representation.
   bool m_pipeline_statistics = false;
+  nx::string m_pipeline_representations;
   VkDevice m_device = VK_NULL_HANDLE;
   VmaAllocator m_allocator = VK_NULL_HANDLE;
   gfx::device_caps m_caps;
