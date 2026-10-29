@@ -109,6 +109,44 @@ TEST_CASE("gfx: buffer bytes go up and come back") {
   gfx::destroy_buffer(dev, buffer);
 }
 
+TEST_CASE("gfx: uploads that overrun the staging ring wait for it and land") {
+  Device fixture;
+  if (fixture.dev == nullptr)
+    SKIP("no usable device");
+  gfx::device &dev = *fixture.dev;
+
+  // Under half the ring each, so they stay on it, and four of them in one go
+  // so later ones wait for the ring to come back.
+  const u32 bytes = 12u * 1024u * 1024u;
+  REQUIRE(gfx::upload_stats(dev).ring_capacity < 3u * bytes);
+  std::vector<gfx::buffer_handle> buffers;
+  std::vector<std::vector<u8>> patterns;
+  gfx::upload_ticket last;
+  for (u8 i = 0; i < 4; ++i) {
+    patterns.push_back(pattern(bytes, nx::cast<u8>(i * 53 + 1)));
+    buffers.push_back(gfx::create_buffer(
+        dev,
+        {.name = "ring overrun",
+         .size = bytes,
+         .usage = gfx::buffer_usage::CopySrc | gfx::buffer_usage::CopyDst}));
+    REQUIRE(buffers.back().valid());
+    last = gfx::upload_buffer(dev, buffers.back(), 0, patterns.back(),
+                              gfx::resource_state::CopySrc);
+    REQUIRE(last.valid());
+  }
+  gfx::wait_upload(dev, last);
+  CHECK(gfx::upload_stats(dev).extra_buffers == 0u);
+
+  for (usize i = 0; i < buffers.size(); ++i) {
+    const gfx::readback_result read =
+        gfx::read_buffer(dev, buffers[i], 0, bytes);
+    gfx::wait_upload(dev, read.ticket);
+    REQUIRE(read.size == bytes);
+    CHECK(std::memcmp(read.data, patterns[i].data(), bytes) == 0);
+    gfx::destroy_buffer(dev, buffers[i]);
+  }
+}
+
 TEST_CASE("gfx: a headless frame's list copies one buffer into another") {
   Device fixture;
   if (fixture.dev == nullptr)

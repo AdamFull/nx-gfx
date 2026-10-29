@@ -1747,13 +1747,7 @@ void VulkanDevice::flush_uploads() noexcept {
     return;
   }
 
-  VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-  wait.semaphoreCount = 1;
-  wait.pSemaphores = &m_timeline;
-  wait.pValues = &value;
-  if (NX_VK_DEVICE_CHECK(*this,
-                         vkWaitSemaphoresKHR(m_device, &wait, UINT64_MAX)) !=
-      VK_SUCCESS) {
+  if (NX_VK_DEVICE_CHECK(*this, wait_timeline(value)) != VK_SUCCESS) {
     vkDestroyCommandPool(m_device, pool, nullptr);
     return;
   }

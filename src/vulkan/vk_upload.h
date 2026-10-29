@@ -75,13 +75,6 @@ private:
     bool host_read = false;
   };
 
-  /// Uses the ring for ordinary transient copies and reusable dedicated
-  /// staging for large copies or when the ring is temporarily unavailable.
-  u8 *acquire_upload_staging(u64 size, u64 alignment, VkBuffer &buffer,
-                             u64 &offset, Chunk *&dedicated);
-  [[nodiscard]] bool flush_upload_staging(const Chunk *dedicated, u64 offset,
-                                          u64 size) const noexcept;
-
   /// Bytes a graphics replay reads are held by `gfx_value` on the device
   /// timeline too, since the copy timeline says nothing about when the frame
   /// has run.
@@ -90,6 +83,16 @@ private:
     u64 value = 0;
     u64 gfx_value = 0;
   };
+
+  /// Uses the ring for ordinary transient copies and reusable dedicated
+  /// staging for large copies or when the ring is temporarily unavailable.
+  /// A full ring whose oldest bytes are already submitted returns null with
+  /// @p held set: the caller waits for them with the lock released and
+  /// retries, so no worker blocks on the GPU while holding m_command_mutex.
+  u8 *acquire_upload_staging(u64 size, u64 alignment, VkBuffer &buffer,
+                             u64 &offset, Chunk *&dedicated, Marker &held);
+  [[nodiscard]] bool flush_upload_staging(const Chunk *dedicated, u64 offset,
+                                          u64 size) const noexcept;
 
   struct ImageAcquire {
     VkImage image = VK_NULL_HANDLE;
@@ -143,7 +146,20 @@ private:
   VkCommandBuffer ensure_batch();
   void flush_locked();
   void reclaim_locked();
-  u8 *ring_alloc(u64 size, u64 alignment, u64 *out_offset);
+  u8 *ring_alloc(u64 size, u64 alignment, u64 *out_offset, Marker &held);
+  /// The upload bodies, under m_command_mutex; @p held as for
+  /// acquire_upload_staging.
+  gfx::upload_ticket
+  try_upload_texture(gfx::texture_handle handle, std::span<const u8> src,
+                     std::span<const gfx::image_subresource> layout,
+                     gfx::resource_state final_state, Marker &held);
+  gfx::upload_ticket try_upload_buffer(gfx::buffer_handle handle,
+                                       u64 dst_offset, std::span<const u8> src,
+                                       gfx::resource_state final_state,
+                                       Marker &held);
+  /// Blocks the calling fiber, not its worker, until both timelines reach
+  /// @p held.
+  void wait_for(const Marker &held) noexcept;
   Chunk *acquire_chunk(u64 size, bool host_read);
   VkCommandBuffer begin_cmd();
   /// A readback first waits for the frames submitted before it.

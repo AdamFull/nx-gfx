@@ -5,6 +5,7 @@
 
 #include "core/foundation/diagnostics/log.h"
 #include "core/foundation/diagnostics/profiler.h"
+#include "core/foundation/fibers/scheduler.h"
 
 #include <cstring>
 #include <limits>
@@ -164,7 +165,10 @@ void VulkanUploader::wait_value(const u64 value) noexcept {
   wait.semaphoreCount = 1;
   wait.pSemaphores = &m_timeline;
   wait.pValues = &v;
-  NX_VK_DEVICE_CHECK(*m_device, vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX));
+  VkResult result = VK_SUCCESS;
+  nx::fiber::run_blocking(
+      [&] { result = vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX); });
+  NX_VK_DEVICE_CHECK(*m_device, result);
 }
 
 void VulkanUploader::wait_graphics(const u64 value) noexcept {
@@ -172,12 +176,12 @@ void VulkanUploader::wait_graphics(const u64 value) noexcept {
       m_device->device_status() == gfx::gpu_device_status::Lost ||
       m_device->m_timeline == VK_NULL_HANDLE)
     return;
-  u64 v = value;
-  VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-  wait.semaphoreCount = 1;
-  wait.pSemaphores = &m_device->m_timeline;
-  wait.pValues = &v;
-  NX_VK_DEVICE_CHECK(*m_device, vkWaitSemaphoresKHR(m_vk, &wait, UINT64_MAX));
+  NX_VK_DEVICE_CHECK(*m_device, m_device->wait_timeline(value));
+}
+
+void VulkanUploader::wait_for(const Marker &held) noexcept {
+  wait_value(held.value);
+  wait_graphics(held.gfx_value);
 }
 
 VkCommandBuffer VulkanUploader::begin_cmd() {
@@ -288,7 +292,7 @@ void VulkanUploader::reclaim_locked() {
 }
 
 u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
-                               u64 *out_offset) {
+                               u64 *out_offset, Marker &held) {
   if (size > m_ring_capacity)
     return nullptr;
 
@@ -307,33 +311,30 @@ u8 *VulkanUploader::ring_alloc(const u64 size, const u64 alignment,
   };
 
   u64 offset = 0;
-  for (;;) {
-    if (try_alloc(offset)) {
-      *out_offset = offset;
-      return m_ring_mapped + offset;
-    }
-
-    reclaim_locked();
-    if (try_alloc(offset)) {
-      *out_offset = offset;
-      return m_ring_mapped + offset;
-    }
-
-    if (m_batch_open)
-      flush_locked();
-    if (m_markers.empty())
-      return nullptr;
-
-    // The oldest bytes can be held by a frame that is still being recorded.
-    // Waiting on a value nothing has submitted yet would hang the render
-    // thread against itself, so let the caller fall back to dedicated staging.
-    const Marker oldest = m_markers.front();
-    if (m_device != nullptr && oldest.gfx_value > m_device->m_timeline_value)
-      return nullptr;
-    wait_value(oldest.value);
-    wait_graphics(oldest.gfx_value);
-    reclaim_locked();
+  if (try_alloc(offset)) {
+    *out_offset = offset;
+    return m_ring_mapped + offset;
   }
+
+  reclaim_locked();
+  if (try_alloc(offset)) {
+    *out_offset = offset;
+    return m_ring_mapped + offset;
+  }
+
+  if (m_batch_open)
+    flush_locked();
+  if (m_markers.empty())
+    return nullptr;
+
+  // The oldest bytes can be held by a frame that is still being recorded.
+  // Waiting on a value nothing has submitted yet would hang the render
+  // thread against itself, so let the caller fall back to dedicated staging.
+  const Marker oldest = m_markers.front();
+  if (m_device != nullptr && oldest.gfx_value > m_device->m_timeline_value)
+    return nullptr;
+  held = oldest;
+  return nullptr;
 }
 
 VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
@@ -382,7 +383,7 @@ VulkanUploader::Chunk *VulkanUploader::acquire_chunk(const u64 size,
 
 u8 *VulkanUploader::acquire_upload_staging(const u64 size, const u64 alignment,
                                            VkBuffer &buffer, u64 &offset,
-                                           Chunk *&dedicated) {
+                                           Chunk *&dedicated, Marker &held) {
   buffer = VK_NULL_HANDLE;
   offset = 0;
   dedicated = nullptr;
@@ -391,10 +392,12 @@ u8 *VulkanUploader::acquire_upload_staging(const u64 size, const u64 alignment,
   // the impossible case where a ring-sized upload is requested after its
   // monotonic head has advanced away from the physical buffer boundary.
   if (size < DEDICATED_UPLOAD_THRESHOLD) {
-    if (u8 *const staging = ring_alloc(size, alignment, &offset)) {
+    if (u8 *const staging = ring_alloc(size, alignment, &offset, held)) {
       buffer = m_ring;
       return staging;
     }
+    if (held.value != 0 || held.gfx_value != 0)
+      return nullptr;
   }
 
   dedicated = acquire_chunk(size, false);
@@ -421,6 +424,20 @@ gfx::upload_ticket VulkanUploader::upload_texture(
     const std::span<const gfx::image_subresource> layout,
     const gfx::resource_state final_state) {
   NX_PROFILE_ZONE("vk::upload_texture");
+  for (;;) {
+    Marker held;
+    const gfx::upload_ticket ticket =
+        try_upload_texture(handle, src, layout, final_state, held);
+    if (held.value == 0 && held.gfx_value == 0)
+      return ticket;
+    wait_for(held);
+  }
+}
+
+gfx::upload_ticket VulkanUploader::try_upload_texture(
+    const gfx::texture_handle handle, const std::span<const u8> src,
+    const std::span<const gfx::image_subresource> layout,
+    const gfx::resource_state final_state, Marker &held) {
   const nx::scoped_lock lock(m_command_mutex);
   VulkanTexture *tex = m_device->m_textures.try_get(handle);
   if (tex == nullptr || tex->image == VK_NULL_HANDLE ||
@@ -461,8 +478,10 @@ gfx::upload_ticket VulkanUploader::upload_texture(
   u64 base_offset = 0;
   Chunk *dedicated = nullptr;
   u8 *const staging = acquire_upload_staging(staging_size, align, staging_buf,
-                                             base_offset, dedicated);
+                                             base_offset, dedicated, held);
   if (staging == nullptr) {
+    if (held.value != 0 || held.gfx_value != 0)
+      return {};
     nx::loge(log_up, "upload_texture: no staging for {} bytes", staging_size);
     return gfx::upload_ticket::failure();
   }
@@ -616,6 +635,20 @@ gfx::upload_ticket VulkanUploader::upload_buffer(
     const gfx::buffer_handle handle, const u64 dst_offset,
     const std::span<const u8> src, const gfx::resource_state final_state) {
   NX_PROFILE_ZONE("vk::upload_buffer");
+  for (;;) {
+    Marker held;
+    const gfx::upload_ticket ticket =
+        try_upload_buffer(handle, dst_offset, src, final_state, held);
+    if (held.value == 0 && held.gfx_value == 0)
+      return ticket;
+    wait_for(held);
+  }
+}
+
+gfx::upload_ticket VulkanUploader::try_upload_buffer(
+    const gfx::buffer_handle handle, const u64 dst_offset,
+    const std::span<const u8> src, const gfx::resource_state final_state,
+    Marker &held) {
   const nx::scoped_lock lock(m_command_mutex);
   VulkanBuffer *buf = m_device->m_buffers.try_get(handle);
   if (src.empty())
@@ -636,8 +669,10 @@ gfx::upload_ticket VulkanUploader::upload_buffer(
   u64 base_offset = 0;
   Chunk *dedicated = nullptr;
   u8 *const staging = acquire_upload_staging(src.size(), 16, staging_buf,
-                                             base_offset, dedicated);
+                                             base_offset, dedicated, held);
   if (staging == nullptr) {
+    if (held.value != 0 || held.gfx_value != 0)
+      return {};
     nx::loge(log_up, "upload_buffer: no staging for {} bytes", src.size());
     return gfx::upload_ticket::failure();
   }
