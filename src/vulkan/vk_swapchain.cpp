@@ -122,7 +122,8 @@ VkSurfaceKHR create_surface(VkInstance instance,
   }
 #endif
   default:
-    nx::logc(nx::log::rhi, "unsupported native window kind for this Vulkan build");
+    nx::logc(nx::log::rhi,
+             "unsupported native window kind for this Vulkan build");
     break;
   }
 
@@ -687,6 +688,9 @@ VulkanDevice::split_frame(VulkanCommandContext &frame_context,
   frame.order.resize(frame.order.size() + count, VK_NULL_HANDLE);
   frame_context.m_cmd = next_command_buffer(frame.slot);
   frame.order.push_back(frame_context.m_cmd);
+  m_frame_markers =
+      m_gpu_markers.add_list(nx::cast<u32>(frame.order.size()) - 1);
+  frame_context.m_markers = m_frame_markers;
   return split;
 }
 
@@ -717,6 +721,7 @@ bool VulkanDevice::begin_recording(const gfx::recording_split split,
   out.m_zones = &slot->zones;
   out.m_slot = slot;
   out.m_position = split.first + index;
+  out.m_markers = m_gpu_markers.add_list(out.m_position);
   return true;
 }
 
@@ -729,6 +734,8 @@ void VulkanDevice::end_recording(VulkanCommandContext &recording) {
     recording.end_render_pass();
   }
   m_gpu_profiler.end_open_zones(slot->zones);
+  if (recording.m_markers != nullptr)
+    m_gpu_markers.end_open(*recording.m_markers, recording.m_cmd);
   FrameContext &frame = m_frames[m_frame_index];
   if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(recording.m_cmd)) ==
       VK_SUCCESS)
@@ -761,7 +768,8 @@ bool VulkanDevice::open_frame(VulkanCommandContext &out_context) {
   if (cmd == VK_NULL_HANDLE)
     return false;
   m_gpu_profiler.collect(cmd);
-  VulkanGpuMarkers::Slot *const markers = m_gpu_markers.open_frame(m_frame_index, cmd);
+  VulkanGpuMarkers::List *const markers =
+      m_gpu_markers.open_frame(m_frame_index, cmd);
 
   // Submit the batch of uploads accumulated since the last frame, then take
   // ownership of everything it produced and note the copy-timeline value this
@@ -928,7 +936,8 @@ void VulkanDevice::finish_backbuffer(VulkanSwapchain &sc,
   // which is what a reader wants.
   if (sc.offscreen)
     return;
-  VulkanTexture *const image = m_textures.try_get(sc.backbuffers[sc.image_index]);
+  VulkanTexture *const image =
+      m_textures.try_get(sc.backbuffers[sc.image_index]);
   if (image == nullptr)
     return;
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
@@ -999,7 +1008,8 @@ bool VulkanDevice::end_frame() {
   // Crossing the two kinds of frame would wait on an acquire semaphore nothing
   // ever signals, which hangs the GPU rather than failing.
   if (m_headless_frame) {
-    nx::loge(nx::log::rhi, "end_frame on a headless frame; use end_headless_frame");
+    nx::loge(nx::log::rhi,
+             "end_frame on a headless frame; use end_headless_frame");
     return false;
   }
   m_frame_active = false;
@@ -1140,8 +1150,8 @@ bool VulkanDevice::end_frame() {
                        sc->present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
     bool shown = false;
     nx::fiber::run_blocking([&] {
-      shown = sc->composition->present(sc->image_index, m_timeline_value,
-                                       vsync);
+      shown =
+          sc->composition->present(sc->image_index, m_timeline_value, vsync);
     });
     if (!shown)
       sc->stale = true;
@@ -1375,7 +1385,8 @@ void VulkanDevice::acquire_composed_image(VulkanSwapchain &sc,
   // An image D3D11 has not copied from yet was never released to it.
   if (sc.composed_serials[sc.image_index] == 0)
     return;
-  VulkanTexture *const image = m_textures.try_get(sc.backbuffers[sc.image_index]);
+  VulkanTexture *const image =
+      m_textures.try_get(sc.backbuffers[sc.image_index]);
   if (image == nullptr)
     return;
 

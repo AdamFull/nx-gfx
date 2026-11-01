@@ -309,7 +309,7 @@ private:
   VkCommandBuffer m_cmd = VK_NULL_HANDLE;
   VulkanDevice *m_device = nullptr;
   VulkanGpuProfiler::Zones *m_zones = nullptr;
-  VulkanGpuMarkers::Slot *m_markers = nullptr;
+  VulkanGpuMarkers::List *m_markers = nullptr;
   /// Set by begin_recording: the pool this context holds, and the place in
   /// the frame's submission its command buffer fills.
   CommandSlot *m_slot = nullptr;
@@ -828,7 +828,7 @@ private:
   VulkanGpuProfiler m_gpu_profiler;
   VulkanGpuProfiler m_copy_profiler;
   VulkanGpuMarkers m_gpu_markers;
-  VulkanGpuMarkers::Slot *m_frame_markers = nullptr;
+  VulkanGpuMarkers::List *m_frame_markers = nullptr;
 
   VkQueue m_queues[nx::cast<usize>(gfx::queue_type::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(gfx::queue_type::Count)] = {};

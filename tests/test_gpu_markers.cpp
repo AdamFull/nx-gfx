@@ -293,7 +293,7 @@ struct DirectMarkers {
     VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     info.queueFamilyIndex = gfx::vk::graphics_family(device);
     REQUIRE(vkCreateCommandPool(vk, &info, nullptr, &pool) == VK_SUCCESS);
-    markers.init(vk, 1, gfx::caps(device).timestamp_period_ns, 64, nullptr,
+    markers.init(vk, 1, gfx::caps(device).timestamp_period_ns, 64, 0, nullptr,
                  inside_passes);
     markers.set_enabled(true);
   }
@@ -423,6 +423,171 @@ TEST_CASE("gpu markers: where a pass cannot be timed its groups still pair") {
   CHECK(out[1].text() == "after");
   CHECK(out[1].depth == 0);
   CHECK(out[0].end_ns <= out[1].begin_ns);
+}
+
+TEST_CASE(
+    "gpu markers: split lists are timed, in the order they are submitted") {
+  nx::gfx::test::OwnedDevice owned;
+  if (!owned.init({.application_name = "nx gpu marker tests"}))
+    SKIP("no usable device");
+  gfx::device &device = owned;
+  if (!has_timestamps(device))
+    SKIP("no timestamps");
+  gfx::set_gpu_markers(device, true);
+  run_and_read(device, [&](gfx::command_list &list) {
+    gfx::push_debug_group(list, "before");
+    gfx::pop_debug_group(list);
+    const gfx::recording_split split = gfx::split_frame(device, list, 2);
+    REQUIRE(split.count == 2);
+    // The second list is recorded first and still runs second.
+    gfx::command_list *const second = gfx::begin_recording(device, split, 1);
+    REQUIRE(second != nullptr);
+    gfx::command_list *const first = gfx::begin_recording(device, split, 0);
+    REQUIRE(first != nullptr);
+    gfx::push_debug_group(*second, "second");
+    gfx::pop_debug_group(*second);
+    gfx::push_debug_group(*first, "first");
+    gfx::push_debug_group(*first, "left open");
+    gfx::end_recording(device, *second);
+    gfx::end_recording(device, *first);
+    gfx::push_debug_group(list, "after");
+    gfx::pop_debug_group(list);
+  });
+  nx::vector<gfx::gpu_marker> out;
+  REQUIRE(read_all(device, out) == 5);
+  CHECK(out[0].text() == "before");
+  CHECK(out[1].text() == "first");
+  CHECK(out[2].text() == "left open");
+  CHECK(out[2].depth == 1);
+  CHECK(out[3].text() == "second");
+  CHECK(out[4].text() == "after");
+  for (usize i = 1; i < out.size(); ++i) {
+    CHECK(out[i - 1].begin_ns <= out[i].begin_ns);
+    CHECK(out[i - 1].frame == out[i].frame);
+  }
+  CHECK(out[1].end_ns <= out[3].begin_ns);
+  gfx::set_gpu_markers(device, false);
+}
+
+TEST_CASE("gpu markers: frames are told apart") {
+  nx::gfx::test::OwnedDevice owned;
+  if (!owned.init({.application_name = "nx gpu marker tests"}))
+    SKIP("no usable device");
+  gfx::device &device = owned;
+  if (!has_timestamps(device))
+    SKIP("no timestamps");
+  gfx::set_gpu_markers(device, true);
+  for (int frame = 0; frame < 2; ++frame)
+    run_and_read(device, [](gfx::command_list &list) {
+      gfx::push_debug_group(list, "one");
+      gfx::push_debug_group(list, "two");
+      gfx::pop_debug_group(list);
+      gfx::pop_debug_group(list);
+    });
+  nx::vector<gfx::gpu_marker> out;
+  REQUIRE(read_all(device, out) == 4);
+  CHECK(out[0].frame == out[1].frame);
+  CHECK(out[1].frame < out[2].frame);
+  CHECK(out[2].frame == out[3].frame);
+  gfx::set_gpu_markers(device, false);
+}
+
+TEST_CASE(
+    "gpu markers: a copy on the copy queue is timed on the host's clock") {
+  nx::gfx::test::OwnedDevice owned;
+  if (!owned.init({.application_name = "nx gpu marker tests"}))
+    SKIP("no usable device");
+  gfx::device &device = owned;
+  if (!has_timestamps(device))
+    SKIP("no timestamps");
+  if (gfx::vk::queue_families(device).size() < 2)
+    SKIP("no copy queue of its own");
+  gfx::set_gpu_markers(device, true);
+  // A first frame on, so the clocks are matched before the copy.
+  run_and_read(device, [](gfx::command_list &) {});
+  const gfx::buffer_handle buffer =
+      gfx::create_buffer(device, {.name = "marker copy",
+                                  .size = 4096,
+                                  .usage = gfx::buffer_usage::CopyDst |
+                                           gfx::buffer_usage::Storage});
+  REQUIRE(buffer.valid());
+  const u8 bytes[4096] = {};
+  const u64 began = nx::os::ticks_ns();
+  const gfx::upload_ticket ticket =
+      gfx::upload_buffer(device, buffer, 0, bytes);
+  REQUIRE(ticket.ok());
+  // Uploads go with the frame after them.
+  run_and_read(device, [](gfx::command_list &) {});
+  gfx::wait_idle(device);
+  run_and_read(device, [](gfx::command_list &) {});
+  const u64 ended = nx::os::ticks_ns();
+
+  nx::vector<gfx::gpu_marker> out;
+  (void)read_all(device, out);
+  const gfx::gpu_marker *copy = nullptr;
+  for (const gfx::gpu_marker &marker : out)
+    if (marker.queue == gfx::gpu_marker_queue::Copy)
+      copy = &marker;
+  REQUIRE(copy != nullptr);
+  CHECK_FALSE(copy->text().empty());
+  CHECK(copy->frame == 0);
+  constexpr u64 SLACK_NS = 50'000'000;
+  CHECK(copy->begin_ns + SLACK_NS >= began);
+  CHECK(copy->end_ns <= ended + SLACK_NS);
+  gfx::destroy_buffer(device, buffer);
+  gfx::set_gpu_markers(device, false);
+}
+
+TEST_CASE("gpu markers: copies come round again, and too many at once are "
+          "counted") {
+  nx::gfx::test::OwnedDevice owned;
+  if (!owned.init({.application_name = "nx gpu marker tests"}))
+    SKIP("no usable device");
+  gfx::device &device = owned;
+  if (!has_timestamps(device))
+    SKIP("no timestamps");
+  if (gfx::vk::queue_families(device).size() < 2)
+    SKIP("no copy queue of its own");
+  gfx::set_gpu_markers(device, true);
+  run_and_read(device, [](gfx::command_list &) {});
+  const gfx::buffer_handle buffer =
+      gfx::create_buffer(device, {.name = "marker copies",
+                                  .size = 16,
+                                  .usage = gfx::buffer_usage::CopyDst |
+                                           gfx::buffer_usage::Storage});
+  REQUIRE(buffer.valid());
+  const u8 bytes[16] = {};
+  const auto copies = [&](const u32 count) {
+    for (u32 i = 0; i < count; ++i)
+      REQUIRE(gfx::upload_buffer(device, buffer, 0, bytes).ok());
+    run_and_read(device, [](gfx::command_list &) {});
+    gfx::wait_idle(device);
+    run_and_read(device, [](gfx::command_list &) {});
+  };
+  const auto copies_read = [&] {
+    nx::vector<gfx::gpu_marker> out;
+    (void)read_all(device, out);
+    usize seen = 0;
+    for (const gfx::gpu_marker &marker : out)
+      seen += marker.queue == gfx::gpu_marker_queue::Copy ? 1u : 0u;
+    return seen;
+  };
+
+  (void)copies_read();
+  usize seen = 0;
+  for (int round = 0; round < 8; ++round) {
+    copies(100);
+    seen += copies_read();
+  }
+  CHECK(seen == 800);
+  CHECK(gfx::gpu_markers_stats(device).groups_dropped == 0);
+
+  copies(300);
+  CHECK(copies_read() == 256);
+  CHECK(gfx::gpu_markers_stats(device).groups_dropped == 44);
+
+  gfx::destroy_buffer(device, buffer);
+  gfx::set_gpu_markers(device, false);
 }
 
 TEST_CASE("gpu markers: shutting down with markers on and unread is fine") {

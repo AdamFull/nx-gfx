@@ -493,6 +493,8 @@ gfx::upload_ticket VulkanUploader::try_upload_texture(
   }
   const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
                                       "upload texture");
+  const VulkanGpuMarkers::CopyScope marker(m_device->gpu_markers(), cmd,
+                                           "upload texture");
 
   nx::small_vector<VkBufferImageCopy, 16> copies;
   u64 offset = 0;
@@ -690,6 +692,8 @@ gfx::upload_ticket VulkanUploader::try_upload_buffer(
   }
   const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
                                       "upload buffer");
+  const VulkanGpuMarkers::CopyScope marker(m_device->gpu_markers(), cmd,
+                                           "upload buffer");
 
   VkBufferCopy region{};
   region.srcOffset = base_offset;
@@ -768,6 +772,8 @@ VulkanUploader::clear_buffer(const gfx::buffer_handle handle,
   }
   const VulkanGpuProfiler::Scope zone(m_device->copy_profiler(), cmd,
                                       "clear buffer");
+  const VulkanGpuMarkers::CopyScope marker(m_device->gpu_markers(), cmd,
+                                           "clear buffer");
 
   VkBufferMemoryBarrier2 before_fill{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   before_fill.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
@@ -842,6 +848,7 @@ VulkanUploader::read_buffer(const gfx::buffer_handle handle, const u64 offset,
   if (cmd == VK_NULL_HANDLE)
     return {};
   m_device->copy_profiler().begin_zone(cmd, "read buffer");
+  const u32 marker = m_device->gpu_markers().copy_begin(cmd, "read buffer");
 
   VkBufferMemoryBarrier2 before_read{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   before_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -875,6 +882,7 @@ VulkanUploader::read_buffer(const gfx::buffer_handle handle, const u64 offset,
   vkCmdPipelineBarrier2KHR(cmd, &dep);
 
   m_device->copy_profiler().end_zone();
+  m_device->gpu_markers().copy_end(cmd, marker);
   NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(cmd));
   const u64 value = ++m_value;
   submit_signal(cmd, value, true);
@@ -912,6 +920,7 @@ VulkanUploader::read_texture(const gfx::texture_handle handle, const u32 mip,
   if (cmd == VK_NULL_HANDLE)
     return {};
   m_device->copy_profiler().begin_zone(cmd, "read texture");
+  const u32 marker = m_device->gpu_markers().copy_begin(cmd, "read texture");
 
   const VkStateInfo from = m_device->state_info(tex->state);
   const bool qfot = needs_ownership_transfer();
@@ -963,6 +972,7 @@ VulkanUploader::read_texture(const gfx::texture_handle handle, const u32 mip,
   vkCmdPipelineBarrier2KHR(cmd, &host_dep);
 
   m_device->copy_profiler().end_zone();
+  m_device->gpu_markers().copy_end(cmd, marker);
   NX_VK_DEVICE_CHECK(*m_device, vkEndCommandBuffer(cmd));
   const u64 value = ++m_value;
   submit_signal(cmd, value, true);

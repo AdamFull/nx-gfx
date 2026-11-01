@@ -1173,11 +1173,9 @@ bool VulkanDevice::create_logical_device(
         VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
   }
 
-#if NX_PROFILE_ENABLED
+#if !NX_BUILD_SHIPPING
   if (m_routes.host_query_reset)
     features12.hostQueryReset = VK_TRUE;
-#endif
-#if !NX_BUILD_SHIPPING
   if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr)
     device_extensions.push_back(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
   else if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext)
@@ -1524,6 +1522,11 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
     nx::vector<VkQueueFamilyProperties> properties(families);
     vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &families,
                                              properties.data());
+    const u32 copy_family =
+        m_queue_families[nx::cast<usize>(gfx::queue_type::Copy)];
+    const u32 copy_bits = m_routes.host_query_reset && copy_family < families
+                              ? properties[copy_family].timestampValidBits
+                              : 0;
     const PFN_vkGetCalibratedTimestampsEXT calibrated =
         m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr
             ? vkGetCalibratedTimestampsKHR
@@ -1532,7 +1535,8 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
             : nullptr;
     m_gpu_markers.init(m_device, nx::cast<u32>(m_frames.size()),
                        m_caps.timestamp_period_ns,
-                       properties[graphics_family()].timestampValidBits, calibrated,
+                       properties[graphics_family()].timestampValidBits,
+                       copy_bits, calibrated,
                        !m_caps.memoryless_attachments);
   }
 #endif
