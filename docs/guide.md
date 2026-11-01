@@ -194,6 +194,25 @@ DirectComposition: D3D11 on the same adapter allocates the images, Vulkan
 imports them as the backbuffers, and two shared fences hand each frame over.
 Callers see an ordinary swapchain. Metal sets the layer's `opaque` flag.
 
+## GPU markers
+
+`set_gpu_markers(dev, true)` times the frame's debug groups from the next
+`begin_frame`, and `read_gpu_markers` hands them over: name, depth and times on
+`nx::os::ticks_ns`'s clock. Nothing here knows who reads them or waits for the
+GPU: a frame's markers are read when its slot comes round, a frame or two later,
+and nobody reading loses the oldest once `GPU_MARKERS_HELD` wait. Off, a debug
+group costs one test, and no query pool exists until the first frame on.
+
+Only groups on the frame's own list are timed, in queue order, up to 1024 a frame
+and `GPU_MARKER_MOST_DEPTH` deep; `gpu_markers_stats` counts what was left out. A
+device with memoryless attachments, a tiling GPU, does not time groups inside a
+render pass. Both ends of a group sit at the bottom of the pipe, so groups in a row
+never overlap. Calibrated timestamps place them on the host's clock, read several
+times about once a second and the tightest reading kept; without them each frame is
+placed by when it was submitted, which can be up to a frame early, and
+`gpu_marker_stats::calibrated` says which. Metal returns nothing yet, and Shipping
+builds on Vulkan never start the pools.
+
 ## Retirement holds
 
 The device defers every destruction past the work already submitted, but a

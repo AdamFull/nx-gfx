@@ -478,6 +478,18 @@ void wait_upload(device &dev, const upload_ticket ticket) noexcept {
 
 void wait_uploads(device &dev) noexcept { be(dev).uploader().flush(); }
 
+void set_gpu_markers(device &dev, const bool on) noexcept {
+  be(dev).set_gpu_markers(on);
+}
+
+usize read_gpu_markers(device &dev, const std::span<gpu_marker> out) noexcept {
+  return be(dev).read_gpu_markers(out);
+}
+
+gpu_marker_stats gpu_markers_stats(const device &dev) noexcept {
+  return be(dev).gpu_markers_stats();
+}
+
 uploader_stats upload_stats(device &dev) noexcept {
   return be(dev).uploader().stats();
 }

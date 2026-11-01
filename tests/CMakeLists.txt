@@ -9,6 +9,7 @@ add_executable(nx_gfx_tests
         test_gfx_api.cpp
         test_gfx_interop_layout.cpp
         test_gpu_crash.cpp
+        test_gpu_markers.cpp
         test_native.cpp
         test_pipeline_compiler.cpp
         test_wrap.cpp)

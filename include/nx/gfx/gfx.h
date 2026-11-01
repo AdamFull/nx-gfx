@@ -5,6 +5,7 @@
 #include "nx/gfx/crash.h"
 #include "nx/gfx/device.h"
 #include "nx/gfx/frame.h"
+#include "nx/gfx/markers.h"
 #include "nx/gfx/native.h"
 #include "nx/gfx/pipeline_job.h"
 #include "nx/gfx/pipelines.h"

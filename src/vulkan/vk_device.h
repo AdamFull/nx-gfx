@@ -17,6 +17,7 @@
 #include "nx/gfx/vulkan.h"
 #include "src/vulkan/vk_common.h"
 #include "src/vulkan/vk_gpu_crash.h"
+#include "src/vulkan/vk_gpu_markers.h"
 #include "src/vulkan/vk_gpu_profiler.h"
 #include "src/vulkan/vk_mem_alloc_include.h"
 #include "src/vulkan/vk_render_pass.h"
@@ -308,6 +309,7 @@ private:
   VkCommandBuffer m_cmd = VK_NULL_HANDLE;
   VulkanDevice *m_device = nullptr;
   VulkanGpuProfiler::Zones *m_zones = nullptr;
+  VulkanGpuMarkers::Slot *m_markers = nullptr;
   /// Set by begin_recording: the pool this context holds, and the place in
   /// the frame's submission its command buffer fills.
   CommandSlot *m_slot = nullptr;
@@ -677,6 +679,14 @@ public:
   [[nodiscard]] VulkanGpuProfiler &gpu_profiler() noexcept {
     return m_gpu_profiler;
   }
+  [[nodiscard]] VulkanGpuMarkers &gpu_markers() noexcept { return m_gpu_markers; }
+  void set_gpu_markers(const bool on) noexcept { m_gpu_markers.set_enabled(on); }
+  [[nodiscard]] usize read_gpu_markers(const std::span<gfx::gpu_marker> out) noexcept {
+    return m_gpu_markers.read(out);
+  }
+  [[nodiscard]] gfx::gpu_marker_stats gpu_markers_stats() const noexcept {
+    return m_gpu_markers.stats();
+  }
   [[nodiscard]] VulkanGpuProfiler &copy_profiler() noexcept {
     return m_copy_profiler;
   }
@@ -817,6 +827,8 @@ private:
   mutable VulkanGpuCrashReporter m_gpu_crash;
   VulkanGpuProfiler m_gpu_profiler;
   VulkanGpuProfiler m_copy_profiler;
+  VulkanGpuMarkers m_gpu_markers;
+  VulkanGpuMarkers::Slot *m_frame_markers = nullptr;
 
   VkQueue m_queues[nx::cast<usize>(gfx::queue_type::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(gfx::queue_type::Count)] = {};

@@ -1234,6 +1234,8 @@ void VulkanCommandContext::push_debug_group(const nx::string_view name,
     return;
   if (m_zones != nullptr)
     m_device->gpu_profiler().begin_zone(*m_zones, m_cmd, name);
+  if (m_markers != nullptr)
+    m_device->gpu_markers().push(*m_markers, m_cmd, name, m_in_render_pass);
   m_device->aftermath().checkpoint(m_cmd, name);
   if (!m_device->debug_utils_enabled())
     return;
@@ -1253,6 +1255,8 @@ void VulkanCommandContext::pop_debug_group() {
     return;
   if (m_zones != nullptr)
     m_device->gpu_profiler().end_zone(*m_zones);
+  if (m_markers != nullptr)
+    m_device->gpu_markers().pop(*m_markers, m_cmd);
   if (!m_device->debug_utils_enabled())
     return;
   vkCmdEndDebugUtilsLabelEXT(m_cmd);

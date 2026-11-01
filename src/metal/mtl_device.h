@@ -265,6 +265,13 @@ public:
   [[nodiscard]] gfx::sampler_handle create_sampler(const gfx::sampler_desc &desc);
   void destroy_sampler(gfx::sampler_handle handle) noexcept;
 
+  void set_gpu_markers(bool) noexcept {}
+  [[nodiscard]] usize read_gpu_markers(std::span<gfx::gpu_marker>) noexcept {
+    return 0;
+  }
+  [[nodiscard]] gfx::gpu_marker_stats gpu_markers_stats() const noexcept {
+    return {};
+  }
   [[nodiscard]] gfx::query_pool_handle create_timestamp_pool(u32) { return {}; }
   void destroy_query_pool(gfx::query_pool_handle) noexcept {}
   [[nodiscard]] bool read_timestamps(gfx::query_pool_handle, std::span<u64>) const {

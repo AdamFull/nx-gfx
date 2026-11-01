@@ -641,6 +641,11 @@ VkCommandBuffer VulkanDevice::open_frame_slot(FrameContext &frame) {
 bool VulkanDevice::close_frame(
     FrameContext &frame, nx::small_vector<VkCommandBufferSubmitInfo, 8> &out) {
   m_gpu_profiler.end_open_zones(frame.slot.zones);
+  if (m_frame_markers != nullptr && !frame.order.empty() &&
+      frame.order.back() != VK_NULL_HANDLE)
+    m_gpu_markers.end_open(*m_frame_markers, frame.order.back());
+  m_frame_markers = nullptr;
+  m_gpu_markers.frame_submitted(m_frame_index);
   if (frame.order.empty() || frame.order.back() == VK_NULL_HANDLE ||
       NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame.order.back())) !=
           VK_SUCCESS)
@@ -670,6 +675,8 @@ VulkanDevice::split_frame(VulkanCommandContext &frame_context,
   }
   FrameContext &frame = m_frames[m_frame_index];
   m_gpu_profiler.end_open_zones(frame.slot.zones);
+  if (m_frame_markers != nullptr)
+    m_gpu_markers.end_open(*m_frame_markers, frame_context.m_cmd);
   if (NX_VK_DEVICE_CHECK(*this, vkEndCommandBuffer(frame_context.m_cmd)) !=
       VK_SUCCESS) {
     frame.order.back() = VK_NULL_HANDLE;
@@ -754,6 +761,7 @@ bool VulkanDevice::open_frame(VulkanCommandContext &out_context) {
   if (cmd == VK_NULL_HANDLE)
     return false;
   m_gpu_profiler.collect(cmd);
+  VulkanGpuMarkers::Slot *const markers = m_gpu_markers.open_frame(m_frame_index, cmd);
 
   // Submit the batch of uploads accumulated since the last frame, then take
   // ownership of everything it produced and note the copy-timeline value this
@@ -765,6 +773,8 @@ bool VulkanDevice::open_frame(VulkanCommandContext &out_context) {
   out_context.m_cmd = cmd;
   out_context.m_device = this;
   out_context.m_zones = &frame.slot.zones;
+  out_context.m_markers = markers;
+  m_frame_markers = markers;
   m_frame_active = true;
   return true;
 }

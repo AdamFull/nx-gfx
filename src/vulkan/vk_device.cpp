@@ -1176,6 +1176,8 @@ bool VulkanDevice::create_logical_device(
 #if NX_PROFILE_ENABLED
   if (m_routes.host_query_reset)
     features12.hostQueryReset = VK_TRUE;
+#endif
+#if !NX_BUILD_SHIPPING
   if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr)
     device_extensions.push_back(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
   else if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext)
@@ -1515,6 +1517,25 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
     return false;
   }
 
+#if !NX_BUILD_SHIPPING
+  if (m_caps.timestamps) {
+    u32 families = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &families, nullptr);
+    nx::vector<VkQueueFamilyProperties> properties(families);
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &families,
+                                             properties.data());
+    const PFN_vkGetCalibratedTimestampsEXT calibrated =
+        m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr
+            ? vkGetCalibratedTimestampsKHR
+        : m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext
+            ? vkGetCalibratedTimestampsEXT
+            : nullptr;
+    m_gpu_markers.init(m_device, nx::cast<u32>(m_frames.size()),
+                       m_caps.timestamp_period_ns,
+                       properties[graphics_family()].timestampValidBits, calibrated,
+                       !m_caps.memoryless_attachments);
+  }
+#endif
 #if NX_PROFILE_ENABLED
   if (m_caps.timestamps) {
     PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT domains = nullptr;
@@ -1554,6 +1575,7 @@ void VulkanDevice::shutdown() noexcept {
     wait_idle();
 
   m_uploader.shutdown();
+  m_gpu_markers.shutdown();
   m_gpu_profiler.shutdown();
   m_copy_profiler.shutdown();
 
