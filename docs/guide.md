@@ -212,8 +212,9 @@ with memoryless attachments, a tiling GPU, does not time groups inside a render 
 Both ends of a group sit at the bottom of the pipe, so groups in a row never overlap. Calibrated timestamps place them on the host's clock, read several
 times about once a second and the tightest reading kept; without them each frame is
 placed by when it was submitted, which can be up to a frame early, and
-`gpu_marker_stats::calibrated` says which. Metal returns nothing yet, and Shipping
-builds on Vulkan never start the pools.
+`gpu_marker_stats::calibrated` says which. A Shipping build enables neither calibrated
+timestamps nor host query reset, so it times no copies and places frames by their
+submit, but a pass's duration is as good. Metal returns nothing yet.
 
 ## Retirement holds
 

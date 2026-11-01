@@ -1515,31 +1515,30 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
     return false;
   }
 
-#if !NX_BUILD_SHIPPING
   if (m_caps.timestamps) {
     u32 families = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &families, nullptr);
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &families,
+                                             nullptr);
     nx::vector<VkQueueFamilyProperties> properties(families);
     vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &families,
                                              properties.data());
+    u32 copy_bits = 0;
+    PFN_vkGetCalibratedTimestampsEXT calibrated = nullptr;
+#if !NX_BUILD_SHIPPING
     const u32 copy_family =
         m_queue_families[nx::cast<usize>(gfx::queue_type::Copy)];
-    const u32 copy_bits = m_routes.host_query_reset && copy_family < families
-                              ? properties[copy_family].timestampValidBits
-                              : 0;
-    const PFN_vkGetCalibratedTimestampsEXT calibrated =
-        m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr
-            ? vkGetCalibratedTimestampsKHR
-        : m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext
-            ? vkGetCalibratedTimestampsEXT
-            : nullptr;
+    if (m_routes.host_query_reset && copy_family < families)
+      copy_bits = properties[copy_family].timestampValidBits;
+    if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Khr)
+      calibrated = vkGetCalibratedTimestampsKHR;
+    else if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext)
+      calibrated = vkGetCalibratedTimestampsEXT;
+#endif
     m_gpu_markers.init(m_device, nx::cast<u32>(m_frames.size()),
                        m_caps.timestamp_period_ns,
                        properties[graphics_family()].timestampValidBits,
-                       copy_bits, calibrated,
-                       !m_caps.memoryless_attachments);
+                       copy_bits, calibrated, !m_caps.memoryless_attachments);
   }
-#endif
 #if NX_PROFILE_ENABLED
   if (m_caps.timestamps) {
     PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT domains = nullptr;
