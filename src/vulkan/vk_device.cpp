@@ -1797,6 +1797,25 @@ void VulkanDevice::set_object_name(const u64 object, const VkObjectType type,
   m_gpu_crash.name_object(object, type, name);
 }
 
+gfx::gpu_memory_stats VulkanDevice::memory_stats() const noexcept {
+  gfx::gpu_memory_stats out;
+  if (m_allocator == VK_NULL_HANDLE)
+    return out;
+  VkPhysicalDeviceMemoryProperties properties{};
+  vkGetPhysicalDeviceMemoryProperties(m_physical_device, &properties);
+  VmaBudget budgets[VK_MAX_MEMORY_HEAPS];
+  vmaGetHeapBudgets(m_allocator, budgets);
+  out.heap_count = nx::min(properties.memoryHeapCount, gfx::GPU_MOST_HEAPS);
+  for (u32 i = 0; i < out.heap_count; ++i)
+    out.heaps[i] = {.used = budgets[i].usage,
+                    .budget = budgets[i].budget,
+                    .size = properties.memoryHeaps[i].size,
+                    .device_local = (properties.memoryHeaps[i].flags &
+                                     VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0};
+  m_ledger.totals(out);
+  return out;
+}
+
 void VulkanDevice::destroy_texture_now(VulkanTexture &texture) noexcept {
   for (const u32 slot : texture.uav_indices)
     free_rw_slot(slot);
@@ -1939,10 +1958,22 @@ void VulkanDevice::collect_garbage(
       continue;
 
     if (VulkanTexture *texture = m_textures.try_get(pending.texture)) {
+      VmaAllocationInfo info{};
+      if (texture->allocation != VK_NULL_HANDLE)
+        vmaGetAllocationInfo(m_allocator, texture->allocation, &info);
+      m_ledger.destroyed(gfx::gpu_resource_kind::Texture,
+                         pending.texture.raw(), info.size,
+                         texture->name.view());
       destroy_texture_now(*texture);
       m_textures.erase(pending.texture);
     }
     if (VulkanBuffer *buffer = m_buffers.try_get(pending.buffer)) {
+      VmaAllocationInfo info{};
+      vmaGetAllocationInfo(m_allocator, buffer->allocation, &info);
+      m_ledger.destroyed(gfx::gpu_resource_kind::Buffer, pending.buffer.raw(),
+                         info.size,
+                         info.pName != nullptr ? nx::string_view(info.pName)
+                                               : nx::string_view{});
       vmaDestroyBuffer(m_allocator, buffer->buffer, buffer->allocation);
       m_buffers.erase(pending.buffer);
     }
@@ -1955,6 +1986,8 @@ void VulkanDevice::collect_garbage(
       m_pipelines.erase(pending.pipeline);
     }
     if (VulkanHeap *heap = m_heaps.try_get(pending.heap)) {
+      m_ledger.destroyed(gfx::gpu_resource_kind::MemoryHeap,
+                         pending.heap.raw(), heap->size, {});
       if (heap->allocation != VK_NULL_HANDLE)
         vmaFreeMemory(m_allocator, heap->allocation);
       m_heaps.erase(pending.heap);

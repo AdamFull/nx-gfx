@@ -162,7 +162,8 @@ VulkanDevice::create_texture(const gfx::texture_desc &desc) {
   if (NX_VK_DEVICE_CHECK(
           *this, vmaCreateImage(m_allocator, &info, &alloc_info, &texture.image,
                                 &texture.allocation, nullptr)) != VK_SUCCESS) {
-    nx::loge(nx::log::rhi, "create_texture('{}'): allocation failed", desc.name);
+    nx::loge(nx::log::rhi, "create_texture('{}'): allocation failed",
+             desc.name);
     return {};
   }
   {
@@ -199,7 +200,12 @@ VulkanDevice::create_texture(const gfx::texture_desc &desc) {
     return {};
   }
 
+  texture.name = nx::string(desc.name);
+  VmaAllocationInfo allocation_info{};
+  vmaGetAllocationInfo(m_allocator, texture.allocation, &allocation_info);
   const gfx::texture_handle handle = m_textures.insert(std::move(texture));
+  m_ledger.created(gfx::gpu_resource_kind::Texture, handle.raw(),
+                   allocation_info.size, desc.name);
   VulkanTexture &stored = *m_textures.try_get(handle);
   set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
                   desc.name);
@@ -256,7 +262,10 @@ VulkanDevice::wrap_texture(const gfx::vk::wrapped_image &image) {
   texture.release = image.release;
   texture.release_user = image.user;
 
+  texture.name = nx::string(image.name);
   const gfx::texture_handle handle = m_textures.insert(std::move(texture));
+  m_ledger.created(gfx::gpu_resource_kind::Texture, handle.raw(), 0,
+                   image.name);
   VulkanTexture &stored = *m_textures.try_get(handle);
   set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
                   image.name);
@@ -317,8 +326,8 @@ gfx::heap_handle VulkanDevice::create_heap(const gfx::heap_desc &desc) {
   if (NX_VK_DEVICE_CHECK(*this, vmaAllocateMemory(m_allocator, &requirements,
                                                   &alloc_info, &heap.allocation,
                                                   nullptr)) != VK_SUCCESS) {
-    nx::loge(nx::log::rhi, "create_heap('{}'): {} KiB allocation failed", desc.name,
-             desc.size / 1024);
+    nx::loge(nx::log::rhi, "create_heap('{}'): {} KiB allocation failed",
+             desc.name, desc.size / 1024);
     return {};
   }
   {
@@ -326,7 +335,10 @@ gfx::heap_handle VulkanDevice::create_heap(const gfx::heap_desc &desc) {
     vmaSetAllocationName(m_allocator, heap.allocation, allocation_name.c_str());
   }
   const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
-  return m_heaps.insert(heap);
+  const gfx::heap_handle handle = m_heaps.insert(heap);
+  m_ledger.created(gfx::gpu_resource_kind::MemoryHeap, handle.raw(), desc.size,
+                   desc.name);
+  return handle;
 }
 
 void VulkanDevice::destroy_heap(const gfx::heap_handle handle) noexcept {
@@ -343,8 +355,8 @@ VulkanDevice::create_texture_in_heap(const gfx::texture_desc &desc,
   const VulkanHeap *heap = m_heaps.try_get(heap_handle);
   if (heap == nullptr || desc.format == gfx::format::Unknown ||
       desc.width == 0 || desc.height == 0) {
-    nx::loge(nx::log::rhi, "create_texture_in_heap('{}'): invalid heap or extent",
-             desc.name);
+    nx::loge(nx::log::rhi,
+             "create_texture_in_heap('{}'): invalid heap or extent", desc.name);
     return {};
   }
 
@@ -389,7 +401,9 @@ VulkanDevice::create_texture_in_heap(const gfx::texture_desc &desc,
     return {};
   }
 
+  texture.name = nx::string(desc.name);
   const gfx::texture_handle handle = m_textures.insert(std::move(texture));
+  m_ledger.created(gfx::gpu_resource_kind::Texture, handle.raw(), 0, desc.name);
   VulkanTexture &stored = *m_textures.try_get(handle);
   set_object_name(vk_handle_value(stored.image), VK_OBJECT_TYPE_IMAGE,
                   desc.name);
@@ -601,6 +615,8 @@ gfx::buffer_handle VulkanDevice::create_buffer(const gfx::buffer_desc &desc) {
     const nx::scoped_lock<nx::mutex> held(m_garbage_lock);
     handle = m_buffers.insert(VulkanBuffer(buffer));
   }
+  m_ledger.created(gfx::gpu_resource_kind::Buffer, handle.raw(),
+                   allocation_info.size, desc.name);
   set_object_name(vk_handle_value(buffer.buffer), VK_OBJECT_TYPE_BUFFER,
                   desc.name);
   return handle;

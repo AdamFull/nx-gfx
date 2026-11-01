@@ -195,6 +195,7 @@ private:
   VkCommandPool m_pool = VK_NULL_HANDLE;
   VkSemaphore m_timeline = VK_NULL_HANDLE;
   u64 m_value = 0;
+  std::atomic<u64> m_bytes_uploaded{0};
 
   // Staging ring (monotonic head/tail; offset = head % capacity). Render-thread
   // only, hence lockless.

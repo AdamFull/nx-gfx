@@ -265,6 +265,15 @@ public:
   [[nodiscard]] gfx::sampler_handle create_sampler(const gfx::sampler_desc &desc);
   void destroy_sampler(gfx::sampler_handle handle) noexcept;
 
+  [[nodiscard]] gfx::gpu_memory_stats memory_stats() const noexcept {
+    return {};
+  }
+  void set_resource_events(bool) noexcept {}
+  [[nodiscard]] usize
+  read_resource_events(std::span<gfx::gpu_resource_event>) noexcept {
+    return 0;
+  }
+  [[nodiscard]] u64 resource_events_dropped() const noexcept { return 0; }
   void set_gpu_markers(bool) noexcept {}
   [[nodiscard]] usize read_gpu_markers(std::span<gfx::gpu_marker>) noexcept {
     return 0;

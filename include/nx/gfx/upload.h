@@ -89,6 +89,7 @@ struct uploader_stats {
   u64 completed_submits = 0;
   u64 ring_used = 0; ///< Staging-ring bytes not yet reclaimed.
   u64 ring_capacity = 0;
+  u64 bytes_uploaded = 0; ///< Lifetime bytes handed to upload_ calls.
   usize extra_buffers = 0;
   usize inflight_submits = 0;
 };

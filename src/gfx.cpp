@@ -490,6 +490,23 @@ gpu_marker_stats gpu_markers_stats(const device &dev) noexcept {
   return be(dev).gpu_markers_stats();
 }
 
+gpu_memory_stats memory_stats(device &dev) noexcept {
+  return be(dev).memory_stats();
+}
+
+void set_resource_events(device &dev, const bool on) noexcept {
+  be(dev).set_resource_events(on);
+}
+
+usize read_resource_events(device &dev,
+                           const std::span<gpu_resource_event> out) noexcept {
+  return be(dev).read_resource_events(out);
+}
+
+u64 resource_events_dropped(const device &dev) noexcept {
+  return be(dev).resource_events_dropped();
+}
+
 uploader_stats upload_stats(device &dev) noexcept {
   return be(dev).uploader().stats();
 }

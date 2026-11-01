@@ -496,6 +496,7 @@ gfx::upload_ticket VulkanUploader::try_upload_texture(
   const VulkanGpuMarkers::CopyScope marker(m_device->gpu_markers(), cmd,
                                            "upload texture");
 
+  m_bytes_uploaded.fetch_add(staging_size, std::memory_order_relaxed);
   nx::small_vector<VkBufferImageCopy, 16> copies;
   u64 offset = 0;
   for (const gfx::image_subresource &sr : layout) {
@@ -679,6 +680,7 @@ gfx::upload_ticket VulkanUploader::try_upload_buffer(
     return gfx::upload_ticket::failure();
   }
   std::memcpy(staging, src.data(), src.size());
+  m_bytes_uploaded.fetch_add(src.size(), std::memory_order_relaxed);
 
   if (!flush_upload_staging(dedicated, base_offset, src.size())) {
     nx::loge(log_up, "upload_buffer: could not flush staging memory");
@@ -1024,6 +1026,7 @@ gfx::uploader_stats VulkanUploader::stats() const noexcept {
   s.completed_submits = completed_value();
   s.ring_used = m_ring_head - m_ring_tail;
   s.ring_capacity = m_ring_capacity;
+  s.bytes_uploaded = m_bytes_uploaded.load(std::memory_order_relaxed);
   s.extra_buffers = m_chunks.size();
   s.inflight_submits = m_inflight.size();
   return s;

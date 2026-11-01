@@ -21,6 +21,7 @@
 #include "src/vulkan/vk_gpu_profiler.h"
 #include "src/vulkan/vk_mem_alloc_include.h"
 #include "src/vulkan/vk_render_pass.h"
+#include "src/vulkan/vk_resource_ledger.h"
 #include "src/vulkan/vk_upload.h"
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 #include "src/vulkan/vk_composition_win32.h"
@@ -57,6 +58,8 @@ struct VulkanTexture {
   nx::small_vector<VkImageView, 12> uavs;
   nx::small_vector<u32, 12> uav_indices;
   VmaAllocation allocation = VK_NULL_HANDLE;
+  /// For the ledger, when no allocation of its own carries the name.
+  nx::string name;
   gfx::format format = gfx::format::Unknown;
   gfx::texture_dimension dimension = gfx::texture_dimension::Tex2D;
   u32 width = 0;
@@ -679,9 +682,23 @@ public:
   [[nodiscard]] VulkanGpuProfiler &gpu_profiler() noexcept {
     return m_gpu_profiler;
   }
-  [[nodiscard]] VulkanGpuMarkers &gpu_markers() noexcept { return m_gpu_markers; }
-  void set_gpu_markers(const bool on) noexcept { m_gpu_markers.set_enabled(on); }
-  [[nodiscard]] usize read_gpu_markers(const std::span<gfx::gpu_marker> out) noexcept {
+  [[nodiscard]] VulkanGpuMarkers &gpu_markers() noexcept {
+    return m_gpu_markers;
+  }
+  [[nodiscard]] gfx::gpu_memory_stats memory_stats() const noexcept;
+  void set_resource_events(const bool on) noexcept { m_ledger.set_events(on); }
+  [[nodiscard]] usize
+  read_resource_events(const std::span<gfx::gpu_resource_event> out) noexcept {
+    return m_ledger.read(out);
+  }
+  [[nodiscard]] u64 resource_events_dropped() const noexcept {
+    return m_ledger.dropped();
+  }
+  void set_gpu_markers(const bool on) noexcept {
+    m_gpu_markers.set_enabled(on);
+  }
+  [[nodiscard]] usize
+  read_gpu_markers(const std::span<gfx::gpu_marker> out) noexcept {
     return m_gpu_markers.read(out);
   }
   [[nodiscard]] gfx::gpu_marker_stats gpu_markers_stats() const noexcept {
@@ -827,6 +844,7 @@ private:
   mutable VulkanGpuCrashReporter m_gpu_crash;
   VulkanGpuProfiler m_gpu_profiler;
   VulkanGpuProfiler m_copy_profiler;
+  VulkanResourceLedger m_ledger;
   VulkanGpuMarkers m_gpu_markers;
   VulkanGpuMarkers::List *m_frame_markers = nullptr;
 

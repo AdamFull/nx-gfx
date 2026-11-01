@@ -108,6 +108,7 @@ else ()
             src/vulkan/vk_gpu_crash.h
             src/vulkan/vk_gpu_markers.h
             src/vulkan/vk_gpu_profiler.h
+            src/vulkan/vk_resource_ledger.h
             src/vulkan/vk_device.h
             src/vulkan/vk_mem_alloc_include.h
             src/vulkan/vk_render_pass.h
@@ -119,6 +120,7 @@ else ()
             src/vulkan/vk_gpu_crash.cpp
             src/vulkan/vk_gpu_markers.cpp
             src/vulkan/vk_gpu_profiler.cpp
+            src/vulkan/vk_resource_ledger.cpp
             src/vulkan/vk_device.cpp
             src/vulkan/vk_gfx.cpp
             src/vulkan/vk_pipeline.cpp
