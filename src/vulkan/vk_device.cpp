@@ -1287,6 +1287,8 @@ bool VulkanDevice::create_logical_device(
                      m_gpu_crash.detailed() &&
                          m_routes.device_fault_vendor_binary,
                      address_tracking);
+  m_gpu_crash.set_context(
+      [this](gfx::gpu_crash_report &out) { describe_loss(out); });
   nx::logd(nx::log::rhi, "GPU crash diagnostics: fault={} address-bindings={}",
            m_routes.device_fault == VulkanFaultRoute::Khr   ? "KHR"
            : m_routes.device_fault == VulkanFaultRoute::Ext ? "EXT"
@@ -2060,6 +2062,45 @@ void VulkanCommandContext::end_native() noexcept {
   if (m_device == nullptr || m_cmd == VK_NULL_HANDLE)
     return;
   m_device->bind_bindless(m_cmd);
+}
+
+void VulkanDevice::describe_loss(gfx::gpu_crash_report &out) {
+  // Whether frames and uploads wait on each other, or a queue is stuck in a
+  // pass; queues and timelines stay readable after the loss.
+  u64 frames = 0;
+  u64 uploads = 0;
+  const VkResult read_frames =
+      vkGetSemaphoreCounterValueKHR(m_device, m_timeline, &frames);
+  const VkResult read_uploads =
+      vkGetSemaphoreCounterValueKHR(m_device, m_uploader.timeline(), &uploads);
+  out.description.append(nx::format(
+      "; frames {} submitted, {} done{}; this frame waits uploads to {}; "
+      "uploads {} submitted, {} done{}",
+      m_timeline_value, frames, read_frames == VK_SUCCESS ? "" : " (unread)",
+      m_frame_upload_wait, m_uploader.submitted_value(), uploads,
+      read_uploads == VK_SUCCESS ? "" : " (unread)"));
+  if (vkGetQueueCheckpointDataNV == nullptr)
+    return;
+  const gfx::queue_type types[] = {gfx::queue_type::Graphics,
+                                   gfx::queue_type::Copy};
+  for (const gfx::queue_type type : types) {
+    const VkQueue queue = m_queues[nx::cast<usize>(type)];
+    if (queue == VK_NULL_HANDLE)
+      continue;
+    u32 count = 0;
+    vkGetQueueCheckpointDataNV(queue, &count, nullptr);
+    nx::vector<VkCheckpointDataNV> data(
+        count, VkCheckpointDataNV{VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV});
+    vkGetQueueCheckpointDataNV(queue, &count, data.data());
+    for (u32 i = 0; i < count; ++i)
+      out.vendor_faults.push_back(
+          {.description = nx::format("queue {} checkpoint: {} at stage {:#x}",
+                                     nx::cast<u32>(type),
+                                     m_gpu_crash.aftermath().checkpoint_label(
+                                         data[i].pCheckpointMarker),
+                                     static_cast<u32>(data[i].stage)),
+           .code = static_cast<u64>(data[i].stage)});
+  }
 }
 
 } // namespace nx::gfx::detail

@@ -61,6 +61,7 @@ public:
   /// last call into @p graphics_cmd, and returns the copy-timeline value the
   /// graphics submit must wait on (0 if nothing is pending).
   u64 record_acquires(VkCommandBuffer graphics_cmd);
+  [[nodiscard]] u64 submitted_value() const noexcept { return m_value; }
   [[nodiscard]] VkSemaphore timeline() const noexcept { return m_timeline; }
   void reclaim() noexcept;
 

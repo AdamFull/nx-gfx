@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/foundation/core/callable.h"
 #include "core/foundation/threading/sync.h"
 #include "nx/gfx/crash.h"
 #include "src/vulkan/vk_aftermath.h"
@@ -21,6 +22,10 @@ public:
               VulkanFaultRoute route, bool vendor_binary,
               bool address_tracking);
   void reset() noexcept;
+  /// @p add puts in a report what only the device knows.
+  void set_context(nx::function<void(gfx::gpu_crash_report &)> add) {
+    m_context = std::move(add);
+  }
 
   [[nodiscard]] bool enabled() const noexcept { return m_enabled; }
   [[nodiscard]] VulkanAftermath &aftermath() noexcept { return m_aftermath; }
@@ -40,6 +45,7 @@ public:
                  u64 frame) noexcept;
 
 private:
+  nx::function<void(gfx::gpu_crash_report &)> m_context;
   static constexpr usize BINDING_CAPACITY = 256;
   static constexpr usize OBJECT_CAPACITY = 512;
   static constexpr usize TEXT_CAPACITY = 96;

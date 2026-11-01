@@ -41,6 +41,10 @@ public:
   /// Marks @p cmd's place as @p label, where checkpoints are enabled.
   void checkpoint(VkCommandBuffer cmd, nx::string_view label) noexcept;
   void enable_checkpoints(bool enabled) noexcept { m_checkpoints = enabled; }
+  /// The label checkpoint() gave @p marker.
+  [[nodiscard]] nx::string checkpoint_label(const void *const marker) const {
+    return label_of(reinterpret_cast<uintptr_t>(marker));
+  }
 
   /// Waits, a bounded time, for the driver's dump of a lost device, and adds
   /// what it holds to @p report.

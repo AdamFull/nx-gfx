@@ -848,6 +848,8 @@ private:
   VulkanGpuMarkers m_gpu_markers;
   VulkanGpuMarkers::List *m_frame_markers = nullptr;
 
+  /// Puts in @p out how far each queue and timeline got before the loss.
+  void describe_loss(gfx::gpu_crash_report &out);
   VkQueue m_queues[nx::cast<usize>(gfx::queue_type::Count)] = {};
   u32 m_queue_families[nx::cast<usize>(gfx::queue_type::Count)] = {};
   nx::fixed_vector<u32, nx::cast<usize>(gfx::queue_type::Count)>
