@@ -472,6 +472,10 @@ u64 VulkanAftermath::checkpoint(VkCommandBuffer, nx::string_view) noexcept {
 
 void VulkanAftermath::collect(gfx::gpu_crash_report &) noexcept {}
 
+nx::string VulkanAftermath::label_of(const u64 id) const {
+  return nx::format("checkpoint {}", id);
+}
+
 #endif
 
 } // namespace nx::gfx::detail
