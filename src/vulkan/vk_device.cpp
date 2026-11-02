@@ -400,6 +400,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
   require(draw_params.shaderDrawParameters != 0, "shader draw parameters");
   require(features.features.samplerAnisotropy != 0, "sampler anisotropy");
   require(features.features.multiDrawIndirect != 0, "multi-draw indirect");
+  require(features.features.drawIndirectFirstInstance != 0,
+          "indirect draws with a first instance");
   require(features.features.shaderInt16 != 0, "shaderInt16");
   // Device-address-backed NxPtr values are represented as uint64_t in Slang.
   // Buffer device address alone does not enable the SPIR-V Int64 capability.
@@ -1195,6 +1197,7 @@ bool VulkanDevice::create_logical_device(
 
   features.features.samplerAnisotropy = VK_TRUE;
   features.features.multiDrawIndirect = VK_TRUE;
+  features.features.drawIndirectFirstInstance = VK_TRUE;
   features.features.shaderInt16 = VK_TRUE;
   features.features.shaderInt64 = VK_TRUE;
   features.features.independentBlend = VK_TRUE;
