@@ -220,10 +220,10 @@ void VulkanAftermath::shader(const void *const code, const usize size,
   }
 }
 
-void VulkanAftermath::checkpoint(const VkCommandBuffer cmd,
-                                 const nx::string_view label) noexcept {
+u64 VulkanAftermath::checkpoint(const VkCommandBuffer cmd,
+                                const nx::string_view label) noexcept {
   if (!m_checkpoints || vkCmdSetCheckpointNV == nullptr)
-    return;
+    return 0;
   u64 id = 0;
   try {
     const nx::scoped_lock<nx::mutex> held(m_lock);
@@ -241,6 +241,7 @@ void VulkanAftermath::checkpoint(const VkCommandBuffer cmd,
   // and on_resolve_marker names it.
   vkCmdSetCheckpointNV(
       cmd, reinterpret_cast<const void *>(static_cast<uintptr_t>(id)));
+  return id;
 }
 
 nx::string VulkanAftermath::label_of(const u64 id) const {
@@ -465,7 +466,9 @@ VkDeviceDiagnosticsConfigFlagsNV VulkanAftermath::diagnostics_flags() noexcept {
 
 void VulkanAftermath::shader(const void *, usize, nx::string_view) noexcept {}
 
-void VulkanAftermath::checkpoint(VkCommandBuffer, nx::string_view) noexcept {}
+u64 VulkanAftermath::checkpoint(VkCommandBuffer, nx::string_view) noexcept {
+  return 0;
+}
 
 void VulkanAftermath::collect(gfx::gpu_crash_report &) noexcept {}
 

@@ -15,6 +15,7 @@
 #include "nx/gfx/reflection.h"
 #include "nx/gfx/types.h"
 #include "nx/gfx/vulkan.h"
+#include "src/vulkan/vk_breadcrumbs.h"
 #include "src/vulkan/vk_common.h"
 #include "src/vulkan/vk_gpu_crash.h"
 #include "src/vulkan/vk_gpu_markers.h"
@@ -204,6 +205,8 @@ struct DeviceRoutes {
   /// NVIDIA's diagnostics config and checkpoints, which Nsight Aftermath
   /// reads.
   bool diagnostics_config = false;
+  /// Markers the GPU writes as it goes (VulkanBreadcrumbs).
+  bool buffer_marker = false;
   /// SPIR-V's non-semantic instructions, as shaders built with debug
   /// information hold: core from 1.3, else this extension.
   bool non_semantic_info = false;
@@ -318,6 +321,8 @@ private:
   CommandSlot *m_slot = nullptr;
   u32 m_position = 0;
   bool m_in_render_pass = false;
+  /// What VulkanBreadcrumbs::end takes for each debug group open.
+  nx::small_vector<u32, 8> m_breadcrumbs;
 };
 
 /// A command pool and the command buffers allocated from it. One recorder uses
@@ -682,6 +687,9 @@ public:
   [[nodiscard]] VulkanGpuProfiler &gpu_profiler() noexcept {
     return m_gpu_profiler;
   }
+  [[nodiscard]] VulkanBreadcrumbs &breadcrumbs() noexcept {
+    return m_breadcrumbs;
+  }
   [[nodiscard]] VulkanGpuMarkers &gpu_markers() noexcept {
     return m_gpu_markers;
   }
@@ -846,6 +854,7 @@ private:
   VulkanGpuProfiler m_copy_profiler;
   VulkanResourceLedger m_ledger;
   VulkanGpuMarkers m_gpu_markers;
+  VulkanBreadcrumbs m_breadcrumbs;
   VulkanGpuMarkers::List *m_frame_markers = nullptr;
 
   /// Puts in @p out how far each queue and timeline got before the loss.

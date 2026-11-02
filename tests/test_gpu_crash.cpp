@@ -4,10 +4,73 @@
 #include "nx/gfx/crash.h"
 
 #if defined(NX_RHI_VULKAN)
+#include "src/vulkan/vk_breadcrumbs.h"
 #include "src/vulkan/vk_gpu_crash.h"
 #endif
 
 namespace gfx = nx::gfx;
+
+TEST_CASE(
+    "gpu crash: breadcrumbs say which groups were done, which running and "
+    "which never reached, however far the numbers have wrapped") {
+  namespace g = gfx::detail;
+  using State = g::VulkanBreadcrumbs::State;
+  constexpr u32 COUNT = g::VulkanBreadcrumbs::ENTRIES;
+  nx::vector<u32> words(usize{COUNT} * 2u, 0u);
+  const auto word = [](const u32 number, const u32 label) {
+    return number << 12u | label;
+  };
+  const auto started = [&](const u32 number, const u32 label) {
+    words[usize{number % COUNT} * 2u] = word(number, label);
+  };
+  const auto done = [&](const u32 number, const u32 label) {
+    words[usize{number % COUNT} * 2u + 1u] = word(number, label);
+  };
+  SUBCASE("nothing marked") {
+    CHECK(g::VulkanBreadcrumbs::read(words, 1, 8).empty());
+  }
+  SUBCASE("a pass stuck: those before it done, those after it not reached") {
+    for (u32 n = 1; n <= 5; ++n) {
+      started(n, n + 10u);
+      done(n, n + 10u);
+    }
+    started(6, 16);
+    // Six more recorded and never reached.
+    const auto read = g::VulkanBreadcrumbs::read(words, 13, 100);
+    REQUIRE(read.size() == 9u);
+    CHECK(read[0].state == State::Done);
+    CHECK(read[0].label == 11u);
+    CHECK(read[4].state == State::Done);
+    CHECK(read[5].state == State::Running);
+    CHECK(read[5].label == 16u);
+    CHECK(read[6].state == State::NotStarted);
+    CHECK(read[8].state == State::NotStarted);
+  }
+  SUBCASE("only the last asked for, the newest kept") {
+    for (u32 n = 1; n <= 20; ++n) {
+      started(n, n);
+      done(n, n);
+    }
+    const auto read = g::VulkanBreadcrumbs::read(words, 21, 4);
+    REQUIRE(read.size() == 4u);
+    CHECK(read[0].label == 17u);
+    CHECK(read[3].label == 20u);
+  }
+  SUBCASE("a slot still holding an older group's word is not this group's") {
+    // Group COUNT + 5 lands on group 5's slot and was never reached, and
+    // group 5's words are still there.
+    for (u32 n = 6; n < COUNT + 5u; ++n) {
+      started(n, 1);
+      done(n, 1);
+    }
+    started(5, 2);
+    done(5, 2);
+    const auto read = g::VulkanBreadcrumbs::read(words, COUNT + 6u, 2);
+    REQUIRE(read.size() == 2u);
+    CHECK(read[0].state == State::Done);
+    CHECK(read[1].state == State::NotStarted);
+  }
+}
 
 TEST_CASE("gpu crash: structured report preserves object identities") {
   gfx::gpu_crash_report report;

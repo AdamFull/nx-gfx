@@ -38,12 +38,13 @@ public:
 
   /// Keeps shader @p code (SPIR-V) as @p name, for dumps to decode against.
   void shader(const void *code, usize size, nx::string_view name) noexcept;
-  /// Marks @p cmd's place as @p label, where checkpoints are enabled.
-  void checkpoint(VkCommandBuffer cmd, nx::string_view label) noexcept;
+  /// Marks @p cmd's place as @p label, where checkpoints are enabled, and
+  /// returns the label's number, for checkpoint_label(), or 0.
+  u64 checkpoint(VkCommandBuffer cmd, nx::string_view label) noexcept;
   void enable_checkpoints(bool enabled) noexcept { m_checkpoints = enabled; }
   /// The label checkpoint() gave @p marker.
-  [[nodiscard]] nx::string checkpoint_label(const void *const marker) const {
-    return label_of(reinterpret_cast<uintptr_t>(marker));
+  [[nodiscard]] nx::string checkpoint_label(const u64 id) const {
+    return label_of(id);
   }
 
   /// Waits, a bounded time, for the driver's dump of a lost device, and adds

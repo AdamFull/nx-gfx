@@ -195,6 +195,8 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
   const bool ext_diagnostics =
       listed(available, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME) &&
       listed(available, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+  const bool ext_buffer_marker =
+      listed(available, VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
   const bool ext_calibrated_khr =
       listed(available, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
   const bool ext_calibrated_ext =
@@ -438,6 +440,7 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
   out.address_binding_report =
       ext_address_binding && address_binding.reportAddressBinding;
   out.diagnostics_config = ext_diagnostics && diagnostics.diagnosticsConfig;
+  out.buffer_marker = ext_buffer_marker;
   out.non_semantic_info = out.core_13 || ext_non_semantic_info;
   out.host_query_reset = out.core_12 && features12.hostQueryReset;
   out.calibrated_timestamps = ext_calibrated_khr ? VulkanCalibrationRoute::Khr
@@ -1126,6 +1129,8 @@ bool VulkanDevice::create_logical_device(
           VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
       device_extensions.push_back(
           VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+      if (m_routes.buffer_marker)
+        device_extensions.push_back(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
     }
     if (m_gpu_crash.detailed() && m_debug_utils &&
         m_routes.address_binding_report) {
@@ -1536,6 +1541,9 @@ bool VulkanDevice::init(const gfx::device_desc &desc) {
     else if (m_routes.calibrated_timestamps == VulkanCalibrationRoute::Ext)
       calibrated = vkGetCalibratedTimestampsEXT;
 #endif
+    if (m_routes.buffer_marker && m_gpu_crash.aftermath().active() &&
+        m_routes.diagnostics_config)
+      (void)m_breadcrumbs.init(m_allocator);
     m_gpu_markers.init(m_device, nx::cast<u32>(m_frames.size()),
                        m_caps.timestamp_period_ns,
                        properties[graphics_family()].timestampValidBits,
@@ -1580,6 +1588,7 @@ void VulkanDevice::shutdown() noexcept {
     wait_idle();
 
   m_uploader.shutdown();
+  m_breadcrumbs.shutdown();
   m_gpu_markers.shutdown();
   m_gpu_profiler.shutdown();
   m_copy_profiler.shutdown();
@@ -2076,9 +2085,32 @@ void VulkanDevice::describe_loss(gfx::gpu_crash_report &out) {
   out.description.append(nx::format(
       "; frames {} submitted, {} done{}; this frame waits uploads to {}; "
       "uploads {} submitted, {} done{}",
-      m_timeline_value, frames, read_frames == VK_SUCCESS ? "" : " (unread)",
+      m_timeline_value, frames,
+      read_frames == VK_SUCCESS && frames != ~u64{0} ? "" : " (unread)",
       m_frame_upload_wait, m_uploader.submitted_value(), uploads,
-      read_uploads == VK_SUCCESS ? "" : " (unread)"));
+      read_uploads == VK_SUCCESS && uploads != ~u64{0} ? "" : " (unread)"));
+  // Groups nest, so the newest running is the innermost: where the GPU stuck.
+  nx::string running;
+  for (const VulkanBreadcrumbs::Entry &entry : m_breadcrumbs.recent(48)) {
+    const nx::string label =
+        m_gpu_crash.aftermath().checkpoint_label(entry.label);
+    const bool is_running = entry.state == VulkanBreadcrumbs::State::Running;
+    if (is_running)
+      running.append(nx::format("{}{}", running.empty() ? "" : ", ", label));
+    out.vendor_faults.push_back(
+        {.description =
+             nx::format("breadcrumb: {}: {}",
+                        entry.state == VulkanBreadcrumbs::State::NotStarted
+                            ? nx::string("(recorded)")
+                            : label,
+                        entry.state == VulkanBreadcrumbs::State::Done ? "done"
+                        : is_running ? "RUNNING"
+                                     : "not started"),
+         .code = entry.label,
+         .data = static_cast<u64>(entry.state)});
+  }
+  if (!running.empty())
+    out.description.append(nx::format("; running when lost: {}", running));
   if (vkGetQueueCheckpointDataNV == nullptr)
     return;
   const gfx::queue_type types[] = {gfx::queue_type::Graphics,
@@ -2094,11 +2126,11 @@ void VulkanDevice::describe_loss(gfx::gpu_crash_report &out) {
     vkGetQueueCheckpointDataNV(queue, &count, data.data());
     for (u32 i = 0; i < count; ++i)
       out.vendor_faults.push_back(
-          {.description = nx::format("queue {} checkpoint: {} at stage {:#x}",
-                                     nx::cast<u32>(type),
-                                     m_gpu_crash.aftermath().checkpoint_label(
-                                         data[i].pCheckpointMarker),
-                                     static_cast<u32>(data[i].stage)),
+          {.description = nx::format(
+               "queue {} checkpoint: {} at stage {:#x}", nx::cast<u32>(type),
+               m_gpu_crash.aftermath().checkpoint_label(static_cast<u64>(
+                   reinterpret_cast<uintptr_t>(data[i].pCheckpointMarker))),
+               static_cast<u32>(data[i].stage)),
            .code = static_cast<u64>(data[i].stage)});
   }
 }

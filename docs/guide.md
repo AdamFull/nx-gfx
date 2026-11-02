@@ -328,7 +328,10 @@ found its SDK (`NX_GFX_AFTERMATH_SDK`, found under an installed Nsight
 Graphics by default) and its library loads at run time; elsewhere it is off
 and costs nothing. Aftermath must start before the device is made: the device
 then enables `VK_NV_device_diagnostics_config` and checkpoints, and each debug
-group marks a checkpoint resolved to its label. Every shader module's SPIR-V
+group marks a checkpoint resolved to its label. Where `VK_AMD_buffer_marker`
+exists, each group also has the GPU write when it starts and when it is done,
+to memory that a lost device leaves readable, so the report lists the last groups
+and which were running. Every shader module's SPIR-V
 is kept, and the driver's debug information for shaders is collected as
 deferred callbacks, so on device loss the report adds the decoded
 `gpu-aftermath.json` (faulting warps resolved to a shader, its instruction

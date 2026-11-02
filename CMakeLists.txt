@@ -106,6 +106,8 @@ else ()
             src/vulkan/vk_aftermath.h
             src/vulkan/vk_common.h
             src/vulkan/vk_gpu_crash.h
+            src/vulkan/vk_breadcrumbs.cpp
+            src/vulkan/vk_breadcrumbs.h
             src/vulkan/vk_gpu_markers.h
             src/vulkan/vk_gpu_profiler.h
             src/vulkan/vk_resource_ledger.h
