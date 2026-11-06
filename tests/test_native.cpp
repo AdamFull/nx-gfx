@@ -6,6 +6,7 @@
 #include "nx/gfx/gfx.h"
 #include "nx/gfx/native.h"
 #include "owned_device.h"
+#include "validation_errors.h"
 
 #if defined(NX_RHI_VULKAN)
 
@@ -132,23 +133,7 @@ struct TestDevice {
   TestDevice &operator=(const TestDevice &) = delete;
 };
 
-/// Counts the validation layer's errors: a VUID, or a hazard that
-/// synchronization validation found (its reports name no VUID).
-class ValidationErrors final : public nx::log::Sink {
-public:
-  void write(const nx::log::Record &r) override {
-    const nx::string_view message(r.message, r.length);
-    if (message.find("VUID") != nx::string_view::npos ||
-        message.find("hazard detected") != nx::string_view::npos)
-      m_count.fetch_add(1, std::memory_order_relaxed);
-  }
-  [[nodiscard]] u32 count() const noexcept {
-    return m_count.load(std::memory_order_relaxed);
-  }
-
-private:
-  std::atomic<u32> m_count{0};
-};
+using nx::gfx::test::ValidationErrors;
 
 struct Push {
   u64 out = 0;

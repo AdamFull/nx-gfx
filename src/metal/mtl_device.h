@@ -9,6 +9,7 @@
 #include "nx/gfx/types.h"
 #include "nx/gfx/native.h"
 #include "nx/gfx/pipeline_job.h"
+#include "nx/gfx/ray.h"
 #include "nx/gfx/reflection.h"
 #include "nx/gfx/upload.h"
 
@@ -130,6 +131,36 @@ public:
   [[nodiscard]] bool copy_buffer(gfx::buffer_handle source, u64 source_offset,
                                  gfx::buffer_handle destination,
                                  u64 destination_offset, u64 size);
+
+  [[nodiscard]] bool
+  build_acceleration_structure(gfx::acceleration_structure_handle,
+                               const gfx::bottom_level_desc &, u64) noexcept {
+    return false;
+  }
+  [[nodiscard]] bool
+  build_acceleration_structure(gfx::acceleration_structure_handle,
+                               const gfx::top_level_desc &, u64) noexcept {
+    return false;
+  }
+  [[nodiscard]] bool
+  update_acceleration_structure(gfx::acceleration_structure_handle,
+                                const gfx::bottom_level_desc &, u64) noexcept {
+    return false;
+  }
+  [[nodiscard]] bool
+  update_acceleration_structure(gfx::acceleration_structure_handle,
+                                const gfx::top_level_desc &, u64) noexcept {
+    return false;
+  }
+  void
+  write_compacted_sizes(std::span<const gfx::acceleration_structure_handle>,
+                        gfx::query_pool_handle, u32) noexcept {}
+  [[nodiscard]] bool
+  copy_acceleration_structure(gfx::acceleration_structure_handle,
+                              gfx::acceleration_structure_handle,
+                              bool) noexcept {
+    return false;
+  }
 
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
                         f32 b = 1.f);
@@ -254,6 +285,40 @@ public:
 
   [[nodiscard]] gfx::buffer_handle create_buffer(const gfx::buffer_desc &desc);
   void destroy_buffer(gfx::buffer_handle handle) noexcept;
+
+  // Acceleration structures wait for the Metal 3D track (N1): the caps say
+  // absent, and these answer accordingly.
+  [[nodiscard]] gfx::acceleration_structure_sizes
+  acceleration_structure_sizes(const gfx::bottom_level_desc &) const noexcept {
+    return {};
+  }
+  [[nodiscard]] gfx::acceleration_structure_sizes
+  acceleration_structure_sizes(const gfx::top_level_desc &) const noexcept {
+    return {};
+  }
+  [[nodiscard]] gfx::acceleration_structure_handle
+  create_acceleration_structure(
+      const gfx::acceleration_structure_desc &) noexcept {
+    return {};
+  }
+  void
+  destroy_acceleration_structure(gfx::acceleration_structure_handle) noexcept {}
+  [[nodiscard]] gfx::query_pool_handle
+  create_compacted_size_pool(u32) noexcept {
+    return {};
+  }
+  [[nodiscard]] bool read_compacted_sizes(gfx::query_pool_handle,
+                                          std::span<u64>) const noexcept {
+    return false;
+  }
+  [[nodiscard]] u64 acceleration_structure_address(
+      gfx::acceleration_structure_handle) const noexcept {
+    return 0;
+  }
+  [[nodiscard]] gfx::buffer_handle acceleration_structure_buffer(
+      gfx::acceleration_structure_handle) const noexcept {
+    return {};
+  }
 
   [[nodiscard]] gfx::memory_requirements
   texture_requirements(const gfx::texture_desc &desc) const;

@@ -48,7 +48,10 @@ it declares. A device with neither is refused.
 `device_desc::disable_routes`, or `NX_GFX_DISABLE_ROUTES=dynamic_rendering`,
 puts a device that has dynamic rendering on the fallback, so the fallback is
 tested on any machine; Shipping builds ignore both. `nx_gfx_tests` runs every
-case again that way (ctest label `routes`).
+case again that way (ctest label `routes`). `ray_queries` (`route::RayQueries`)
+turns off ray queries and the acceleration structures they trace, so a caller's
+own fallback for them is tested on a device that has them; `nx_gfx_tests`
+checks it with a device of its own rather than another pass of the suite.
 
 Bindless slots live in one update-after-bind descriptor set, or, where a
 device has `VK_EXT_descriptor_heap` and it is asked for
@@ -145,8 +148,22 @@ null page read zero. A shader that reads a raw address offsets it with
 
 Compile shaders with `nx_gfx_compile_slang` (`cmake/NxGfxShaders.cmake`) or
 the flags it uses. SPIR-V 1.3 runs on every Vulkan 1.1 device; a shader that
-needs more (mesh shaders need 1.4) is loaded only where the device has what
-it needs.
+needs more (mesh shaders and ray queries need 1.4) is loaded only where the
+device has what it needs.
+
+Every SPIR-V module then goes through `normalize_spirv` (`nx/gfx/spirv.h`, in
+`nx::gfx_formats`) before a device loads it; `nx_gfx_compile_slang` runs it
+through the `nx_gfx_spirv` host tool, and a consumer with its own pipeline
+calls it where it compiles. It answers the module unchanged, byte for byte,
+except for what it exists to fix: slangc 2026.8 declares `SPV_KHR_ray_tracing`
+for an acceleration structure made from an address
+(`OpConvertUToAccelerationStructureKHR`, which `SPV_KHR_ray_query` provides as
+well), and a device without `VK_KHR_ray_tracing_pipeline`, which is every
+device this library makes, then refuses the module
+(`VUID-VkShaderModuleCreateInfo-pCode-08742`). A module with no `RayTracingKHR`
+capability loses that declaration. `spirv-opt --trim-capabilities` is no
+substitute: it drops `SPV_KHR_physical_storage_buffer` instead. A build that
+cannot run its own executables names a host build in `NX_GFX_SPIRV_TOOL`.
 
 ## Pipelines
 
@@ -252,6 +269,47 @@ such a pipeline draws only through `draw_mesh_tasks_indirect`. A module with a
 mesh entry holds no fragment entry a pipeline uses: Intel's compiler crashes
 building a fragment stage whose module holds a mesh entry too.
 
+## Acceleration structures
+
+Where `acceleration_structures` is reported, `nx/gfx/ray.h` builds them, and
+where `ray_queries` is, a shader traces them inline (`RayQuery`) from any
+stage; there are no ray-tracing pipelines. A shader reaches a top level by its
+address (`acceleration_structure_address`), passed as a 64-bit word like any
+device address: `RaytracingAccelerationStructure(address)` in Slang. No
+descriptor is bound.
+
+A structure owns the buffer it lives in (`acceleration_structure_buffer`).
+Barriers and render-graph imports name that buffer, in three states:
+`AccelerationStructureInput` for what a build reads (vertices, indices,
+transforms, instances; their buffers made `AccelerationStructureInput`),
+`AccelerationStructureBuild` for the structure and the scratch a build writes,
+and `AccelerationStructureRead` for a structure a shader traces or a top level
+built over it reads. The caller places those barriers; a scratch reused by the
+next build needs a barrier from `AccelerationStructureBuild` to itself.
+
+`sizes` answers what a description needs: the structure's bytes, its build
+scratch and its update scratch. The scratch's address is a multiple of
+`device_caps::acceleration_structure_scratch_alignment`. A structure is made
+with the flags every build, update and copy into it names
+(`acceleration_structure_desc::flags`); a build of other flags is refused. So
+is one into the other kind, one too small, a misaligned scratch, top-level
+instances not 16 aligned, and anything inside a render pass; a refused build
+records nothing and logs why. Positions are three `f32` each; instances are
+`ray_instance` records, 64 bytes, laid out as Vulkan's.
+
+`update_acceleration_structure` refits a structure made `AllowUpdate` in
+place, for the same counts and flags with moved positions or instances; a top
+level over an updated bottom one is built or updated after it. Compaction takes
+a structure made `AllowCompaction`: its size is written into a pool
+(`create_compacted_size_pool`, reset before each write) once it is built,
+read back without waiting (`read_compacted_sizes`) frames later, and the
+structure copied compacted (`copy_acceleration_structure`) into one made that
+size, the first then destroyed. Destruction is deferred past submitted work and
+past retirement holds, as a buffer's is.
+
+Metal reports neither feature until its 3D track, and its functions answer
+invalid, zero or false.
+
 ## Native interop
 
 A library that works on the backend's own objects (an upscaler SDK, a video
@@ -342,6 +400,7 @@ with. The wait for the dump is bounded.
 ## Testing
 
 `nx_gfx_tests` covers the API, the pipeline job, crash reports, native
-interop and the shared types' layout, and runs again on the render-pass route.
+interop, acceleration structures traced by a ray query, `normalize_spirv` and
+the shared types' layout, and runs again on the render-pass route.
 A case that needs a device skips where none can be made. Metal is maintained
 with the Vulkan backend but runs in none of these tests off Apple hardware.

@@ -201,6 +201,9 @@ to_vk_buffer_usage(const gfx::buffer_usage_flags usage) noexcept {
     flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   if (usage & gfx::buffer_usage::DeviceAddress)
     flags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  if (usage & gfx::buffer_usage::AccelerationStructureInput)
+    flags |=
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
   return flags;
 }
 
@@ -311,7 +314,8 @@ VkAccessFlags2 to_buffer_access(const VkAccessFlags2 access) noexcept {
   constexpr VkAccessFlags2 WRITES =
       VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
       VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_WRITE_BIT |
-      VK_ACCESS_2_MEMORY_WRITE_BIT;
+      VK_ACCESS_2_MEMORY_WRITE_BIT |
+      VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
   if (access == VK_ACCESS_2_NONE)
     return VK_ACCESS_2_NONE;
   VkAccessFlags2 out = 0;
@@ -323,7 +327,8 @@ VkAccessFlags2 to_buffer_access(const VkAccessFlags2 access) noexcept {
 }
 
 VkStateInfo to_vk_state(const gfx::resource_state state,
-                        const VkPipelineStageFlags2 shader_stages) noexcept {
+                        const VkPipelineStageFlags2 shader_stages,
+                        const VkPipelineStageFlags2 build_stage) noexcept {
   constexpr VkPipelineStageFlags2 DEPTH_STAGES =
       VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
       VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -422,10 +427,33 @@ VkStateInfo to_vk_state(const gfx::resource_state state,
     return {VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, VK_ACCESS_2_NONE};
 
+  // A device without acceleration structures has no build stage to name;
+  // its buffers never take these states, as creation refuses the usage.
+  case gfx::resource_state::AccelerationStructureInput:
+    if (build_stage == 0)
+      break;
+    return {VK_IMAGE_LAYOUT_UNDEFINED, build_stage,
+            VK_ACCESS_2_SHADER_READ_BIT};
+
+  case gfx::resource_state::AccelerationStructureBuild:
+    if (build_stage == 0)
+      break;
+    return {VK_IMAGE_LAYOUT_UNDEFINED, build_stage,
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR};
+
+  // A top-level build reads the bottom levels it names.
+  case gfx::resource_state::AccelerationStructureRead:
+    if (build_stage == 0)
+      break;
+    return {VK_IMAGE_LAYOUT_UNDEFINED, shader_stages | build_stage,
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR};
+
   default:
-    return {VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            VK_ACCESS_2_NONE};
+    break;
   }
+  return {VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+          VK_ACCESS_2_NONE};
 }
 
 } // namespace nx::gfx::detail

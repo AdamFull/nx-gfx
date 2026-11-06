@@ -109,6 +109,14 @@ enum class resource_state : u16 {
   HostWrite,
 
   Present,
+
+  /// Read by an acceleration-structure build: vertices, indices, transforms
+  /// and instances.
+  AccelerationStructureInput,
+  /// An acceleration structure or a scratch buffer a build writes.
+  AccelerationStructureBuild,
+  /// An acceleration structure a shader traces or a top-level build reads.
+  AccelerationStructureRead,
   Count
 };
 
@@ -124,6 +132,7 @@ is_write_state(const resource_state state) noexcept {
   case resource_state::DepthStencilWrite:
   case resource_state::DepthStencilReadWrite:
   case resource_state::HostWrite:
+  case resource_state::AccelerationStructureBuild:
     return true;
   default:
     return false;
@@ -154,6 +163,9 @@ enum class buffer_usage : u16 {
   CopySrc = 1 << 5,
   CopyDst = 1 << 6,
   DeviceAddress = 1 << 7,
+  /// Read by acceleration-structure builds (nx/gfx/ray.h); only where the
+  /// device has them.
+  AccelerationStructureInput = 1 << 8,
 };
 NX_ENUM_FLAGS_DEFINE(buffer_usage, buffer_usage_flags)
 
@@ -316,6 +328,9 @@ using pipeline_handle = nx::basic_handle<u32, 24, struct pipeline_tag>;
 using shader_handle = nx::basic_handle<u32, 24, struct shader_tag>;
 using query_pool_handle = nx::basic_handle<u32, 24, struct query_pool_tag>;
 using swapchain_handle = nx::basic_handle<u32, 24, struct swapchain_tag>;
+// Bottom levels come and go with geometry residency, as buffers do.
+using acceleration_structure_handle =
+    nx::basic_handle<u64, 32, struct acceleration_structure_tag>;
 
 template <typename Repr, usize IndexBits, typename Tag>
 [[nodiscard]] constexpr u32

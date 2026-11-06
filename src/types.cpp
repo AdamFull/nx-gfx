@@ -99,7 +99,10 @@ constexpr nx::string_view STATE_NAMES[] = {"Undefined",
                                            "UniformBuffer",
                                            "HostRead",
                                            "HostWrite",
-                                           "Present"};
+                                           "Present",
+                                           "AccelerationStructureInput",
+                                           "AccelerationStructureBuild",
+                                           "AccelerationStructureRead"};
 static_assert(std::size(STATE_NAMES) == nx::cast<usize>(resource_state::Count),
               "STATE_NAMES is out of sync with resource_state");
 

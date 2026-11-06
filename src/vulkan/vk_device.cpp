@@ -95,8 +95,8 @@ template <usize N>
 }
 
 /// The routes the environment variable @p variable names
-/// ("dynamic_rendering", "descriptor_heap", comma-separated); none in
-/// Shipping.
+/// ("dynamic_rendering", "descriptor_heap", "ray_queries", comma-separated);
+/// none in Shipping.
 [[nodiscard]] gfx::route_flags routes_from_environment(const char *variable) {
   gfx::route_flags out = gfx::route::None;
 #if !NX_BUILD_SHIPPING
@@ -113,6 +113,8 @@ template <usize N>
       out |= gfx::route::DynamicRendering;
     else if (name == "descriptor_heap")
       out |= gfx::route::DescriptorHeap;
+    else if (name == "ray_queries")
+      out |= gfx::route::RayQueries;
     else if (!name.empty())
       nx::logw(nx::log::rhi, "{}: no route '{}'", variable, name);
   }
@@ -422,8 +424,9 @@ DeviceRoutes VulkanDevice::probe_routes(const gfx::route_flags disabled,
       ext_barycentric && barycentric.fragmentShaderBarycentric;
   out.subgroup_size_control = out.core_13 && features13.subgroupSizeControl &&
                               features13.computeFullSubgroups;
-  out.acceleration_structures =
-      ext_acceleration_structure && acceleration.accelerationStructure;
+  out.acceleration_structures = ext_acceleration_structure &&
+                                acceleration.accelerationStructure &&
+                                !disabled.has_any(gfx::route::RayQueries);
   out.ray_queries =
       ext_ray_query && out.acceleration_structures && ray_query.rayQuery;
   out.pipeline_statistics =
@@ -771,6 +774,12 @@ bool VulkanDevice::select_physical_device() {
   VkPhysicalDeviceProperties2 props{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
   props.pNext = &indexing;
+  VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+  if (m_routes.acceleration_structures) {
+    acceleration.pNext = props.pNext;
+    props.pNext = &acceleration;
+  }
   vkGetPhysicalDeviceProperties2(m_physical_device, &props);
 
   m_device_name = props.properties.deviceName;
@@ -847,6 +856,13 @@ bool VulkanDevice::select_physical_device() {
   m_caps.fragment_stores = m_routes.fragment_stores;
   m_caps.acceleration_structures = m_routes.acceleration_structures;
   m_caps.ray_queries = m_routes.ray_queries;
+  if (m_caps.acceleration_structures) {
+    m_caps.acceleration_structure_scratch_alignment =
+        acceleration.minAccelerationStructureScratchOffsetAlignment;
+    m_caps.max_ray_instances = acceleration.maxInstanceCount;
+    m_caps.max_ray_geometries = acceleration.maxGeometryCount;
+    m_caps.max_ray_primitives = acceleration.maxPrimitiveCount;
+  }
   nx::logd(nx::log::rhi,
            "3D features: mesh shaders={} int64 atomics buffer={} image={} "
            "barycentrics={} sample shading={} acceleration structures={} "
@@ -1375,6 +1391,26 @@ bool VulkanDevice::route_promoted_entry_points() noexcept {
   require(vkQueueSubmit2KHR, "vkQueueSubmit2KHR");
   require(vkCmdSetCullModeEXT, "vkCmdSetCullModeEXT");
   require(vkCmdSetFrontFaceEXT, "vkCmdSetFrontFaceEXT");
+
+  // Optional: a driver that enabled the extension but lacks a command loses
+  // the feature, not the device.
+  if (m_caps.acceleration_structures &&
+      (vkCreateAccelerationStructureKHR == nullptr ||
+       vkDestroyAccelerationStructureKHR == nullptr ||
+       vkGetAccelerationStructureBuildSizesKHR == nullptr ||
+       vkGetAccelerationStructureDeviceAddressKHR == nullptr ||
+       vkCmdBuildAccelerationStructuresKHR == nullptr ||
+       vkCmdWriteAccelerationStructuresPropertiesKHR == nullptr ||
+       vkCmdCopyAccelerationStructureKHR == nullptr)) {
+    nx::logw(nx::log::rhi, "the driver enabled acceleration structures "
+                           "without their commands; ray tracing is off");
+    m_caps.acceleration_structures = false;
+    m_caps.ray_queries = false;
+    m_caps.acceleration_structure_scratch_alignment = 0;
+    m_caps.max_ray_instances = 0;
+    m_caps.max_ray_geometries = 0;
+    m_caps.max_ray_primitives = 0;
+  }
   if (missing.empty())
     return true;
 
@@ -1609,6 +1645,13 @@ void VulkanDevice::shutdown() noexcept {
   m_textures.for_each(
       [this](VulkanTexture &texture) { destroy_texture_now(texture); });
   m_textures.clear();
+  // Before the buffers they live in.
+  m_acceleration_structures.for_each(
+      [this](VulkanAccelerationStructure &structure) {
+        vkDestroyAccelerationStructureKHR(m_device, structure.structure,
+                                          nullptr);
+      });
+  m_acceleration_structures.clear();
   m_buffers.for_each([this](VulkanBuffer &buf) {
     if (buf.buffer != VK_NULL_HANDLE)
       vmaDestroyBuffer(m_allocator, buf.buffer, buf.allocation);
@@ -1980,6 +2023,12 @@ void VulkanDevice::collect_garbage(
                          texture->name.view());
       destroy_texture_now(*texture);
       m_textures.erase(pending.texture);
+    }
+    if (VulkanAccelerationStructure *structure =
+            m_acceleration_structures.try_get(pending.acceleration_structure)) {
+      vkDestroyAccelerationStructureKHR(m_device, structure->structure,
+                                        nullptr);
+      m_acceleration_structures.erase(pending.acceleration_structure);
     }
     if (VulkanBuffer *buffer = m_buffers.try_get(pending.buffer)) {
       VmaAllocationInfo info{};

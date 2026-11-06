@@ -567,6 +567,19 @@ void VulkanDevice::set_texture_state(const gfx::texture_handle handle,
 }
 
 gfx::buffer_handle VulkanDevice::create_buffer(const gfx::buffer_desc &desc) {
+  if ((desc.usage & gfx::buffer_usage::AccelerationStructureInput) &&
+      !m_caps.acceleration_structures) {
+    nx::loge(nx::log::rhi,
+             "create_buffer('{}'): the device has no acceleration structures",
+             desc.name);
+    return {};
+  }
+  return create_buffer(desc, 0);
+}
+
+gfx::buffer_handle
+VulkanDevice::create_buffer(const gfx::buffer_desc &desc,
+                            const VkBufferUsageFlags extra_usage) {
   if (desc.size == 0) {
     nx::loge(nx::log::rhi, "create_buffer('{}'): zero size", desc.name);
     return {};
@@ -574,7 +587,7 @@ gfx::buffer_handle VulkanDevice::create_buffer(const gfx::buffer_desc &desc) {
 
   VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   info.size = desc.size;
-  info.usage = to_vk_buffer_usage(desc.usage);
+  info.usage = to_vk_buffer_usage(desc.usage) | extra_usage;
   info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
   VmaAllocationCreateInfo alloc_info{};
@@ -711,7 +724,8 @@ void VulkanDevice::destroy_query_pool(
 bool VulkanDevice::read_timestamps(const gfx::query_pool_handle handle,
                                    const std::span<u64> out) const {
   const VulkanQueryPool *const queries = m_query_pools.try_get(handle);
-  if (queries == nullptr || out.empty())
+  if (queries == nullptr || out.empty() ||
+      queries->type != VK_QUERY_TYPE_TIMESTAMP)
     return false;
   const u32 count = nx::min(queries->count, nx::cast<u32>(out.size()));
 

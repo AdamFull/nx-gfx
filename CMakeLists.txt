@@ -44,6 +44,7 @@ set(NX_GFX_PUBLIC_HEADERS
         include/nx/gfx/native.h
         include/nx/gfx/pipeline_job.h
         include/nx/gfx/pipelines.h
+        include/nx/gfx/ray.h
         include/nx/gfx/reflection.h
         include/nx/gfx/resources.h
         include/nx/gfx/shaders/core_layout.h
@@ -52,6 +53,7 @@ set(NX_GFX_PUBLIC_HEADERS
         include/nx/gfx/shaders/shared.h
         include/nx/gfx/shaders/texture.hpp
         include/nx/gfx/shaders/texture_layout.h
+        include/nx/gfx/spirv.h
         include/nx/gfx/types.h
         include/nx/gfx/upload.h)
 
@@ -62,7 +64,8 @@ add_library(nx_gfx_formats STATIC
         src/types.cpp
         src/texture_data.cpp
         src/shader_reflect.cpp
-        src/shader_reflect_json.cpp)
+        src/shader_reflect_json.cpp
+        src/spirv.cpp)
 add_library(nx::gfx_formats ALIAS nx_gfx_formats)
 target_include_directories(nx_gfx_formats
         PUBLIC "${NX_GFX_ROOT}/include"
@@ -79,6 +82,15 @@ if (NX_GFX_INTEROP_MATH_TYPES)
     target_link_libraries(nx_gfx_formats PUBLIC ${NX_GFX_INTEROP_MATH_LIBRARIES})
 endif ()
 set_target_properties(nx_gfx_formats PROPERTIES FOLDER "nx-gfx")
+
+# What nx_gfx_compile_slang runs on each module slangc compiles. A build
+# that cannot run its own executables names a host build of it instead.
+if (NOT CMAKE_CROSSCOMPILING)
+    add_executable(nx_gfx_spirv tools/nx_gfx_spirv.cpp)
+    target_link_libraries(nx_gfx_spirv
+            PRIVATE nx::gfx_formats nx::foundation_options)
+    set_target_properties(nx_gfx_spirv PROPERTIES FOLDER "nx-gfx")
+endif ()
 
 set(NX_GFX_HEADERS src/device.h)
 set(NX_GFX_SOURCES
@@ -126,6 +138,7 @@ else ()
             src/vulkan/vk_device.cpp
             src/vulkan/vk_gfx.cpp
             src/vulkan/vk_pipeline.cpp
+            src/vulkan/vk_ray.cpp
             src/vulkan/vk_render_pass.cpp
             src/vulkan/vk_resources.cpp
             src/vulkan/vk_swapchain.cpp
@@ -189,6 +202,7 @@ else ()
                 src/vulkan/vk_gpu_profiler.cpp
                 src/vulkan/vk_device.cpp
                 src/vulkan/vk_pipeline.cpp
+                src/vulkan/vk_ray.cpp
                 src/vulkan/vk_resources.cpp
                 src/vulkan/vk_swapchain.cpp
                 src/vulkan/vk_upload.cpp

@@ -21,6 +21,10 @@ enum class route : u8 {
   /// fallback is one update-after-bind descriptor set. Taken only when asked
   /// for (device_desc::enable_routes): no driver passes the suite with it yet.
   DescriptorHeap = 1 << 1,
+  /// Ray queries and the acceleration structures they trace; the fallback
+  /// is the caller's own (device_caps::ray_queries is false), the software
+  /// route of docs/plans/ray-tracing.md.
+  RayQueries = 1 << 2,
 };
 NX_ENUM_FLAGS_DEFINE(route, route_flags)
 
@@ -45,7 +49,7 @@ struct device_desc {
   /// Asked what to enable before the device is made, and only then.
   std::span<native_device_client *const> native_clients{};
   /// Outside Shipping, NX_GFX_DISABLE_ROUTES adds to it ("dynamic_rendering",
-  /// "descriptor_heap").
+  /// "descriptor_heap", "ray_queries").
   route_flags disable_routes = route::None;
   /// Routes a device takes only when asked, where it has them; outside
   /// Shipping, NX_GFX_ENABLE_ROUTES adds to it ("descriptor_heap").
@@ -103,6 +107,13 @@ struct device_caps {
   bool acceleration_structures = false;
   /// Implies acceleration_structures.
   bool ray_queries = false;
+  /// Where acceleration_structures: what a build's scratch address is a
+  /// multiple of, the instances a top level holds and the geometries and
+  /// triangles a bottom level holds at most.
+  u32 acceleration_structure_scratch_alignment = 0;
+  u64 max_ray_instances = 0;
+  u64 max_ray_geometries = 0;
+  u64 max_ray_primitives = 0;
   /// In compute shaders. subgroup_size is what a dispatch gets unless its
   /// pipeline asks for another in [min_subgroup_size, max_subgroup_size],
   /// which needs subgroup_size_control.

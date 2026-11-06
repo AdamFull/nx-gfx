@@ -13,7 +13,10 @@ add_executable(nx_gfx_tests
         test_gpu_memory.cpp
         test_native.cpp
         test_pipeline_compiler.cpp
-        test_wrap.cpp)
+        test_ray.cpp
+        test_spirv.cpp
+        test_wrap.cpp
+        validation_errors.h)
 target_include_directories(nx_gfx_tests PRIVATE "${NX_GFX_ROOT}")
 target_link_libraries(nx_gfx_tests
         PRIVATE nx::test nx::gfx nx::foundation_options)
@@ -23,7 +26,8 @@ target_compile_definitions(nx_gfx_tests PRIVATE
         NX_GFX_TEST_SHADER_DIR="${NX_GFX_TEST_SHADERS}")
 nx_gfx_compile_slang(nx_gfx_test_shaders "${NX_GFX_TEST_SHADERS}" ""
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gfx_interop_layout.slang"
-        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_read.slang")
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_read.slang"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ray_trace.slang")
 if (TARGET nx_gfx_test_shaders)
     add_dependencies(nx_gfx_tests nx_gfx_test_shaders)
     set_target_properties(nx_gfx_test_shaders PROPERTIES FOLDER "nx-gfx")

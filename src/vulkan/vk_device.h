@@ -12,6 +12,7 @@
 #include "nx/gfx/gfx.h"
 #include "nx/gfx/native.h"
 #include "nx/gfx/pipeline_job.h"
+#include "nx/gfx/ray.h"
 #include "nx/gfx/reflection.h"
 #include "nx/gfx/types.h"
 #include "nx/gfx/vulkan.h"
@@ -99,6 +100,17 @@ struct VulkanBuffer {
   gfx::buffer_usage_flags usage = gfx::buffer_usage::None;
 };
 
+struct VulkanAccelerationStructure {
+  VkAccelerationStructureKHR structure = VK_NULL_HANDLE;
+  /// Its storage, which it owns and retires with it.
+  gfx::buffer_handle buffer;
+  VkDeviceAddress address = 0;
+  u64 size = 0;
+  gfx::acceleration_structure_kind kind =
+      gfx::acceleration_structure_kind::Bottom;
+  gfx::acceleration_structure_flags flags;
+};
+
 struct VulkanSampler {
   VkSampler sampler = VK_NULL_HANDLE;
 };
@@ -106,6 +118,7 @@ struct VulkanSampler {
 struct VulkanQueryPool {
   VkQueryPool pool = VK_NULL_HANDLE;
   u32 count = 0;
+  VkQueryType type = VK_QUERY_TYPE_TIMESTAMP;
 };
 
 struct VulkanHeap {
@@ -298,6 +311,30 @@ public:
                                  gfx::buffer_handle destination,
                                  u64 destination_offset, u64 size);
 
+  [[nodiscard]] bool
+  build_acceleration_structure(gfx::acceleration_structure_handle target,
+                               const gfx::bottom_level_desc &desc,
+                               u64 scratch_address);
+  [[nodiscard]] bool
+  build_acceleration_structure(gfx::acceleration_structure_handle target,
+                               const gfx::top_level_desc &desc,
+                               u64 scratch_address);
+  [[nodiscard]] bool
+  update_acceleration_structure(gfx::acceleration_structure_handle target,
+                                const gfx::bottom_level_desc &desc,
+                                u64 scratch_address);
+  [[nodiscard]] bool
+  update_acceleration_structure(gfx::acceleration_structure_handle target,
+                                const gfx::top_level_desc &desc,
+                                u64 scratch_address);
+  void write_compacted_sizes(
+      std::span<const gfx::acceleration_structure_handle> structures,
+      gfx::query_pool_handle pool, u32 first);
+  [[nodiscard]] bool
+  copy_acceleration_structure(gfx::acceleration_structure_handle source,
+                              gfx::acceleration_structure_handle target,
+                              bool compact);
+
   void push_debug_group(nx::string_view name, f32 r = 1.f, f32 g = 1.f,
                         f32 b = 1.f);
   void pop_debug_group();
@@ -425,7 +462,11 @@ public:
     if (m_caps.mesh_shaders)
       shaders |= VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
                  VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
-    return to_vk_state(state, shaders);
+    const VkPipelineStageFlags2 build =
+        m_caps.acceleration_structures
+            ? VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
+            : VK_PIPELINE_STAGE_2_NONE;
+    return to_vk_state(state, shaders, build);
   }
   [[nodiscard]] gfx::gpu_device_status device_status() const noexcept {
     return m_gpu_crash.status();
@@ -568,6 +609,34 @@ public:
   void destroy_buffer(gfx::buffer_handle handle) noexcept;
   [[nodiscard]] const VulkanBuffer *
   buffer(gfx::buffer_handle handle) const noexcept;
+
+  [[nodiscard]] gfx::acceleration_structure_sizes
+  acceleration_structure_sizes(const gfx::bottom_level_desc &desc) const;
+  [[nodiscard]] gfx::acceleration_structure_sizes
+  acceleration_structure_sizes(const gfx::top_level_desc &desc) const;
+  [[nodiscard]] gfx::acceleration_structure_handle
+  create_acceleration_structure(const gfx::acceleration_structure_desc &desc);
+  void destroy_acceleration_structure(
+      gfx::acceleration_structure_handle handle) noexcept;
+  [[nodiscard]] gfx::query_pool_handle create_compacted_size_pool(u32 count);
+  [[nodiscard]] bool read_compacted_sizes(gfx::query_pool_handle handle,
+                                          std::span<u64> out) const;
+  [[nodiscard]] const VulkanAccelerationStructure *acceleration_structure(
+      gfx::acceleration_structure_handle handle) const noexcept {
+    return m_acceleration_structures.try_get(handle);
+  }
+  [[nodiscard]] u64 acceleration_structure_address(
+      gfx::acceleration_structure_handle handle) const noexcept {
+    const VulkanAccelerationStructure *const found =
+        acceleration_structure(handle);
+    return found != nullptr ? found->address : 0;
+  }
+  [[nodiscard]] gfx::buffer_handle acceleration_structure_buffer(
+      gfx::acceleration_structure_handle handle) const noexcept {
+    const VulkanAccelerationStructure *const found =
+        acceleration_structure(handle);
+    return found != nullptr ? found->buffer : gfx::buffer_handle{};
+  }
 
   [[nodiscard]] gfx::sampler_handle
   create_sampler(const gfx::sampler_desc &desc);
@@ -897,6 +966,9 @@ private:
 
   nx::sync_slot_map<VulkanTexture, gfx::texture_handle> m_textures;
   nx::sync_slot_map<VulkanBuffer, gfx::buffer_handle> m_buffers;
+  nx::sync_slot_map<VulkanAccelerationStructure,
+                    gfx::acceleration_structure_handle>
+      m_acceleration_structures;
   nx::slot_map<VulkanSampler, gfx::sampler_handle> m_samplers;
   nx::slot_map<VulkanQueryPool, gfx::query_pool_handle> m_query_pools;
   nx::slot_map<VulkanHeap, gfx::heap_handle> m_heaps;
@@ -931,11 +1003,17 @@ private:
     gfx::sampler_handle sampler;
     gfx::pipeline_handle pipeline;
     gfx::heap_handle heap;
+    /// Destroyed before `buffer`, its storage.
+    gfx::acceleration_structure_handle acceleration_structure;
     /// The held frame work it waits on first; 0 once only the timeline is left.
     u64 hold = 0;
   };
   // m_garbage_lock held.
   void retire(PendingDelete pending) noexcept;
+  /// create_buffer with Vulkan usage no gfx::buffer_usage names, for storage
+  /// the device makes for itself.
+  [[nodiscard]] gfx::buffer_handle
+  create_buffer(const gfx::buffer_desc &desc, VkBufferUsageFlags extra_usage);
 
   struct PendingReplace {
     gfx::texture_handle target;

@@ -81,10 +81,11 @@ struct VkStateInfo {
 };
 
 /// @p shader_stages is every shader stage the device runs: a shader state
-/// orders all of them.
+/// orders all of them. @p build_stage is the acceleration-structure build
+/// stage where the device enabled it, else 0.
 [[nodiscard]] VkStateInfo
-to_vk_state(gfx::resource_state state,
-            VkPipelineStageFlags2 shader_stages) noexcept;
+to_vk_state(gfx::resource_state state, VkPipelineStageFlags2 shader_stages,
+            VkPipelineStageFlags2 build_stage) noexcept;
 
 [[nodiscard]] VkAccessFlags2 to_buffer_access(VkAccessFlags2 access) noexcept;
 

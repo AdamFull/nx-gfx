@@ -3,8 +3,9 @@
 A C++20 graphics library over Vulkan (Metal on Apple platforms) and the Slang
 shader library that goes with it. It is the nx2d engine's GPU layer, usable on
 its own: bindless resources, buffer device addresses, dynamic rendering,
-asynchronous pipeline compilation, presentation, uploads and readbacks, GPU
-crash capture and timestamps, behind free functions in `nx::gfx` over two
+asynchronous pipeline compilation, presentation, uploads and readbacks,
+acceleration structures for inline ray queries, GPU crash capture and
+timestamps, behind free functions in `nx::gfx` over two
 opaque types, `device` and `command_list`.
 
 It builds on [nx-foundation](https://github.com/AdamFull/nx-foundation), whose
@@ -85,9 +86,11 @@ every target that links the library.
 `nx_gfx_compile_slang(<target> <out_dir> <include_dirs> <sources>...)`
 compiles with the flags the library is validated with:
 `-target spirv -emit-spirv-directly -fvk-use-entrypoint-name -profile
-spirv_1_3`, or `-target metallib -DNX_TARGET_METAL=1` on Apple.
+spirv_1_3`, or `-target metallib -DNX_TARGET_METAL=1` on Apple, then runs
+each SPIR-V module through `nx::gfx::normalize_spirv` with the `nx_gfx_spirv`
+host tool (`NX_GFX_SPIRV_TOOL` names a host build when cross-compiling).
 `NX_GFX_SHADER_INCLUDE_DIRS` is the include path for a consumer's own
-pipeline.
+pipeline, which calls `normalize_spirv` itself; the guide says why.
 
 ## Platforms
 

@@ -3,6 +3,7 @@
 #include "nx/gfx/frame.h"
 #include "nx/gfx/native.h"
 #include "nx/gfx/pipelines.h"
+#include "nx/gfx/ray.h"
 #include "nx/gfx/resources.h"
 #include "nx/gfx/upload.h"
 #include "src/device.h"
@@ -107,6 +108,90 @@ buffer_handle create_buffer(device &dev, const buffer_desc &desc) {
 
 void destroy_buffer(device &dev, const buffer_handle buffer) noexcept {
   be(dev).destroy_buffer(buffer);
+}
+
+// Acceleration structures.
+
+acceleration_structure_sizes sizes(const device &dev,
+                                   const bottom_level_desc &desc) {
+  return be(dev).acceleration_structure_sizes(desc);
+}
+
+acceleration_structure_sizes sizes(const device &dev,
+                                   const top_level_desc &desc) {
+  return be(dev).acceleration_structure_sizes(desc);
+}
+
+acceleration_structure_handle
+create_acceleration_structure(device &dev,
+                              const acceleration_structure_desc &desc) {
+  return be(dev).create_acceleration_structure(desc);
+}
+
+void destroy_acceleration_structure(
+    device &dev, const acceleration_structure_handle structure) noexcept {
+  be(dev).destroy_acceleration_structure(structure);
+}
+
+u64 acceleration_structure_address(
+    const device &dev, const acceleration_structure_handle structure) noexcept {
+  return be(dev).acceleration_structure_address(structure);
+}
+
+buffer_handle acceleration_structure_buffer(
+    const device &dev, const acceleration_structure_handle structure) noexcept {
+  return be(dev).acceleration_structure_buffer(structure);
+}
+
+bool build_acceleration_structure(command_list &cmd,
+                                  const acceleration_structure_handle target,
+                                  const bottom_level_desc &desc,
+                                  const u64 scratch_address) {
+  return be(cmd).build_acceleration_structure(target, desc, scratch_address);
+}
+
+bool build_acceleration_structure(command_list &cmd,
+                                  const acceleration_structure_handle target,
+                                  const top_level_desc &desc,
+                                  const u64 scratch_address) {
+  return be(cmd).build_acceleration_structure(target, desc, scratch_address);
+}
+
+bool update_acceleration_structure(command_list &cmd,
+                                   const acceleration_structure_handle target,
+                                   const bottom_level_desc &desc,
+                                   const u64 scratch_address) {
+  return be(cmd).update_acceleration_structure(target, desc, scratch_address);
+}
+
+bool update_acceleration_structure(command_list &cmd,
+                                   const acceleration_structure_handle target,
+                                   const top_level_desc &desc,
+                                   const u64 scratch_address) {
+  return be(cmd).update_acceleration_structure(target, desc, scratch_address);
+}
+
+query_pool_handle create_compacted_size_pool(device &dev, const u32 count) {
+  return be(dev).create_compacted_size_pool(count);
+}
+
+void write_compacted_sizes(
+    command_list &cmd,
+    const std::span<const acceleration_structure_handle> structures,
+    const query_pool_handle pool, const u32 first) {
+  be(cmd).write_compacted_sizes(structures, pool, first);
+}
+
+bool read_compacted_sizes(const device &dev, const query_pool_handle pool,
+                          const std::span<u64> out) {
+  return be(dev).read_compacted_sizes(pool, out);
+}
+
+bool copy_acceleration_structure(command_list &cmd,
+                                 const acceleration_structure_handle source,
+                                 const acceleration_structure_handle target,
+                                 const bool compact) {
+  return be(cmd).copy_acceleration_structure(source, target, compact);
 }
 
 sampler_handle create_sampler(device &dev, const sampler_desc &desc) {
