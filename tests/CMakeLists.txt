@@ -5,6 +5,7 @@ add_executable(nx_gfx_tests
         gfx_interop_probe.h
         owned_device.h
         pipeline_test_utils.h
+        bvh_scenes.h
         test_bvh.cpp
         test_frame_wait.cpp
         test_gfx_api.cpp
@@ -28,6 +29,8 @@ target_compile_definitions(nx_gfx_tests PRIVATE
 nx_gfx_compile_slang(nx_gfx_test_shaders "${NX_GFX_TEST_SHADERS}" ""
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gfx_interop_layout.slang"
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_read.slang"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ray_scene.slang"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ray_scene_software.slang"
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ray_trace.slang")
 if (TARGET nx_gfx_test_shaders)
     add_dependencies(nx_gfx_tests nx_gfx_test_shaders)

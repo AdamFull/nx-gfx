@@ -1,5 +1,6 @@
 #include "framework/nxtest.h"
 
+#include "bvh_scenes.h"
 #include "core/foundation/core/foundation.h"
 #include "core/foundation/platform/os.h"
 #include "core/foundation/threading/cancellation.h"
@@ -14,50 +15,14 @@
 #include <limits>
 
 namespace gfx = nx::gfx;
+using nx::gfx::test::make_placement;
+using nx::gfx::test::make_soup;
+using nx::gfx::test::Placed;
+using nx::gfx::test::Random;
+using nx::gfx::test::row_of;
+using nx::gfx::test::Soup;
 
 namespace {
-
-/// A small, fixed random sequence, so every run sees the same soup.
-struct Random {
-  u64 state;
-  explicit Random(const u64 seed) : state(seed * 0x9E3779B97F4A7C15ull + 1) {}
-  [[nodiscard]] u64 next() {
-    state ^= state << 13;
-    state ^= state >> 7;
-    state ^= state << 17;
-    return state;
-  }
-  /// In [lo, hi).
-  [[nodiscard]] f32 uniform(const f32 lo, const f32 hi) {
-    return lo +
-           (hi - lo) * nx::cast<f32>(next() >> 40) / nx::cast<f32>(1ull << 24);
-  }
-};
-
-struct Soup {
-  nx::vector<f32> positions;
-  nx::vector<u32> indices;
-};
-
-/// @p count triangles of random shape about random points in a cube 20 on a
-/// side, each about as large as the spacing between them.
-[[nodiscard]] Soup make_soup(const u32 count, const u64 seed) {
-  Random random(seed);
-  Soup soup;
-  const f32 size = 20.0f / std::cbrt(nx::cast<f32>(count)) + 0.05f;
-  for (u32 t = 0; t < count; ++t) {
-    const f32 cx = random.uniform(-10.0f, 10.0f);
-    const f32 cy = random.uniform(-10.0f, 10.0f);
-    const f32 cz = random.uniform(-10.0f, 10.0f);
-    for (u32 c = 0; c < 3; ++c) {
-      soup.positions.push_back(cx + random.uniform(-size, size));
-      soup.positions.push_back(cy + random.uniform(-size, size));
-      soup.positions.push_back(cz + random.uniform(-size, size));
-      soup.indices.push_back(t * 3 + c);
-    }
-  }
-  return soup;
-}
 
 struct Reference {
   bool hit = false;
@@ -236,7 +201,7 @@ TEST_CASE("gfx bvh: the nearest hit is the one every triangle tested gives") {
     auto built = gfx::build_bvh_here({&geometry, 1});
     REQUIRE(built.has_value());
     REQUIRE(gfx::validate_bvh(view(built.value().bytes)).has_value());
-    CHECK(built.value().triangle_count == size);
+    CHECK(built.value().primitive_count == size);
     const u32 rays = size >= 100000 ? 200 : 2000;
     const Agreement agreement =
         compare({&geometry, 1}, soup, built.value().bytes, rays, size + 1);
@@ -259,7 +224,7 @@ TEST_CASE("gfx bvh: a hit names its geometry and its triangle within it") {
   auto built = gfx::build_bvh_here(geometries);
   REQUIRE(built.has_value());
   REQUIRE(gfx::validate_bvh(view(built.value().bytes)).has_value());
-  CHECK(built.value().triangle_count == 800u);
+  CHECK(built.value().primitive_count == 800u);
   const Agreement agreement =
       compare(geometries, second, built.value().bytes, 2000, 13);
   CHECK(agreement.wrong == 0u);
@@ -268,9 +233,9 @@ TEST_CASE("gfx bvh: a hit names its geometry and its triangle within it") {
   const auto *const header =
       reinterpret_cast<const NxBvhHeader *>(built.value().bytes.data());
   const auto *const triangles = reinterpret_cast<const NxBvhTriangle *>(
-      built.value().bytes.data() + header->triangles_offset);
+      built.value().bytes.data() + header->primitives_offset);
   u32 opaque[2] = {};
-  for (u32 t = 0; t < header->triangle_count; ++t) {
+  for (u32 t = 0; t < header->primitive_count; ++t) {
     const u32 geometry = std::bit_cast<u32>(triangles[t].v1.w);
     REQUIRE(geometry < 2u);
     if ((std::bit_cast<u32>(triangles[t].v2.w) & NX_BVH_TRIANGLE_OPAQUE) != 0)
@@ -285,8 +250,8 @@ TEST_CASE("gfx bvh: every decoded box holds what it stands for, and leaves "
   for (const u32 limit : {1u, 4u, 8u}) {
     const Soup soup = make_soup(20000, 21 + limit);
     const gfx::bvh_geometry geometry = geometry_of(soup);
-    auto built = gfx::build_bvh_here(
-        {&geometry, 1}, {.max_leaf_triangles = limit, .keep_bounds = true});
+    auto built = gfx::build_bvh_here({&geometry, 1},
+                                     {.max_leaf = limit, .keep_bounds = true});
     REQUIRE(built.has_value());
     const nx::blob<u8> &bytes = built.value().bytes;
     REQUIRE(gfx::validate_bvh(view(bytes)).has_value());
@@ -295,7 +260,7 @@ TEST_CASE("gfx bvh: every decoded box holds what it stands for, and leaves "
     const auto *const nodes = reinterpret_cast<const NxBvhNode *>(
         bytes.data() + header->nodes_offset);
     const auto *const triangles = reinterpret_cast<const NxBvhTriangle *>(
-        bytes.data() + header->triangles_offset);
+        bytes.data() + header->primitives_offset);
     const auto *const bounds = reinterpret_cast<const NxBvhBounds *>(
         bytes.data() + header->bounds_offset);
     u32 escapes = 0;
@@ -434,10 +399,8 @@ TEST_CASE("gfx bvh: input it cannot build is refused") {
     CHECK(refused({&non_finite, 1}) == gfx::bvh_error::NonFinite);
   }
   const gfx::bvh_geometry good{.positions = positions, .indices = indices};
-  CHECK(refused({&good, 1}, {.max_leaf_triangles = 0}) ==
-        gfx::bvh_error::BadOptions);
-  CHECK(refused({&good, 1}, {.max_leaf_triangles = 9}) ==
-        gfx::bvh_error::BadOptions);
+  CHECK(refused({&good, 1}, {.max_leaf = 0}) == gfx::bvh_error::BadOptions);
+  CHECK(refused({&good, 1}, {.max_leaf = 9}) == gfx::bvh_error::BadOptions);
   CHECK(refused({&good, 1}, {.bins = 1}) == gfx::bvh_error::BadOptions);
   CHECK(refused({&good, 1}, {.bins = 65}) == gfx::bvh_error::BadOptions);
   CHECK(gfx::build_bvh_here({&good, 1}).has_value());
@@ -493,7 +456,7 @@ TEST_CASE("gfx bvh: malformed blocks are refused") {
   const u32 last = header->node_count - 1;
   CHECK(check([&](u8 *b) {
           node_at(b, last)->children.x =
-              NX_BVH_LEAF | (header->triangle_count - 1u);
+              NX_BVH_LEAF | (header->primitive_count - 1u);
           node_at(b, last)->children.x |= 1u << NX_BVH_LEAF_COUNT_SHIFT;
         }) == gfx::bvh_error::BadLayout);
   CHECK(check([&](u8 *b) {
@@ -508,7 +471,7 @@ TEST_CASE("gfx bvh: malformed blocks are refused") {
         }) == gfx::bvh_error::BadLayout);
   CHECK(check([&](u8 *b) {
           auto *const triangles =
-              reinterpret_cast<NxBvhTriangle *>(b + header->triangles_offset);
+              reinterpret_cast<NxBvhTriangle *>(b + header->primitives_offset);
           triangles[7].v1.y = std::numeric_limits<f32>::quiet_NaN();
         }) == gfx::bvh_error::BadLayout);
 
@@ -539,4 +502,227 @@ TEST_CASE("gfx bvh: a million triangles build, and the time is reported") {
       compare({&geometry, 1}, soup, built.value().bytes, 20, 62);
   CHECK(agreement.wrong == 0u);
   CHECK(agreement.hits > 0u);
+}
+
+namespace {
+
+[[nodiscard]] gfx::bvh_instance instance_of(const Placed &placed,
+                                            const nx::blob<u8> &bottom) {
+  const auto *const header =
+      reinterpret_cast<const NxBvhHeader *>(bottom.data());
+  gfx::bvh_instance out{};
+  out.instance.row0 = row_of(placed.rows[0]);
+  out.instance.row1 = row_of(placed.rows[1]);
+  out.instance.row2 = row_of(placed.rows[2]);
+  out.instance.custom_index_and_mask = placed.custom | (placed.mask << 24);
+  out.instance.flags = 0;
+  out.instance.bottom_level = placed.soup;
+  out.bounds = {header->lo_x, header->lo_y, header->lo_z,
+                header->hi_x, header->hi_y, header->hi_z};
+  return out;
+}
+
+struct SceneReference {
+  Reference hit;
+  u32 custom = 0;
+  u32 index = 0;
+};
+
+/// Every instance's every triangle, placed by the rows the top level was
+/// given (the float ones) and tested in double.
+[[nodiscard]] SceneReference
+brute_force_scene(std::span<const Soup> soups,
+                  std::span<const gfx::bvh_instance> instances,
+                  const gfx::bvh_ray &ray, const u32 mask) {
+  SceneReference best;
+  best.hit.t = ray.tmax;
+  for (u32 i = 0; i < instances.size(); ++i) {
+    const gfx::bvh_instance &instance = instances[i];
+    if (((instance.instance.custom_index_and_mask >> 24) & mask) == 0)
+      continue;
+    const Soup &soup = soups[instance.instance.bottom_level];
+    const float4 rows[3] = {instance.instance.row0, instance.instance.row1,
+                            instance.instance.row2};
+    Soup placed;
+    placed.indices = soup.indices;
+    for (usize v = 0; v * 3 < soup.positions.size(); ++v)
+      for (u32 r = 0; r < 3; ++r)
+        placed.positions.push_back(nx::cast<f32>(
+            f64{rows[r].x} * soup.positions[v * 3] +
+            f64{rows[r].y} * soup.positions[v * 3 + 1] +
+            f64{rows[r].z} * soup.positions[v * 3 + 2] + f64{rows[r].w}));
+    const gfx::bvh_geometry geometry = geometry_of(placed);
+    Reference found = brute_force({&geometry, 1}, ray);
+    if (!found.hit)
+      continue;
+    if (found.t < best.hit.t || !best.hit.hit) {
+      const f64 previous = best.hit.hit ? best.hit.t : found.second;
+      found.second = std::min(found.second, previous);
+      best.hit = found;
+      best.custom = instance.instance.custom_index_and_mask & 0x00FFFFFFu;
+      best.index = i;
+    } else {
+      best.hit.second = std::min(best.hit.second, found.t);
+    }
+  }
+  return best;
+}
+
+} // namespace
+
+TEST_CASE("gfx bvh: the nearest hit through a top level is the one every "
+          "placed triangle gives") {
+  const Soup soups[] = {make_soup(500, 71), make_soup(2000, 72)};
+  nx::vector<nx::blob<u8>> bottoms;
+  for (const Soup &soup : soups) {
+    const gfx::bvh_geometry geometry = geometry_of(soup);
+    auto built = gfx::build_bvh_here({&geometry, 1});
+    REQUIRE(built.has_value());
+    bottoms.push_back(std::move(built.value().bytes));
+  }
+  Random random(73);
+  nx::vector<gfx::bvh_instance> instances;
+  for (u32 i = 0; i < 40; ++i)
+    instances.push_back(
+        instance_of(make_placement(random, 2, i), bottoms[i % 2]));
+  auto top = gfx::build_bvh_top_here(instances);
+  REQUIRE(top.has_value());
+  const nx::blob<u8> &top_bytes = top.value().bytes;
+  REQUIRE(gfx::validate_bvh(view(top_bytes)).has_value());
+  CHECK((reinterpret_cast<const NxBvhHeader *>(top_bytes.data())->flags &
+         NX_BVH_TOP) != 0u);
+
+  const auto bottom_of = [&](const u64 bottom) -> std::span<const u8> {
+    return bottom < bottoms.size() ? view(bottoms[nx::cast<usize>(bottom)])
+                                   : std::span<const u8>{};
+  };
+  for (const u32 mask : {0xFFu, 0x1u}) {
+    Agreement agreement;
+    Random rays(74 + mask);
+    for (u32 r = 0; r < 600; ++r) {
+      gfx::bvh_ray ray;
+      for (u32 a = 0; a < 3; ++a) {
+        ray.origin[a] = rays.uniform(-30.0f, 30.0f);
+        ray.direction[a] = r % 2 == 0
+                               ? rays.uniform(-10.0f, 10.0f) - ray.origin[a]
+                               : rays.uniform(-1.0f, 1.0f);
+      }
+      const SceneReference expected =
+          brute_force_scene(soups, instances, ray, mask);
+      gfx::bvh_hit got;
+      const bool hit =
+          gfx::trace_bvh_scene(view(top_bytes), bottom_of, ray, mask, got);
+      ++agreement.rays;
+      agreement.hits += expected.hit.hit ? 1 : 0;
+      const Reference &e = expected.hit;
+      const bool close_call =
+          e.edge < 1e-5 || (e.second - e.t) < 1e-5 * std::max(1.0, e.t);
+      bool agree = hit == e.hit;
+      if (agree && hit) {
+        const f64 off = std::fabs(got.t - e.t);
+        const f64 scale = 1e-5 * std::max(1.0, e.t);
+        const bool same = got.primitive == e.primitive &&
+                          got.instance == expected.custom &&
+                          got.instance_index == expected.index;
+        agree = (off <= 10.0 * scale || off * e.cosine <= scale) &&
+                (same || close_call);
+      }
+      if (agree)
+        continue;
+      if (close_call) {
+        ++agreement.grazes;
+        continue;
+      }
+      ++agreement.wrong;
+      std::printf("bvh scene: ray %u mask %u: expected %s t %.9g instance %u "
+                  "triangle %u, got %s t %.9g instance %u triangle %u\n",
+                  r, mask, e.hit ? "hit" : "miss", e.t, expected.custom,
+                  e.primitive, hit ? "hit" : "miss", got.t, got.instance,
+                  got.primitive);
+    }
+    std::printf("bvh scene: mask %u: %u of %u rays hit, %u grazes, %u wrong\n",
+                mask, agreement.hits, agreement.rays, agreement.grazes,
+                agreement.wrong);
+    CHECK(agreement.wrong == 0u);
+    CHECK(agreement.grazes * 100 <= agreement.rays);
+    CHECK(agreement.hits > 50u);
+    CHECK(agreement.hits < agreement.rays);
+  }
+}
+
+TEST_CASE("gfx bvh: a top level's bytes are the same built here and on 8 "
+          "workers") {
+  const Soup soup = make_soup(200, 81);
+  const gfx::bvh_geometry geometry = geometry_of(soup);
+  auto bottom = gfx::build_bvh_here({&geometry, 1});
+  REQUIRE(bottom.has_value());
+  Random random(82);
+  nx::vector<gfx::bvh_instance> instances;
+  for (u32 i = 0; i < 50000; ++i)
+    instances.push_back(
+        instance_of(make_placement(random, 1, i), bottom.value().bytes));
+  auto here = gfx::build_bvh_top_here(instances);
+  REQUIRE(here.has_value());
+  REQUIRE(gfx::validate_bvh(view(here.value().bytes)).has_value());
+  nx::thread_pool pool({.thread_count = 8, .name = "nx-test-bvh"});
+  auto built = gfx::build_bvh_top(pool, instances).get();
+  REQUIRE(built.has_value());
+  REQUIRE(here.value().bytes.size() == built.value().bytes.size());
+  CHECK(std::memcmp(here.value().bytes.data(), built.value().bytes.data(),
+                    here.value().bytes.size()) == 0);
+}
+
+TEST_CASE("gfx bvh: instances a top level cannot hold are refused, and so "
+          "are malformed top levels") {
+  const Soup soup = make_soup(50, 91);
+  const gfx::bvh_geometry geometry = geometry_of(soup);
+  auto bottom = gfx::build_bvh_here({&geometry, 1});
+  REQUIRE(bottom.has_value());
+  Random random(92);
+  const gfx::bvh_instance good =
+      instance_of(make_placement(random, 1, 0), bottom.value().bytes);
+  const auto refused = [](const gfx::bvh_instance &instance) {
+    auto built = gfx::build_bvh_top_here({&instance, 1});
+    REQUIRE_FALSE(built.has_value());
+    return built.error();
+  };
+  CHECK(gfx::build_bvh_top_here({&good, 1}).has_value());
+  CHECK(gfx::build_bvh_top_here({}).error() == gfx::bvh_error::Empty);
+  gfx::bvh_instance singular = good;
+  singular.instance.row1 = float4{0.0f, 0.0f, 0.0f, 1.0f};
+  CHECK(refused(singular) == gfx::bvh_error::BadInstance);
+  gfx::bvh_instance not_finite = good;
+  not_finite.instance.row0.w = std::numeric_limits<f32>::infinity();
+  CHECK(refused(not_finite) == gfx::bvh_error::BadInstance);
+  gfx::bvh_instance inside_out = good;
+  std::swap(inside_out.bounds.lo_x, inside_out.bounds.hi_x);
+  CHECK(refused(inside_out) == gfx::bvh_error::BadInstance);
+  gfx::bvh_instance low_flags = good;
+  low_flags.instance.flags = 1;
+  CHECK(refused(low_flags) == gfx::bvh_error::BadInstance);
+
+  nx::vector<gfx::bvh_instance> many;
+  for (u32 i = 0; i < 64; ++i)
+    many.push_back(
+        instance_of(make_placement(random, 1, i), bottom.value().bytes));
+  auto top = gfx::build_bvh_top_here(many);
+  REQUIRE(top.has_value());
+  const nx::blob<u8> &bytes = top.value().bytes;
+  const auto *const header =
+      reinterpret_cast<const NxBvhHeader *>(bytes.data());
+  const auto check = [&](auto change) {
+    nx::blob<u8> copy(bytes.size());
+    std::memcpy(copy.data(), bytes.data(), bytes.size());
+    change(copy.data());
+    auto result = gfx::validate_bvh({copy.data(), copy.size()});
+    REQUIRE_FALSE(result.has_value());
+    return result.error();
+  };
+  CHECK(check([](u8 *b) {
+          reinterpret_cast<NxBvhHeader *>(b)->flags &= ~NX_BVH_TOP;
+        }) == gfx::bvh_error::BadLayout);
+  CHECK(check([&](u8 *b) {
+          reinterpret_cast<NxBvhInstance *>(b + header->primitives_offset)[3]
+              .row2.y = std::numeric_limits<f32>::quiet_NaN();
+        }) == gfx::bvh_error::BadLayout);
 }

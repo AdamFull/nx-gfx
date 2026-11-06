@@ -16,24 +16,33 @@ NX_CONST(uint, NX_BVH_MAX_LEAF, 8u);
 NX_CONST(uint, NX_BVH_LEAF, 0x80000000u);
 NX_CONST(uint, NX_BVH_LEAF_FIRST_MASK, 0x0FFFFFFFu);
 NX_CONST(uint, NX_BVH_LEAF_COUNT_SHIFT, 28u);
-// A node index where none is: the root's parent.
+// A node index where none is: the root's parent. Never a valid leaf word
+// either, so a traversal's stack marks its return to the top level with it.
 NX_CONST(uint, NX_BVH_NONE, 0xFFFFFFFFu);
-// NxBvhHeader::flags: the block ends with every node's exact bounds.
+// The entries a shader traversal's stack holds, both levels together.
+NX_CONST(uint, NX_BVH_STACK, 64u);
+// NxBvhHeader::flags: the block ends with every node's exact bounds; its
+// leaves name instances (a top level) rather than triangles.
 NX_CONST(uint, NX_BVH_HAS_BOUNDS, 0x1u);
+NX_CONST(uint, NX_BVH_TOP, 0x2u);
+// NxBvhInstance::flags' low bits: the instance's place in its top level's
+// input.
+NX_CONST(uint, NX_BVH_INSTANCE_INDEX_MASK, 0x00FFFFFFu);
 // NxBvhTriangle flags (v2.w): no candidate is reported for it.
 NX_CONST(uint, NX_BVH_TRIANGLE_OPAQUE, 0x1u);
 
 // Byte offsets from the block's start; nodes follow the header directly. The
-// bounds are those of the whole level, the root's.
+// primitives are triangles (NxBvhTriangle) or, in a top level, instances
+// (NxBvhInstance). The bounds are those of the whole level, the root's.
 struct NxBvhHeader {
   uint magic;
   uint version;
   uint node_count;
-  uint triangle_count;
+  uint primitive_count;
   uint level_count;
   uint flags;
   uint nodes_offset;
-  uint triangles_offset;
+  uint primitives_offset;
   uint levels_offset;
   uint bounds_offset;
   float lo_x;
@@ -76,6 +85,21 @@ struct NxBvhTriangle {
   float4 v2;
 };
 NX_SHARED_SIZE(NxBvhTriangle, 48);
+
+// An instance of a top level: the rows of its transform from the top level's
+// space into its bottom level's (the inverse of NxRayInstance's), its bottom
+// level (a block's address on the GPU, whatever its caller names it by on the
+// CPU), its custom index and mask as NxRayInstance holds them, and its
+// NX_RAY_INSTANCE_ flags in the top byte over its place in the input.
+struct NxBvhInstance {
+  float4 row0;
+  float4 row1;
+  float4 row2;
+  uint64_t bottom_level;
+  uint custom_index_and_mask;
+  uint flags;
+};
+NX_SHARED_SIZE(NxBvhInstance, 64);
 
 struct NxBvhBounds {
   float lo_x;

@@ -1,3 +1,4 @@
+#include "bvh_scenes.h"
 #include "framework/nxtest.h"
 #include "pipeline_test_utils.h"
 
@@ -7,7 +8,11 @@
 #include "owned_device.h"
 #include "validation_errors.h"
 
+#include <algorithm>
 #include <array>
+#include <bit>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <span>
 
@@ -610,5 +615,484 @@ TEST_CASE("gfx ray: with the ray-query route disabled the device has none of "
   const gfx::ray_triangles triangle{.vertex_count = 3, .triangle_count = 1};
   CHECK(gfx::sizes(device, gfx::bottom_level_desc{.geometries = {&triangle, 1}})
             .structure == 0u);
+  CHECK(fixture.validation_errors() == 0u);
+}
+
+namespace {
+
+constexpr u32 PARITY_RAYS = 4096;
+
+/// What a ray met, from the GPU's two float4s or the CPU reference.
+struct Met {
+  bool hit = false;
+  f32 t = -1.0f;
+  f32 u = 0.0f;
+  f32 v = 0.0f;
+  bool front = false;
+  u32 primitive = 0;
+  u32 instance = 0;
+  u32 instance_index = 0;
+  u32 geometry = 0;
+};
+
+[[nodiscard]] Met met_of(const float4 &first, const float4 &second) {
+  Met out;
+  out.hit = first.x >= 0.0f;
+  out.t = first.x;
+  out.u = first.y;
+  out.v = first.z;
+  out.front = first.w > 0.5f;
+  out.primitive = std::bit_cast<u32>(second.x);
+  out.instance = std::bit_cast<u32>(second.y);
+  out.instance_index = std::bit_cast<u32>(second.z);
+  out.geometry = std::bit_cast<u32>(second.w);
+  return out;
+}
+
+template <typename T>
+[[nodiscard]] std::span<const u8> bytes_of_all(const nx::vector<T> &values) {
+  return {reinterpret_cast<const u8 *>(values.data()),
+          values.size() * sizeof(T)};
+}
+
+/// Two soups placed by 30 instances, three ways over the same data: CPU
+/// blocks, the same blocks on the GPU for the software scene, and hardware
+/// bottom levels under a top level.
+struct ParityScene {
+  struct Level {
+    nx::gfx::test::Soup soup;
+    gfx::buffer_handle positions;
+    gfx::buffer_handle indices;
+    gfx::ray_triangles triangles;
+    gfx::acceleration_structure_handle bottom;
+    nx::blob<u8> block;
+    gfx::buffer_handle block_buffer;
+  };
+
+  gfx::device &device;
+  Level levels[2];
+  nx::vector<gfx::bvh_instance> software;
+  nx::vector<NxRayInstance> hardware;
+  gfx::buffer_handle hardware_instances;
+  gfx::top_level_desc top_desc;
+  gfx::acceleration_structure_handle top;
+  nx::blob<u8> software_top;
+  gfx::buffer_handle software_top_buffer;
+  gfx::buffer_handle scratch;
+  u64 scratch_address = 0;
+  bool made = false;
+
+  ParityScene(gfx::device &dev, const bool opaque) : device(dev) {
+    u64 most_scratch = 0;
+    for (u32 l = 0; l < 2; ++l) {
+      Level &level = levels[l];
+      level.soup = nx::gfx::test::make_soup(l == 0 ? 300 : 1500, 101 + l);
+      level.positions = input_buffer(device, "parity positions",
+                                     bytes_of_all(level.soup.positions));
+      level.indices = input_buffer(device, "parity indices",
+                                   bytes_of_all(level.soup.indices));
+      level.triangles = {
+          .vertex_address = gfx::buffer_address(device, level.positions),
+          .vertex_count = nx::cast<u32>(level.soup.positions.size() / 3),
+          .index_address = gfx::buffer_address(device, level.indices),
+          .triangle_count = nx::cast<u32>(level.soup.indices.size() / 3),
+          .flags = opaque
+                       ? gfx::ray_geometry_flags(gfx::ray_geometry_flag::Opaque)
+                       : gfx::ray_geometry_flags(gfx::ray_geometry_flag::None)};
+      const gfx::bottom_level_desc desc{.geometries = {&level.triangles, 1}};
+      const gfx::acceleration_structure_sizes sizes = gfx::sizes(device, desc);
+      most_scratch = nx::max(most_scratch, sizes.build_scratch);
+      level.bottom = gfx::create_acceleration_structure(
+          device, {.name = "parity bottom", .size = sizes.structure});
+
+      const gfx::bvh_geometry geometry{.positions = level.soup.positions,
+                                       .indices = level.soup.indices,
+                                       .opaque = opaque};
+      auto built = gfx::build_bvh_here({&geometry, 1});
+      if (!built.has_value())
+        return;
+      level.block = std::move(built.value().bytes);
+      level.block_buffer = gfx::create_buffer(
+          device, {.name = "parity block",
+                   .size = level.block.size(),
+                   .usage = gfx::buffer_usage::Storage |
+                            gfx::buffer_usage::DeviceAddress |
+                            gfx::buffer_usage::CopyDst});
+      gfx::wait_upload(
+          device, gfx::upload_buffer(device, level.block_buffer, 0,
+                                     {level.block.data(), level.block.size()},
+                                     state::ShaderReadOnly));
+    }
+
+    nx::gfx::test::Random random(103);
+    for (u32 i = 0; i < 30; ++i) {
+      const nx::gfx::test::Placed placed =
+          nx::gfx::test::make_placement(random, 2, i);
+      NxRayInstance instance{};
+      instance.row0 = nx::gfx::test::row_of(placed.rows[0]);
+      instance.row1 = nx::gfx::test::row_of(placed.rows[1]);
+      instance.row2 = nx::gfx::test::row_of(placed.rows[2]);
+      instance.custom_index_and_mask = placed.custom | (placed.mask << 24);
+      instance.flags = 0;
+      instance.bottom_level = gfx::acceleration_structure_address(
+          device, levels[placed.soup].bottom);
+      hardware.push_back(instance);
+
+      const auto *const header = reinterpret_cast<const NxBvhHeader *>(
+          levels[placed.soup].block.data());
+      gfx::bvh_instance soft{.instance = instance,
+                             .bounds = {header->lo_x, header->lo_y,
+                                        header->lo_z, header->hi_x,
+                                        header->hi_y, header->hi_z}};
+      soft.instance.bottom_level =
+          gfx::buffer_address(device, levels[placed.soup].block_buffer);
+      software.push_back(soft);
+    }
+    hardware_instances =
+        input_buffer(device, "parity instances", bytes_of_all(hardware));
+    top_desc = {.instance_address =
+                    gfx::buffer_address(device, hardware_instances),
+                .instance_count = nx::cast<u32>(hardware.size())};
+    const gfx::acceleration_structure_sizes top_sizes =
+        gfx::sizes(device, top_desc);
+    most_scratch = nx::max(most_scratch, top_sizes.build_scratch);
+    top = gfx::create_acceleration_structure(
+        device, {.name = "parity top",
+                 .kind = gfx::acceleration_structure_kind::Top,
+                 .size = top_sizes.structure});
+
+    auto built_top = gfx::build_bvh_top_here(software);
+    if (!built_top.has_value())
+      return;
+    software_top = std::move(built_top.value().bytes);
+    software_top_buffer =
+        gfx::create_buffer(device, {.name = "parity software top",
+                                    .size = software_top.size(),
+                                    .usage = gfx::buffer_usage::Storage |
+                                             gfx::buffer_usage::DeviceAddress |
+                                             gfx::buffer_usage::CopyDst});
+    gfx::wait_upload(
+        device, gfx::upload_buffer(device, software_top_buffer, 0,
+                                   {software_top.data(), software_top.size()},
+                                   state::ShaderReadOnly));
+
+    const u64 alignment =
+        gfx::caps(device).acceleration_structure_scratch_alignment;
+    scratch =
+        gfx::create_buffer(device, {.name = "parity scratch",
+                                    .size = most_scratch + alignment,
+                                    .usage = gfx::buffer_usage::Storage |
+                                             gfx::buffer_usage::DeviceAddress});
+    scratch_address = align_up(gfx::buffer_address(device, scratch), alignment);
+    made = top.valid() && scratch.valid() && software_top_buffer.valid() &&
+           levels[0].bottom.valid() && levels[1].bottom.valid();
+  }
+
+  ~ParityScene() {
+    gfx::destroy_acceleration_structure(device, top);
+    gfx::destroy_buffer(device, scratch);
+    gfx::destroy_buffer(device, software_top_buffer);
+    gfx::destroy_buffer(device, hardware_instances);
+    for (Level &level : levels) {
+      gfx::destroy_acceleration_structure(device, level.bottom);
+      gfx::destroy_buffer(device, level.block_buffer);
+      gfx::destroy_buffer(device, level.indices);
+      gfx::destroy_buffer(device, level.positions);
+    }
+  }
+
+  [[nodiscard]] bool build(gfx::command_list &cmd) const {
+    transition(cmd, scratch, state::Undefined,
+               state::AccelerationStructureBuild);
+    for (const Level &level : levels) {
+      const gfx::buffer_handle storage =
+          gfx::acceleration_structure_buffer(device, level.bottom);
+      transition(cmd, storage, state::Undefined,
+                 state::AccelerationStructureBuild);
+      if (!gfx::build_acceleration_structure(
+              cmd, level.bottom, {.geometries = {&level.triangles, 1}},
+              scratch_address))
+        return false;
+      transition(cmd, storage, state::AccelerationStructureBuild,
+                 state::AccelerationStructureRead);
+      transition(cmd, scratch, state::AccelerationStructureBuild,
+                 state::AccelerationStructureBuild);
+    }
+    const gfx::buffer_handle top_storage =
+        gfx::acceleration_structure_buffer(device, top);
+    transition(cmd, top_storage, state::Undefined,
+               state::AccelerationStructureBuild);
+    if (!gfx::build_acceleration_structure(cmd, top, top_desc, scratch_address))
+      return false;
+    transition(cmd, top_storage, state::AccelerationStructureBuild,
+               state::AccelerationStructureRead);
+    return true;
+  }
+
+  /// The CPU block a software instance's bottom-level address names.
+  [[nodiscard]] std::span<const u8> block_at(const u64 address) const {
+    for (const Level &level : levels)
+      if (gfx::buffer_address(device, level.block_buffer) == address)
+        return {level.block.data(), level.block.size()};
+    return {};
+  }
+};
+
+struct ParityPush {
+  u64 scene = 0;
+  u64 rays = 0;
+  u64 hits = 0;
+  u32 count = 0;
+  f32 accept_from = 0.0f;
+  u32 mask = 0xFFu;
+  u32 pad = 0;
+};
+
+/// One shader's pipelines for both entry points.
+struct ParityShader {
+  gfx::device &device;
+  gfx::shader_handle shader;
+  gfx::pipeline_handle main;
+  gfx::pipeline_handle cull_back;
+
+  ParityShader(gfx::device &dev, const nx::string_view name) : device(dev) {
+    const nx::string base = nx::string(NX_GFX_TEST_SHADER_DIR) + "/" + name;
+    auto code = nx::fs::file_read(nx::fs::path_view(base + ".spv"));
+    auto refl = nx::fs::file_read_text(nx::fs::path_view(base + ".refl.json"));
+    if (!code.has_value() || !refl.has_value())
+      return;
+    shader = nx::gfx::test::create_shader(
+        device, {.name = name, .code = code->data(), .code_size = code->size()},
+        refl->view());
+    if (!shader.valid())
+      return;
+    main = nx::gfx::test::compile_pipeline(
+        device,
+        gfx::compute_pipeline_desc{
+            .name = name,
+            .compute = {.shader = shader, .entry_point = "trace_main"}});
+    cull_back = nx::gfx::test::compile_pipeline(
+        device,
+        gfx::compute_pipeline_desc{
+            .name = name,
+            .compute = {.shader = shader, .entry_point = "trace_cull_back"}});
+  }
+  ~ParityShader() {
+    gfx::destroy_pipeline(device, cull_back);
+    gfx::destroy_pipeline(device, main);
+    gfx::destroy_shader(device, shader);
+  }
+  [[nodiscard]] bool ready() const { return main.valid() && cull_back.valid(); }
+};
+
+/// Random rays through the scene, half aimed at its middle.
+[[nodiscard]] nx::vector<float4> parity_rays() {
+  nx::gfx::test::Random random(104);
+  nx::vector<float4> rays;
+  for (u32 r = 0; r < PARITY_RAYS; ++r) {
+    f32 o[3];
+    f32 d[3];
+    for (u32 a = 0; a < 3; ++a) {
+      o[a] = random.uniform(-30.0f, 30.0f);
+      d[a] = r % 2 == 0 ? random.uniform(-12.0f, 12.0f) - o[a]
+                        : random.uniform(-1.0f, 1.0f);
+    }
+    rays.push_back(float4{o[0], o[1], o[2], 0.0f});
+    rays.push_back(float4{d[0], d[1], d[2], 1.0e30f});
+  }
+  return rays;
+}
+
+/// Runs @p pipeline over the rays through the scene at @p scene, building
+/// the hardware levels first where @p build.
+[[nodiscard]] nx::vector<Met>
+run_parity(gfx::device &device, const ParityScene *const build,
+           const gfx::pipeline_handle pipeline, const u64 scene,
+           const gfx::buffer_handle rays, const gfx::buffer_handle hits,
+           const f32 accept_from, const u32 mask = 0xFFu) {
+  nx::vector<Met> out;
+  std::memset(gfx::buffer_mapped(device, hits), 0,
+              PARITY_RAYS * 2 * sizeof(float4));
+  gfx::command_list *cmd = gfx::begin_headless_frame(device);
+  if (cmd == nullptr)
+    return out;
+  if (build != nullptr && !build->build(*cmd))
+    return out;
+  const ParityPush push{.scene = scene,
+                        .rays = gfx::buffer_address(device, rays),
+                        .hits = gfx::buffer_address(device, hits),
+                        .count = PARITY_RAYS,
+                        .accept_from = accept_from,
+                        .mask = mask};
+  gfx::bind_pipeline(*cmd, pipeline);
+  gfx::push_constants(*cmd, &push, sizeof(push));
+  gfx::dispatch(*cmd, (PARITY_RAYS + 63) / 64);
+  if (!gfx::end_headless_frame(device))
+    return out;
+  gfx::wait_idle(device);
+  const auto *const read =
+      static_cast<const float4 *>(gfx::buffer_mapped(device, hits));
+  for (u32 r = 0; r < PARITY_RAYS; ++r)
+    out.push_back(met_of(read[r * 2], read[r * 2 + 1]));
+  return out;
+}
+
+struct Parity {
+  u32 hits = 0;
+  /// Rays one side hit and the other missed, or hit something else further
+  /// than a tie, and hits that disagree on facing.
+  u32 differ = 0;
+  u32 facing = 0;
+};
+
+/// A ray differs where one side hit and the other missed, or both hit at
+/// distances apart; a different triangle at the same distance is a tie.
+[[nodiscard]] Parity compare_met(const nx::vector<Met> &a,
+                                 const nx::vector<Met> &b) {
+  Parity out;
+  for (usize r = 0; r < a.size() && r < b.size(); ++r) {
+    out.hits += a[r].hit ? 1 : 0;
+    if (a[r].hit != b[r].hit) {
+      ++out.differ;
+      continue;
+    }
+    if (!a[r].hit)
+      continue;
+    if (std::fabs(a[r].t - b[r].t) > 1e-4f * std::max(1.0f, a[r].t)) {
+      ++out.differ;
+      continue;
+    }
+    const bool same = a[r].instance_index == b[r].instance_index &&
+                      a[r].primitive == b[r].primitive;
+    if (same && a[r].front != b[r].front)
+      ++out.facing;
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("gfx ray: the software scene meets what the CPU reference and the "
+          "hardware meet") {
+  RayFixture fixture;
+  if (!fixture.ready)
+    SKIP("no usable device");
+  gfx::device &device = fixture.device;
+  const bool hardware = gfx::caps(device).ray_queries;
+  {
+    ParityShader software_shader(device, "ray_scene_software");
+    if (!software_shader.ready())
+      SKIP("test shaders are not built in this configuration");
+    const nx::vector<float4> ray_data = parity_rays();
+    const gfx::buffer_handle rays =
+        gfx::create_buffer(device, {.name = "parity rays",
+                                    .size = ray_data.size() * sizeof(float4),
+                                    .usage = gfx::buffer_usage::Storage |
+                                             gfx::buffer_usage::DeviceAddress |
+                                             gfx::buffer_usage::CopyDst});
+    gfx::wait_upload(device,
+                     gfx::upload_buffer(device, rays, 0, bytes_of_all(ray_data),
+                                        state::ShaderReadOnly));
+    const gfx::buffer_handle hits =
+        gfx::create_buffer(device, {.name = "parity hits",
+                                    .size = PARITY_RAYS * 2 * sizeof(float4),
+                                    .usage = gfx::buffer_usage::Storage |
+                                             gfx::buffer_usage::DeviceAddress,
+                                    .memory = gfx::memory_usage::Readback,
+                                    .persistently_mapped = true});
+    REQUIRE(rays.valid());
+    REQUIRE(hits.valid());
+
+    for (const bool opaque : {true, false}) {
+      ParityScene scene(device, opaque);
+      REQUIRE(scene.software_top.size() > 0);
+      if (hardware)
+        REQUIRE(scene.made);
+      const u64 software_address =
+          gfx::buffer_address(device, scene.software_top_buffer);
+      const f32 accept_from = opaque ? 0.0f : 0.3f;
+      const nx::vector<Met> soft =
+          run_parity(device, nullptr, software_shader.main, software_address,
+                     rays, hits, accept_from);
+      REQUIRE(soft.size() == PARITY_RAYS);
+
+      if (opaque) {
+        nx::vector<Met> reference;
+        for (u32 r = 0; r < PARITY_RAYS; ++r) {
+          const float4 &o = ray_data[r * 2];
+          const float4 &d = ray_data[r * 2 + 1];
+          const gfx::bvh_ray ray{.origin = {o.x, o.y, o.z},
+                                 .direction = {d.x, d.y, d.z},
+                                 .tmin = o.w,
+                                 .tmax = d.w};
+          gfx::bvh_hit got;
+          Met met;
+          met.hit = gfx::trace_bvh_scene(
+              {scene.software_top.data(), scene.software_top.size()},
+              [&](const u64 address) { return scene.block_at(address); }, ray,
+              0xFFu, got);
+          met.t = met.hit ? got.t : -1.0f;
+          met.primitive = got.primitive;
+          met.instance = got.instance;
+          met.instance_index = got.instance_index;
+          met.front = soft[r].front;
+          reference.push_back(met);
+        }
+        const Parity cpu = compare_met(soft, reference);
+        std::printf("ray parity: software vs CPU: %u of %u hit, %u differ\n",
+                    cpu.hits, PARITY_RAYS, cpu.differ);
+        CHECK(cpu.hits > PARITY_RAYS / 4);
+        CHECK(cpu.hits < PARITY_RAYS);
+        CHECK(cpu.differ * 500 <= PARITY_RAYS);
+      }
+      if (!hardware)
+        continue;
+      ParityShader hardware_shader(device, "ray_scene");
+      REQUIRE(hardware_shader.ready());
+      const nx::vector<Met> hard =
+          run_parity(device, &scene, hardware_shader.main,
+                     gfx::acceleration_structure_address(device, scene.top),
+                     rays, hits, accept_from);
+      const Parity parity = compare_met(soft, hard);
+      std::printf("ray parity: software vs hardware (%s): %u of %u hit, %u "
+                  "differ, %u disagree on facing\n",
+                  opaque ? "opaque" : "any-hit", parity.hits, PARITY_RAYS,
+                  parity.differ, parity.facing);
+      CHECK(parity.differ * 500 <= PARITY_RAYS);
+      CHECK(parity.facing == 0u);
+
+      if (opaque) {
+        const nx::vector<Met> soft_culled =
+            run_parity(device, nullptr, software_shader.cull_back,
+                       software_address, rays, hits, 0.0f);
+        const nx::vector<Met> hard_culled =
+            run_parity(device, nullptr, hardware_shader.cull_back,
+                       gfx::acceleration_structure_address(device, scene.top),
+                       rays, hits, 0.0f);
+        const Parity culled = compare_met(soft_culled, hard_culled);
+        std::printf("ray parity: back faces culled: %u hit, %u differ\n",
+                    culled.hits, culled.differ);
+        CHECK(culled.differ * 500 <= PARITY_RAYS);
+        CHECK(culled.hits < parity.hits);
+
+        const nx::vector<Met> soft_masked =
+            run_parity(device, nullptr, software_shader.main, software_address,
+                       rays, hits, 0.0f, 0x1u);
+        const nx::vector<Met> hard_masked =
+            run_parity(device, nullptr, hardware_shader.main,
+                       gfx::acceleration_structure_address(device, scene.top),
+                       rays, hits, 0.0f, 0x1u);
+        const Parity masked = compare_met(soft_masked, hard_masked);
+        std::printf("ray parity: half the instances masked out: %u hit, %u "
+                    "differ\n",
+                    masked.hits, masked.differ);
+        CHECK(masked.differ * 500 <= PARITY_RAYS);
+        CHECK(masked.hits < parity.hits);
+      }
+    }
+    gfx::destroy_buffer(device, hits);
+    gfx::destroy_buffer(device, rays);
+  }
+  gfx::wait_idle(device);
   CHECK(fixture.validation_errors() == 0u);
 }

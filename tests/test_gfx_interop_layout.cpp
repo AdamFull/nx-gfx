@@ -47,11 +47,11 @@ constexpr Field RAY_INSTANCE_FIELDS[] = {
 constexpr Field BVH_HEADER_FIELDS[] = {NX_FIELD(NxBvhHeader, magic),
                                        NX_FIELD(NxBvhHeader, version),
                                        NX_FIELD(NxBvhHeader, node_count),
-                                       NX_FIELD(NxBvhHeader, triangle_count),
+                                       NX_FIELD(NxBvhHeader, primitive_count),
                                        NX_FIELD(NxBvhHeader, level_count),
                                        NX_FIELD(NxBvhHeader, flags),
                                        NX_FIELD(NxBvhHeader, nodes_offset),
-                                       NX_FIELD(NxBvhHeader, triangles_offset),
+                                       NX_FIELD(NxBvhHeader, primitives_offset),
                                        NX_FIELD(NxBvhHeader, levels_offset),
                                        NX_FIELD(NxBvhHeader, bounds_offset),
                                        NX_FIELD(NxBvhHeader, lo_x),
@@ -74,6 +74,14 @@ constexpr Field BVH_TRIANGLE_FIELDS[] = {NX_FIELD(NxBvhTriangle, v0),
                                          NX_FIELD(NxBvhTriangle, v1),
                                          NX_FIELD(NxBvhTriangle, v2)};
 
+constexpr Field BVH_INSTANCE_FIELDS[] = {
+    NX_FIELD(NxBvhInstance, row0),
+    NX_FIELD(NxBvhInstance, row1),
+    NX_FIELD(NxBvhInstance, row2),
+    NX_FIELD(NxBvhInstance, bottom_level),
+    NX_FIELD(NxBvhInstance, custom_index_and_mask),
+    NX_FIELD(NxBvhInstance, flags)};
+
 constexpr Field BVH_BOUNDS_FIELDS[] = {
     NX_FIELD(NxBvhBounds, lo_x), NX_FIELD(NxBvhBounds, lo_y),
     NX_FIELD(NxBvhBounds, lo_z), NX_FIELD(NxBvhBounds, hi_x),
@@ -88,6 +96,7 @@ constexpr Shared SHARED[] = {
     {"NxBvhNode", BVH_NODE_FIELDS},
     {"NxBvhTriangle", BVH_TRIANGLE_FIELDS},
     {"NxBvhBounds", BVH_BOUNDS_FIELDS},
+    {"NxBvhInstance", BVH_INSTANCE_FIELDS},
 };
 
 /// The struct a buffer parameter holds, or null.

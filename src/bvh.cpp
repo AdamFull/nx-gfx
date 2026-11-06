@@ -15,13 +15,16 @@ namespace nx::gfx {
 namespace {
 
 constexpr f32 INF = std::numeric_limits<f32>::infinity();
-/// A subtree over more triangles than this is built by a task of its own.
-constexpr u32 PARALLEL_TRIANGLES = 8192;
+/// A subtree over more primitives than this is built by a task of its own.
+constexpr u32 PARALLEL_PRIMITIVES = 8192;
 /// Past this depth a node splits at its median, which bounds the depth by
-/// it plus log2 of the triangles left.
+/// it plus log2 of the primitives left.
 constexpr u32 MEDIAN_DEPTH = 40;
-/// Triangles a leaf word can name.
-constexpr usize MAX_TRIANGLES = usize{NX_BVH_LEAF_FIRST_MASK} + 1;
+/// Primitives a leaf word can name.
+constexpr usize MAX_PRIMITIVES = usize{NX_BVH_LEAF_FIRST_MASK} + 1;
+/// Instances a top level holds: each keeps its place in the input in the low
+/// 24 bits of its flags word, as Vulkan caps a top level.
+constexpr usize MAX_INSTANCES = usize{NX_BVH_INSTANCE_INDEX_MASK} + 1;
 /// The deepest a block validate_bvh accepts may be, which bounds a
 /// traversal's stack.
 constexpr u32 MAX_LEVELS = 96;
@@ -53,12 +56,6 @@ struct Box {
   }
 };
 
-/// A triangle of the input: its geometry and its index within it.
-struct Source {
-  u32 geometry = 0;
-  u32 primitive = 0;
-};
-
 /// A node of the binary tree. Over [begin, begin + count) of the order;
 /// a leaf where left_count is 0, else its left child is at its slot + 1 and
 /// its right at its slot + 2 * left_count, so slots depend on the ranges
@@ -70,25 +67,19 @@ struct Binary {
   u32 left_count = 0;
 };
 
-struct Builder {
-  std::span<const bvh_geometry> geometries;
+/// What every level's build shares: the primitives' boxes, the tree over
+/// them and the workers it is built on. Each kind of level fills the boxes
+/// and writes its own records.
+struct Tree {
   bvh_options options;
   nx::thread_pool *pool = nullptr;
   nx::cancellation_token token;
   std::atomic<bool> stopped{false};
 
-  nx::vector<Source> sources;
   nx::vector<Box> boxes;
   nx::vector<f32> centroids;
   nx::vector<u32> order;
   nx::vector<Binary> nodes;
-
-  [[nodiscard]] const f32 *corner(const Source source,
-                                  const u32 corner) const noexcept {
-    const bvh_geometry &geometry = geometries[source.geometry];
-    return geometry.positions.data() +
-           usize{geometry.indices[usize{source.primitive} * 3 + corner]} * 3;
-  }
 
   [[nodiscard]] bool stop() noexcept {
     if (token.stop_requested())
@@ -110,71 +101,36 @@ struct Builder {
     });
   }
 
-  /// The input checked and each triangle's box and centroid made; the
-  /// error where the input is refused.
-  [[nodiscard]] std::optional<bvh_error> gather();
+  [[nodiscard]] std::optional<bvh_error> check_options() const noexcept {
+    if (options.max_leaf == 0 || options.max_leaf > NX_BVH_MAX_LEAF ||
+        options.bins < 2 || options.bins > 64)
+      return bvh_error::BadOptions;
+    return std::nullopt;
+  }
+
+  /// Room for @p count primitives, their centroids from their boxes once
+  /// those are filled.
+  void reserve(const usize count) {
+    boxes.resize(count);
+    centroids.resize(count * 3);
+    order.resize(count);
+    nodes.resize(count * 2 - 1);
+  }
+  void centre(const usize begin, const usize end) noexcept {
+    for (usize i = begin; i < end; ++i) {
+      for (u32 a = 0; a < 3; ++a)
+        centroids[i * 3 + a] = 0.5f * boxes[i].lo[a] + 0.5f * boxes[i].hi[a];
+      order[i] = nx::cast<u32>(i);
+    }
+  }
+
   void build(u32 slot, u32 begin, u32 end, u32 depth);
   [[nodiscard]] u32 split(u32 begin, u32 end, const Box &centroid_box, f32 area,
                           u32 depth);
   [[nodiscard]] u32 median(u32 begin, u32 end, u32 axis);
 };
 
-std::optional<bvh_error> Builder::gather() {
-  if (options.max_leaf_triangles == 0 ||
-      options.max_leaf_triangles > NX_BVH_MAX_LEAF || options.bins < 2 ||
-      options.bins > 64)
-    return bvh_error::BadOptions;
-  usize total = 0;
-  for (const bvh_geometry &geometry : geometries) {
-    if (geometry.indices.size() % 3 != 0 || geometry.positions.size() % 3 != 0)
-      return bvh_error::NotTriangles;
-    total += geometry.indices.size() / 3;
-  }
-  if (total == 0)
-    return bvh_error::Empty;
-  if (total > MAX_TRIANGLES)
-    return bvh_error::TooLarge;
-
-  sources.reserve(total);
-  for (u32 g = 0; g < geometries.size(); ++g) {
-    const bvh_geometry &geometry = geometries[g];
-    const usize vertices = geometry.positions.size() / 3;
-    for (const u32 index : geometry.indices)
-      if (index >= vertices)
-        return bvh_error::IndexOutOfRange;
-    const u32 triangles = nx::cast<u32>(geometry.indices.size() / 3);
-    for (u32 t = 0; t < triangles; ++t)
-      sources.push_back({.geometry = g, .primitive = t});
-  }
-
-  const usize count = sources.size();
-  boxes.resize(count);
-  centroids.resize(count * 3);
-  order.resize(count);
-  std::atomic<bool> finite{true};
-  chunks(count, [&](const usize begin, const usize end) {
-    for (usize i = begin; i < end; ++i) {
-      Box box;
-      for (u32 c = 0; c < 3; ++c) {
-        const f32 *const p = corner(sources[i], c);
-        if (!std::isfinite(p[0]) || !std::isfinite(p[1]) ||
-            !std::isfinite(p[2]))
-          finite.store(false, std::memory_order_relaxed);
-        box.grow(p);
-      }
-      boxes[i] = box;
-      for (u32 a = 0; a < 3; ++a)
-        centroids[i * 3 + a] = 0.5f * box.lo[a] + 0.5f * box.hi[a];
-      order[i] = nx::cast<u32>(i);
-    }
-  });
-  if (!finite.load(std::memory_order_relaxed))
-    return bvh_error::NonFinite;
-  nodes.resize(count * 2 - 1);
-  return std::nullopt;
-}
-
-u32 Builder::median(const u32 begin, const u32 end, const u32 axis) {
+u32 Tree::median(const u32 begin, const u32 end, const u32 axis) {
   const u32 mid = begin + (end - begin) / 2;
   std::nth_element(order.begin() + begin, order.begin() + mid,
                    order.begin() + end, [&](const u32 a, const u32 b) {
@@ -186,10 +142,10 @@ u32 Builder::median(const u32 begin, const u32 end, const u32 axis) {
 }
 
 /// Where [begin, end) splits, its order partitioned so; 0 for a leaf.
-u32 Builder::split(const u32 begin, const u32 end, const Box &centroid_box,
-                   const f32 area, const u32 depth) {
+u32 Tree::split(const u32 begin, const u32 end, const Box &centroid_box,
+                const f32 area, const u32 depth) {
   const u32 count = end - begin;
-  const u32 max_leaf = options.max_leaf_triangles;
+  const u32 max_leaf = options.max_leaf;
   u32 widest = 0;
   for (u32 a = 1; a < 3; ++a)
     if (centroid_box.hi[a] - centroid_box.lo[a] >
@@ -277,8 +233,8 @@ u32 Builder::split(const u32 begin, const u32 end, const Box &centroid_box,
   return at;
 }
 
-void Builder::build(const u32 slot, const u32 begin, const u32 end,
-                    const u32 depth) {
+void Tree::build(const u32 slot, const u32 begin, const u32 end,
+                 const u32 depth) {
   if (stop())
     return;
   Binary &node = nodes[slot];
@@ -300,7 +256,7 @@ void Builder::build(const u32 slot, const u32 begin, const u32 end,
   node.left_count = mid - begin;
   const u32 left = slot + 1;
   const u32 right = slot + 2 * node.left_count;
-  if (pool != nullptr && node.count > PARALLEL_TRIANGLES) {
+  if (pool != nullptr && node.count > PARALLEL_PRIMITIVES) {
     nx::task_group group;
     pool->submit(group, nx::task_priority::Critical,
                  [this, left, begin, mid, depth] {
@@ -432,14 +388,16 @@ void quantize(const Box &box, const Box *const children, const u32 count,
   out.hi_z = hi_words[2];
 }
 
-[[nodiscard]] u32 align4(const u32 value) noexcept {
-  return (value + 3u) & ~3u;
-}
-
-[[nodiscard]] nx::result<bvh_blob, bvh_error> lay_out(Builder &builder) {
-  const nx::vector<Binary> &nodes = builder.nodes;
+/// The block over @p tree: header, nodes in level order, then a record of
+/// @p record_size bytes per primitive in leaf order, which
+/// write(index in the order, primitive, destination) fills.
+template <typename Write>
+[[nodiscard]] nx::result<bvh_blob, bvh_error>
+lay_out(Tree &tree, const u32 record_size, const u32 kind_flags,
+        Write &&write) {
+  const nx::vector<Binary> &nodes = tree.nodes;
   nx::vector<Wide> wide;
-  wide.reserve(builder.order.size() / 2 + 1);
+  wide.reserve(tree.order.size() / 2 + 1);
   wide.emplace_back();
   expand(nodes, 0, wide[0]);
 
@@ -483,14 +441,13 @@ void quantize(const Box &box, const Box *const children, const u32 count,
   if (level_count > MAX_LEVELS)
     return nx::err(bvh_error::TooLarge);
 
-  const usize triangles = builder.order.size();
+  const usize primitives = tree.order.size();
   const u64 nodes_offset = sizeof(NxBvhHeader);
-  const u64 triangles_offset =
+  const u64 primitives_offset =
       nodes_offset + u64{out_nodes.size()} * sizeof(NxBvhNode);
-  const u64 levels_offset =
-      triangles_offset + u64{triangles} * sizeof(NxBvhTriangle);
+  const u64 levels_offset = primitives_offset + u64{primitives} * record_size;
   const u64 levels_end = levels_offset + u64{level_starts.size()} * sizeof(u32);
-  const bool keep = builder.options.keep_bounds;
+  const bool keep = tree.options.keep_bounds;
   const u64 bounds_offset = keep ? levels_end : 0;
   const u64 size =
       keep ? levels_end + u64{out_nodes.size()} * sizeof(NxBvhBounds)
@@ -506,11 +463,11 @@ void quantize(const Box &box, const Box *const children, const u32 count,
   header.magic = NX_BVH_MAGIC;
   header.version = NX_BVH_VERSION;
   header.node_count = nx::cast<u32>(out_nodes.size());
-  header.triangle_count = nx::cast<u32>(triangles);
+  header.primitive_count = nx::cast<u32>(primitives);
   header.level_count = level_count;
-  header.flags = keep ? NX_BVH_HAS_BOUNDS : 0u;
+  header.flags = kind_flags | (keep ? NX_BVH_HAS_BOUNDS : 0u);
   header.nodes_offset = nx::cast<u32>(nodes_offset);
-  header.triangles_offset = nx::cast<u32>(triangles_offset);
+  header.primitives_offset = nx::cast<u32>(primitives_offset);
   header.levels_offset = nx::cast<u32>(levels_offset);
   header.bounds_offset = nx::cast<u32>(bounds_offset);
   header.lo_x = root.lo[0];
@@ -522,26 +479,10 @@ void quantize(const Box &box, const Box *const children, const u32 count,
   std::memcpy(base, &header, sizeof(header));
   std::memcpy(base + nodes_offset, out_nodes.data(),
               out_nodes.size() * sizeof(NxBvhNode));
-
-  NxBvhTriangle *const out_triangles =
-      reinterpret_cast<NxBvhTriangle *>(base + triangles_offset);
-  builder.chunks(triangles, [&](const usize begin, const usize end) {
-    for (usize i = begin; i < end; ++i) {
-      const Source source = builder.sources[builder.order[i]];
-      const f32 *const a = builder.corner(source, 0);
-      const f32 *const b = builder.corner(source, 1);
-      const f32 *const c = builder.corner(source, 2);
-      const u32 flags = builder.geometries[source.geometry].opaque
-                            ? NX_BVH_TRIANGLE_OPAQUE
-                            : 0u;
-      NxBvhTriangle triangle;
-      triangle.v0 =
-          float4{a[0], a[1], a[2], std::bit_cast<f32>(source.primitive)};
-      triangle.v1 =
-          float4{b[0], b[1], b[2], std::bit_cast<f32>(source.geometry)};
-      triangle.v2 = float4{c[0], c[1], c[2], std::bit_cast<f32>(flags)};
-      std::memcpy(out_triangles + i, &triangle, sizeof(triangle));
-    }
+  u8 *const records = base + primitives_offset;
+  tree.chunks(primitives, [&](const usize begin, const usize end) {
+    for (usize i = begin; i < end; ++i)
+      write(tree.order[i], records + i * record_size);
   });
   std::memcpy(base + levels_offset, level_starts.data(),
               level_starts.size() * sizeof(u32));
@@ -555,24 +496,248 @@ void quantize(const Box &box, const Box *const children, const u32 count,
     }
   }
   blob.node_count = header.node_count;
-  blob.triangle_count = header.triangle_count;
+  blob.primitive_count = header.primitive_count;
   blob.level_count = level_count;
   return blob;
 }
 
-[[nodiscard]] nx::result<bvh_blob, bvh_error> run(Builder &builder) {
-  const u64 started = nx::os::ticks_ns();
-  if (const std::optional<bvh_error> refused = builder.gather())
-    return nx::err(*refused);
-  builder.build(0, 0, nx::cast<u32>(builder.order.size()), 0);
+/// Builds the tree over boxes the caller has filled, then lays it out.
+template <typename Write>
+[[nodiscard]] nx::result<bvh_blob, bvh_error>
+finish(Tree &tree, const u64 started, const u32 record_size,
+       const u32 kind_flags, Write &&write) {
+  tree.build(0, 0, nx::cast<u32>(tree.order.size()), 0);
   // Only a cancelled build stops, and its caller throws rather than
   // answering this.
-  if (builder.stop())
+  if (tree.stop())
     return nx::err(bvh_error::Empty);
-  auto laid = lay_out(builder);
+  auto laid = lay_out(tree, record_size, kind_flags, write);
   if (laid.has_value())
     laid.value().build_ns = nx::os::ticks_ns() - started;
   return laid;
+}
+
+/// A triangle of the input: its geometry and its index within it.
+struct Source {
+  u32 geometry = 0;
+  u32 primitive = 0;
+};
+
+[[nodiscard]] const f32 *corner(const std::span<const bvh_geometry> geometries,
+                                const Source source,
+                                const u32 corner) noexcept {
+  const bvh_geometry &geometry = geometries[source.geometry];
+  return geometry.positions.data() +
+         usize{geometry.indices[usize{source.primitive} * 3 + corner]} * 3;
+}
+
+[[nodiscard]] nx::result<bvh_blob, bvh_error>
+build_triangles(Tree &tree, const std::span<const bvh_geometry> geometries) {
+  const u64 started = nx::os::ticks_ns();
+  if (const auto refused = tree.check_options())
+    return nx::err(*refused);
+  usize total = 0;
+  for (const bvh_geometry &geometry : geometries) {
+    if (geometry.indices.size() % 3 != 0 || geometry.positions.size() % 3 != 0)
+      return nx::err(bvh_error::NotTriangles);
+    total += geometry.indices.size() / 3;
+  }
+  if (total == 0)
+    return nx::err(bvh_error::Empty);
+  if (total > MAX_PRIMITIVES)
+    return nx::err(bvh_error::TooLarge);
+
+  nx::vector<Source> sources;
+  sources.reserve(total);
+  for (u32 g = 0; g < geometries.size(); ++g) {
+    const bvh_geometry &geometry = geometries[g];
+    const usize vertices = geometry.positions.size() / 3;
+    for (const u32 index : geometry.indices)
+      if (index >= vertices)
+        return nx::err(bvh_error::IndexOutOfRange);
+    const u32 triangles = nx::cast<u32>(geometry.indices.size() / 3);
+    for (u32 t = 0; t < triangles; ++t)
+      sources.push_back({.geometry = g, .primitive = t});
+  }
+
+  tree.reserve(total);
+  std::atomic<bool> finite{true};
+  tree.chunks(total, [&](const usize begin, const usize end) {
+    for (usize i = begin; i < end; ++i) {
+      Box box;
+      for (u32 c = 0; c < 3; ++c) {
+        const f32 *const p = corner(geometries, sources[i], c);
+        if (!std::isfinite(p[0]) || !std::isfinite(p[1]) ||
+            !std::isfinite(p[2]))
+          finite.store(false, std::memory_order_relaxed);
+        box.grow(p);
+      }
+      tree.boxes[i] = box;
+    }
+    tree.centre(begin, end);
+  });
+  if (!finite.load(std::memory_order_relaxed))
+    return nx::err(bvh_error::NonFinite);
+
+  return finish(
+      tree, started, sizeof(NxBvhTriangle), 0u,
+      [&](const u32 primitive, u8 *const out) {
+        const Source source = sources[primitive];
+        const f32 *const a = corner(geometries, source, 0);
+        const f32 *const b = corner(geometries, source, 1);
+        const f32 *const c = corner(geometries, source, 2);
+        const u32 flags =
+            geometries[source.geometry].opaque ? NX_BVH_TRIANGLE_OPAQUE : 0u;
+        NxBvhTriangle triangle;
+        triangle.v0 =
+            float4{a[0], a[1], a[2], std::bit_cast<f32>(source.primitive)};
+        triangle.v1 =
+            float4{b[0], b[1], b[2], std::bit_cast<f32>(source.geometry)};
+        triangle.v2 = float4{c[0], c[1], c[2], std::bit_cast<f32>(flags)};
+        std::memcpy(out, &triangle, sizeof(triangle));
+      });
+}
+
+/// Rows of a 3x4 transform, in double.
+struct Rows {
+  f64 m[3][4] = {};
+};
+
+[[nodiscard]] Rows rows_of(const NxRayInstance &instance) noexcept {
+  const float4 r[3] = {instance.row0, instance.row1, instance.row2};
+  Rows out;
+  for (u32 i = 0; i < 3; ++i) {
+    out.m[i][0] = r[i].x;
+    out.m[i][1] = r[i].y;
+    out.m[i][2] = r[i].z;
+    out.m[i][3] = r[i].w;
+  }
+  return out;
+}
+
+/// The inverse of an affine transform, or nothing where it has none.
+[[nodiscard]] std::optional<Rows> inverse(const Rows &a) noexcept {
+  const auto &m = a.m;
+  const f64 c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+  const f64 c01 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+  const f64 c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+  const f64 det = m[0][0] * c00 + m[0][1] * c01 + m[0][2] * c02;
+  if (!std::isfinite(det) || std::fabs(det) < 1e-30)
+    return std::nullopt;
+  const f64 inv = 1.0 / det;
+  Rows out;
+  auto &r = out.m;
+  r[0][0] = c00 * inv;
+  r[1][0] = c01 * inv;
+  r[2][0] = c02 * inv;
+  r[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv;
+  r[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv;
+  r[2][1] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * inv;
+  r[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv;
+  r[1][2] = (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * inv;
+  r[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inv;
+  for (u32 i = 0; i < 3; ++i)
+    r[i][3] = -(r[i][0] * m[0][3] + r[i][1] * m[1][3] + r[i][2] * m[2][3]);
+  for (const auto &row : r)
+    for (const f64 value : row)
+      if (!std::isfinite(value) || std::fabs(value) > 3.0e38)
+        return std::nullopt;
+  return out;
+}
+
+[[nodiscard]] nx::result<bvh_blob, bvh_error>
+build_instances(Tree &tree, const std::span<const bvh_instance> instances) {
+  const u64 started = nx::os::ticks_ns();
+  if (const auto refused = tree.check_options())
+    return nx::err(*refused);
+  // A shader enters one instance at a time, so a top level's leaves hold one.
+  tree.options.max_leaf = 1;
+  if (instances.empty())
+    return nx::err(bvh_error::Empty);
+  if (instances.size() > MAX_INSTANCES)
+    return nx::err(bvh_error::TooLarge);
+
+  const usize count = instances.size();
+  nx::vector<NxBvhInstance> records(count);
+  tree.reserve(count);
+  std::atomic<bool> valid{true};
+  tree.chunks(count, [&](const usize begin, const usize end) {
+    for (usize i = begin; i < end; ++i) {
+      const bvh_instance &instance = instances[i];
+      const NxBvhBounds &b = instance.bounds;
+      const Rows rows = rows_of(instance.instance);
+      const std::optional<Rows> inverted = inverse(rows);
+      const f64 lo[3] = {b.lo_x, b.lo_y, b.lo_z};
+      const f64 hi[3] = {b.hi_x, b.hi_y, b.hi_z};
+      if (!inverted || !(lo[0] <= hi[0] && lo[1] <= hi[1] && lo[2] <= hi[2]) ||
+          !std::isfinite(lo[0] + lo[1] + lo[2] + hi[0] + hi[1] + hi[2]) ||
+          (instance.instance.flags & 0x00FFFFFFu) != 0) {
+        valid.store(false, std::memory_order_relaxed);
+        continue;
+      }
+      // The box's eight corners placed, held by a box rounded outward.
+      Box box;
+      for (u32 corner = 0; corner < 8; ++corner) {
+        const f64 p[3] = {(corner & 1) ? hi[0] : lo[0],
+                          (corner & 2) ? hi[1] : lo[1],
+                          (corner & 4) ? hi[2] : lo[2]};
+        for (u32 r = 0; r < 3; ++r) {
+          const f64 placed = rows.m[r][0] * p[0] + rows.m[r][1] * p[1] +
+                             rows.m[r][2] * p[2] + rows.m[r][3];
+          const f32 down = std::nextafter(nx::cast<f32>(placed), -INF);
+          const f32 up = std::nextafter(nx::cast<f32>(placed), INF);
+          box.lo[r] = std::min(box.lo[r], down);
+          box.hi[r] = std::max(box.hi[r], up);
+        }
+      }
+      if (!std::isfinite(box.lo[0] + box.lo[1] + box.lo[2] + box.hi[0] +
+                         box.hi[1] + box.hi[2])) {
+        valid.store(false, std::memory_order_relaxed);
+        continue;
+      }
+      tree.boxes[i] = box;
+      const auto &inv = inverted->m;
+      NxBvhInstance &record = records[i];
+      record.row0 = float4{nx::cast<f32>(inv[0][0]), nx::cast<f32>(inv[0][1]),
+                           nx::cast<f32>(inv[0][2]), nx::cast<f32>(inv[0][3])};
+      record.row1 = float4{nx::cast<f32>(inv[1][0]), nx::cast<f32>(inv[1][1]),
+                           nx::cast<f32>(inv[1][2]), nx::cast<f32>(inv[1][3])};
+      record.row2 = float4{nx::cast<f32>(inv[2][0]), nx::cast<f32>(inv[2][1]),
+                           nx::cast<f32>(inv[2][2]), nx::cast<f32>(inv[2][3])};
+      record.bottom_level = instance.instance.bottom_level;
+      record.custom_index_and_mask = instance.instance.custom_index_and_mask;
+      record.flags = instance.instance.flags | nx::cast<u32>(i);
+    }
+    tree.centre(begin, end);
+  });
+  if (!valid.load(std::memory_order_relaxed))
+    return nx::err(bvh_error::BadInstance);
+
+  return finish(tree, started, sizeof(NxBvhInstance), NX_BVH_TOP,
+                [&](const u32 primitive, u8 *const out) {
+                  std::memcpy(out, &records[primitive], sizeof(NxBvhInstance));
+                });
+}
+
+/// Runs @p build on a fresh tree, on @p pool's workers, and keeps a cancelled
+/// build from answering.
+template <typename Input, typename Build>
+[[nodiscard]] nx::future<nx::result<bvh_blob, bvh_error>>
+on_pool(nx::thread_pool &pool, const std::span<const Input> input,
+        const bvh_options &options, nx::cancellation_token token,
+        const nx::task_priority priority, Build build) {
+  return pool.async(
+      priority, std::move(token),
+      [&pool, input, options, build](const nx::cancellation_token cancel)
+          -> nx::result<bvh_blob, bvh_error> {
+        Tree tree;
+        tree.options = options;
+        tree.pool = &pool;
+        tree.token = cancel;
+        auto built = build(tree, input);
+        cancel.throw_if_requested();
+        return built;
+      });
 }
 
 } // namespace
@@ -580,13 +745,16 @@ void quantize(const Box &box, const Box *const children, const u32 count,
 nx::string_view bvh_error_name(const bvh_error error) noexcept {
   switch (error) {
   case bvh_error::Empty:
-    return "no triangles";
+    return "nothing to build";
   case bvh_error::NotTriangles:
     return "an index or position count not a multiple of three";
   case bvh_error::IndexOutOfRange:
     return "an index past the positions";
   case bvh_error::NonFinite:
     return "a position not finite";
+  case bvh_error::BadInstance:
+    return "an instance whose transform has no inverse or whose bounds are "
+           "not a box";
   case bvh_error::TooLarge:
     return "more than the block can name";
   case bvh_error::BadOptions:
@@ -606,35 +774,48 @@ nx::string_view bvh_error_name(const bvh_error error) noexcept {
 nx::result<bvh_blob, bvh_error>
 build_bvh_here(const std::span<const bvh_geometry> geometries,
                const bvh_options &options) {
-  Builder builder;
-  builder.geometries = geometries;
-  builder.options = options;
-  return run(builder);
+  Tree tree;
+  tree.options = options;
+  return build_triangles(tree, geometries);
 }
 
 nx::future<nx::result<bvh_blob, bvh_error>>
 build_bvh(nx::thread_pool &pool, const std::span<const bvh_geometry> geometries,
           const bvh_options &options, nx::cancellation_token token,
           const nx::task_priority priority) {
-  return pool.async(
-      priority, std::move(token),
-      [&pool, geometries, options](const nx::cancellation_token cancel)
-          -> nx::result<bvh_blob, bvh_error> {
-        Builder builder;
-        builder.geometries = geometries;
-        builder.options = options;
-        builder.pool = &pool;
-        builder.token = cancel;
-        auto built = run(builder);
-        cancel.throw_if_requested();
-        return built;
-      });
+  return on_pool(pool, geometries, options, std::move(token), priority,
+                 [](Tree &tree, std::span<const bvh_geometry> input) {
+                   return build_triangles(tree, input);
+                 });
+}
+
+nx::result<bvh_blob, bvh_error>
+build_bvh_top_here(const std::span<const bvh_instance> instances,
+                   const bvh_options &options) {
+  Tree tree;
+  tree.options = options;
+  return build_instances(tree, instances);
+}
+
+nx::future<nx::result<bvh_blob, bvh_error>>
+build_bvh_top(nx::thread_pool &pool,
+              const std::span<const bvh_instance> instances,
+              const bvh_options &options, nx::cancellation_token token,
+              const nx::task_priority priority) {
+  return on_pool(pool, instances, options, std::move(token), priority,
+                 [](Tree &tree, std::span<const bvh_instance> input) {
+                   return build_instances(tree, input);
+                 });
 }
 
 namespace {
 
 [[nodiscard]] bool finite(const float4 &v) noexcept {
   return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+[[nodiscard]] bool finite4(const float4 &v) noexcept {
+  return finite(v) && std::isfinite(v.w);
 }
 
 } // namespace
@@ -652,20 +833,21 @@ validate_bvh(const std::span<const u8> bytes) noexcept {
   if (header->version != NX_BVH_VERSION)
     return nx::err(bvh_error::BadVersion);
   const u64 nodes = header->node_count;
-  const u64 triangles = header->triangle_count;
+  const u64 primitives = header->primitive_count;
   const u64 levels = header->level_count;
-  if (nodes == 0 || triangles == 0 || triangles > MAX_TRIANGLES ||
+  if (nodes == 0 || primitives == 0 || primitives > MAX_PRIMITIVES ||
       levels == 0 || levels > MAX_LEVELS || levels > nodes ||
-      (header->flags & ~NX_BVH_HAS_BOUNDS) != 0)
+      (header->flags & ~(NX_BVH_HAS_BOUNDS | NX_BVH_TOP)) != 0)
     return nx::err(bvh_error::BadLayout);
-  const u64 triangles_offset = sizeof(NxBvhHeader) + nodes * sizeof(NxBvhNode);
-  const u64 levels_offset =
-      triangles_offset + triangles * sizeof(NxBvhTriangle);
+  const bool top = (header->flags & NX_BVH_TOP) != 0;
+  const u64 record_size = top ? sizeof(NxBvhInstance) : sizeof(NxBvhTriangle);
+  const u64 primitives_offset = sizeof(NxBvhHeader) + nodes * sizeof(NxBvhNode);
+  const u64 levels_offset = primitives_offset + primitives * record_size;
   const u64 levels_end = levels_offset + (levels + 1) * sizeof(u32);
   const bool kept = (header->flags & NX_BVH_HAS_BOUNDS) != 0;
   const u64 end = kept ? levels_end + nodes * sizeof(NxBvhBounds) : levels_end;
   if (header->nodes_offset != sizeof(NxBvhHeader) ||
-      header->triangles_offset != triangles_offset ||
+      header->primitives_offset != primitives_offset ||
       header->levels_offset != levels_offset ||
       header->bounds_offset != (kept ? levels_end : 0))
     return nx::err(bvh_error::BadLayout);
@@ -676,8 +858,6 @@ validate_bvh(const std::span<const u8> bytes) noexcept {
 
   const auto *const node =
       reinterpret_cast<const NxBvhNode *>(bytes.data() + sizeof(NxBvhHeader));
-  const auto *const triangle =
-      reinterpret_cast<const NxBvhTriangle *>(bytes.data() + triangles_offset);
   u32 level_start[MAX_LEVELS + 1];
   std::memcpy(level_start, bytes.data() + levels_offset,
               nx::cast<usize>(levels + 1) * sizeof(u32));
@@ -688,9 +868,9 @@ validate_bvh(const std::span<const u8> bytes) noexcept {
     if (level_start[l] >= level_start[l + 1])
       return nx::err(bvh_error::BadLayout);
 
-  nx::vector<u64> covered(nx::cast<usize>((triangles + 63) / 64), 0);
-  const auto seen = [&](const u64 t) {
-    return (covered[nx::cast<usize>(t / 64)] >> (t % 64)) & 1u;
+  nx::vector<u64> covered(nx::cast<usize>((primitives + 63) / 64), 0);
+  const auto seen = [&](const u64 p) {
+    return (covered[nx::cast<usize>(p / 64)] >> (p % 64)) & 1u;
   };
   u64 level = 0;
   for (u32 n = 0; n < nodes; ++n) {
@@ -727,12 +907,12 @@ validate_bvh(const std::span<const u8> bytes) noexcept {
       if (nx_bvh_is_leaf(word)) {
         const u64 first = nx_bvh_leaf_first(word);
         const u64 leaf = nx_bvh_leaf_count(word);
-        if (first + leaf > triangles)
+        if (first + leaf > primitives)
           return nx::err(bvh_error::BadLayout);
-        for (u64 t = first; t < first + leaf; ++t) {
-          if (seen(t))
+        for (u64 p = first; p < first + leaf; ++p) {
+          if (seen(p))
             return nx::err(bvh_error::BadLayout);
-          covered[nx::cast<usize>(t / 64)] |= u64{1} << (t % 64);
+          covered[nx::cast<usize>(p / 64)] |= u64{1} << (p % 64);
         }
         continue;
       }
@@ -742,12 +922,21 @@ validate_bvh(const std::span<const u8> bytes) noexcept {
         return nx::err(bvh_error::BadLayout);
     }
   }
-  for (u64 t = 0; t < triangles; ++t) {
-    if (!seen(t))
+  const u8 *const records = bytes.data() + primitives_offset;
+  for (u64 p = 0; p < primitives; ++p) {
+    if (!seen(p))
       return nx::err(bvh_error::BadLayout);
-    const NxBvhTriangle &current = triangle[t];
-    if (!finite(current.v0) || !finite(current.v1) || !finite(current.v2) ||
-        (std::bit_cast<u32>(current.v2.w) & ~NX_BVH_TRIANGLE_OPAQUE) != 0)
+    if (top) {
+      const auto &instance =
+          reinterpret_cast<const NxBvhInstance *>(records)[p];
+      if (!finite4(instance.row0) || !finite4(instance.row1) ||
+          !finite4(instance.row2))
+        return nx::err(bvh_error::BadLayout);
+      continue;
+    }
+    const auto &triangle = reinterpret_cast<const NxBvhTriangle *>(records)[p];
+    if (!finite(triangle.v0) || !finite(triangle.v1) || !finite(triangle.v2) ||
+        (std::bit_cast<u32>(triangle.v2.w) & ~NX_BVH_TRIANGLE_OPAQUE) != 0)
       return nx::err(bvh_error::BadLayout);
   }
   return header;
@@ -755,13 +944,29 @@ validate_bvh(const std::span<const u8> bytes) noexcept {
 
 namespace {
 
-struct Corner {
-  f32 x, y, z;
+/// A ray as traversal uses it, its direction's reciprocal made once.
+struct Walk {
+  f32 origin[3];
+  f32 direction[3];
+  f32 inverse[3];
+  f32 tmin;
 };
+
+[[nodiscard]] Walk walk_of(const f32 *const origin, const f32 *const direction,
+                           const f32 tmin) noexcept {
+  Walk out;
+  for (u32 a = 0; a < 3; ++a) {
+    out.origin[a] = origin[a];
+    out.direction[a] = direction[a];
+    out.inverse[a] = 1.0f / direction[a];
+  }
+  out.tmin = tmin;
+  return out;
+}
 
 /// Woop, Benthin and Wald's watertight test: the ray's space sheared so it
 /// runs along +z, the edge functions evaluated in double where float gives 0.
-[[nodiscard]] bool hit_triangle(const bvh_ray &ray, const NxBvhTriangle &tri,
+[[nodiscard]] bool hit_triangle(const Walk &ray, const NxBvhTriangle &tri,
                                 const f32 best, bvh_hit &out) noexcept {
   const f32 *const d = ray.direction;
   u32 kz = 0;
@@ -812,29 +1017,20 @@ struct Corner {
   return true;
 }
 
-} // namespace
-
-bool trace_bvh(const std::span<const u8> bvh, const bvh_ray &ray,
-               bvh_hit &out) noexcept {
-  if (bvh.size() < sizeof(NxBvhHeader))
-    return false;
-  const auto *const header = reinterpret_cast<const NxBvhHeader *>(bvh.data());
+/// Walks @p block's nodes for @p ray up to @p best, calling
+/// leaf(first, count) for each leaf whose box the ray meets; leaf may lower
+/// best.
+template <typename Leaf>
+void walk(const u8 *const block, const Walk &ray, f32 &best, Leaf &&leaf) {
+  const auto *const header = reinterpret_cast<const NxBvhHeader *>(block);
   const auto *const nodes =
-      reinterpret_cast<const NxBvhNode *>(bvh.data() + header->nodes_offset);
-  const auto *const triangles = reinterpret_cast<const NxBvhTriangle *>(
-      bvh.data() + header->triangles_offset);
-  f32 inverse[3];
-  for (u32 a = 0; a < 3; ++a)
-    inverse[a] = 1.0f / ray.direction[a];
+      reinterpret_cast<const NxBvhNode *>(block + header->nodes_offset);
   // Rounding in the slab test can lose a box a ray grazes; widen its far
   // distance by a few ulps (Ize).
   constexpr f32 WIDEN = 1.0f + 6.0f * std::numeric_limits<f32>::epsilon();
-
   u32 stack[NX_BVH_WIDTH * MAX_LEVELS];
   u32 depth = 0;
   stack[depth++] = 0;
-  f32 best = ray.tmax;
-  bool found = false;
   while (depth > 0) {
     const NxBvhNode &node = nodes[stack[--depth]];
     const u32 count = nx_bvh_child_count(node.meta);
@@ -850,8 +1046,8 @@ bool trace_bvh(const std::span<const u8> bvh, const bvh_ray &ray,
         const f32 step = nx_bvh_step(node.meta, axis);
         const f32 low = decode(origin[axis], nx_bvh_byte(lo[axis], c), step);
         const f32 high = decode(origin[axis], nx_bvh_byte(hi[axis], c), step);
-        const f32 t0 = (low - ray.origin[axis]) * inverse[axis];
-        const f32 t1 = (high - ray.origin[axis]) * inverse[axis];
+        const f32 t0 = (low - ray.origin[axis]) * ray.inverse[axis];
+        const f32 t1 = (high - ray.origin[axis]) * ray.inverse[axis];
         near_t = std::fmax(near_t, std::fmin(t0, t1));
         far_t = std::fmin(far_t, std::fmax(t0, t1) * WIDEN);
       }
@@ -863,15 +1059,87 @@ bool trace_bvh(const std::span<const u8> bvh, const bvh_ray &ray,
           stack[depth++] = word;
         continue;
       }
-      const u32 first = nx_bvh_leaf_first(word);
-      const u32 leaf = nx_bvh_leaf_count(word);
-      for (u32 t = first; t < first + leaf; ++t)
-        if (hit_triangle(ray, triangles[t], best, out)) {
-          best = out.t;
-          found = true;
-        }
+      leaf(nx_bvh_leaf_first(word), nx_bvh_leaf_count(word));
     }
   }
+}
+
+/// Tests leaf triangles [first, first + count) of @p block.
+void test_triangles(const u8 *const block, const Walk &ray, f32 &best,
+                    const u32 first, const u32 count, bool &found,
+                    bvh_hit &out) noexcept {
+  const auto *const header = reinterpret_cast<const NxBvhHeader *>(block);
+  const auto *const triangles = reinterpret_cast<const NxBvhTriangle *>(
+      block + header->primitives_offset);
+  for (u32 t = first; t < first + count; ++t)
+    if (hit_triangle(ray, triangles[t], best, out)) {
+      best = out.t;
+      found = true;
+    }
+}
+
+[[nodiscard]] f32 apply(const float4 &row, const f32 *const v,
+                        const f32 w) noexcept {
+  return row.x * v[0] + row.y * v[1] + row.z * v[2] + row.w * w;
+}
+
+} // namespace
+
+bool trace_bvh(const std::span<const u8> bvh, const bvh_ray &ray,
+               bvh_hit &out) noexcept {
+  if (bvh.size() < sizeof(NxBvhHeader))
+    return false;
+  const Walk walked = walk_of(ray.origin, ray.direction, ray.tmin);
+  f32 best = ray.tmax;
+  bool found = false;
+  walk(bvh.data(), walked, best, [&](const u32 first, const u32 count) {
+    test_triangles(bvh.data(), walked, best, first, count, found, out);
+  });
+  return found;
+}
+
+bool trace_bvh_scene(const std::span<const u8> top,
+                     const nx::function_ref<std::span<const u8>(u64)> bottom_of,
+                     const bvh_ray &ray, const u32 mask,
+                     bvh_hit &out) noexcept {
+  if (top.size() < sizeof(NxBvhHeader))
+    return false;
+  const auto *const header = reinterpret_cast<const NxBvhHeader *>(top.data());
+  const auto *const instances = reinterpret_cast<const NxBvhInstance *>(
+      top.data() + header->primitives_offset);
+  const Walk world = walk_of(ray.origin, ray.direction, ray.tmin);
+  f32 best = ray.tmax;
+  bool found = false;
+  walk(top.data(), world, best, [&](const u32 first, const u32 count) {
+    for (u32 i = first; i < first + count; ++i) {
+      const NxBvhInstance &instance = instances[i];
+      if (((instance.custom_index_and_mask >> 24) & mask) == 0)
+        continue;
+      const std::span<const u8> bottom = bottom_of(instance.bottom_level);
+      if (bottom.size() < sizeof(NxBvhHeader))
+        continue;
+      // Into the instance's space, the direction left unnormalized so a
+      // distance along it is the same in both.
+      const f32 origin[3] = {apply(instance.row0, ray.origin, 1.0f),
+                             apply(instance.row1, ray.origin, 1.0f),
+                             apply(instance.row2, ray.origin, 1.0f)};
+      const f32 direction[3] = {apply(instance.row0, ray.direction, 0.0f),
+                                apply(instance.row1, ray.direction, 0.0f),
+                                apply(instance.row2, ray.direction, 0.0f)};
+      const Walk local = walk_of(origin, direction, ray.tmin);
+      bool hit = false;
+      walk(bottom.data(), local, best,
+           [&](const u32 leaf_first, const u32 leaf_count) {
+             test_triangles(bottom.data(), local, best, leaf_first, leaf_count,
+                            hit, out);
+           });
+      if (hit) {
+        found = true;
+        out.instance = instance.custom_index_and_mask & 0x00FFFFFFu;
+        out.instance_index = instance.flags & NX_BVH_INSTANCE_INDEX_MASK;
+      }
+    }
+  });
   return found;
 }
 

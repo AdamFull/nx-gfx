@@ -322,13 +322,18 @@ invalid, zero or false.
 
 ## The software BVH
 
-Where a device has no ray queries, a caller's fallback traces a bottom level
-the library builds on the CPU (`nx/gfx/bvh.h`, in `nx::gfx_formats`, so asset
-tools build it too): a 4-wide BVH in one block whose layout C++ and shaders
-share (`nx/gfx/shaders/bvh_layout.h`). The block is a header, nodes in level
-order, the triangles in leaf order with their corners inline, the level
-table, and, with `bvh_options::keep_bounds`, each node's exact box for
-refitting. A node holds four children's boxes quantized to a byte an axis on
+Where a device has no ray queries, a caller's fallback traces levels the
+library builds on the CPU (`nx/gfx/bvh.h`, in `nx::gfx_formats`, so asset
+tools build them too): 4-wide BVHs in one block each, whose layout C++ and
+shaders share (`nx/gfx/shaders/bvh_layout.h`). A block is a header, nodes in
+level order, its primitives in leaf order, the level table, and, with
+`bvh_options::keep_bounds`, each node's exact box for refitting. A bottom
+level's primitives are triangles with their corners inline. A top level's
+(`build_bvh_top`, `NX_BVH_TOP`) are instances: the inverse of each
+instance's transform, its bottom level's address, custom index, mask and
+flags, and its place in the input, so a ray is carried into each
+instance's space unnormalized and a distance means the same in both
+levels. A node holds four children's boxes quantized to a byte an axis on
 a grid whose steps are powers of two; a decoded box always holds its child,
 checked with the arithmetic a shader decodes with.
 
@@ -343,12 +348,25 @@ traversal's stack. Input with no triangles, counts not multiples of three,
 an index past the positions, a position not finite or options out of range
 is refused, never built.
 
+Shaders trace a software top level through `nxg_ray` as they trace a
+hardware one: `nx_trace` over an `NxSoftwareScene` (the top block's address)
+rather than an `NxScene`, with the same `IRayShade`, flags, masks, instance
+flags and facing, so one consumer source serves both. It picks the scene
+type itself (`typealias Scene = ...` under a define of its own), since a
+macro does not reach into an imported module, and builds its software
+variant as a file that sets that define and includes the source; that
+variant needs no ray-query capability and compiles for Metal. The walk keeps
+one stack of `NX_BVH_STACK` entries for both levels and drops what does not
+fit; its triangle test is watertight in float alone, without the CPU's
+double fallback for an edge function of exactly zero.
+
 `validate_bvh` checks a block from anywhere before it is trusted: offsets
 and counts that account for every byte, nodes after their parents and in
 their levels, leaves that cover every triangle exactly once, finite
-corners. `trace_bvh` is the CPU reference a shader traversal is tested
-against: nearest hit, every triangle opaque, watertight (Woop, Benthin and
-Wald), a box's far distance widened by a few ulps.
+corners. `trace_bvh` and `trace_bvh_scene` (through a top level, with a
+ray mask) are the CPU reference a shader traversal is tested against:
+nearest hit, every triangle opaque, watertight (Woop, Benthin and Wald), a
+box's far distance widened by a few ulps.
 
 ## Native interop
 
