@@ -5,6 +5,7 @@
 #include "core/foundation/serialization/json_util.h"
 #include "core/foundation/strings/format.h"
 #include "gfx_interop_probe.h"
+#include "nx/gfx/shaders/ray_layout.h"
 
 #include <cstddef>
 #include <cstdio>
@@ -34,10 +35,19 @@ constexpr Field GFX_INTEROP_PROBE_FIELDS[] = {
     NX_FIELD(GfxInteropProbe, vec4),    NX_FIELD(GfxInteropProbe, uvec4),
     NX_FIELD(GfxInteropProbe, ivec4),   NX_FIELD(GfxInteropProbe, matrix)};
 
+constexpr Field RAY_INSTANCE_FIELDS[] = {
+    NX_FIELD(NxRayInstance, row0),
+    NX_FIELD(NxRayInstance, row1),
+    NX_FIELD(NxRayInstance, row2),
+    NX_FIELD(NxRayInstance, custom_index_and_mask),
+    NX_FIELD(NxRayInstance, flags),
+    NX_FIELD(NxRayInstance, bottom_level)};
+
 #undef NX_FIELD
 
 constexpr Shared SHARED[] = {
     {"GfxInteropProbe", GFX_INTEROP_PROBE_FIELDS},
+    {"NxRayInstance", RAY_INSTANCE_FIELDS},
 };
 
 /// The struct a buffer parameter holds, or null.

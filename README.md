@@ -66,7 +66,7 @@ in the public headers names a backend type.
 | --- | --- |
 | `include/nx/gfx/` | the public API, one header per area; `gfx.h` has them all |
 | `include/nx/gfx/shaders/` | headers shared by C++ and Slang (`interop.h`, `ptr.hpp`, `texture.hpp`, layouts) |
-| `shaders/` | the Slang modules `nxg_core`, `nxg_ptr`, `nxg_texture` |
+| `shaders/` | the Slang modules `nxg_core`, `nxg_ptr`, `nxg_texture`, `nxg_ray` |
 | `src/` | the implementation; `src/vulkan/`, `src/metal/` hold the backends |
 | `cmake/NxGfxShaders.cmake` | `nx_gfx_compile_slang`, to build shaders against the library |
 | `tests/` | `nx_gfx_tests`, on nx-foundation's nxtest |
@@ -75,8 +75,9 @@ in the public headers names a backend type.
 ## Shaders
 
 Shaders import `nxg_core` (the bindless tables, the null page, `nx_readable`),
-`nxg_ptr` (`NxPtr<T>`, word-wise loads and stores, atomics) and `nxg_texture`
-(`NxSampler`, `NxTexture2D<T>` and the other handles). A struct both languages
+`nxg_ptr` (`NxPtr<T>`, word-wise loads and stores, atomics), `nxg_texture`
+(`NxSampler`, `NxTexture2D<T>` and the other handles) and `nxg_ray` (`NxScene`,
+`NxRay`, `IRayShade` and `nx_trace`, inline ray queries). A struct both languages
 see is declared once in a header that starts from `nx/gfx/shaders/interop.h`;
 its rules are in that header. Its `float4` and the rest are plain structs
 unless `NX_GFX_INTEROP_MATH_TYPES` names a header supplying the consumer's own

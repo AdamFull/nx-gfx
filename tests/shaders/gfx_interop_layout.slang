@@ -4,10 +4,12 @@
 // modules alone.
 import nxg_core;
 import nxg_ptr;
+import nxg_ray;
 import nxg_texture;
 
 #include "../gfx_interop_probe.h"
 
 StructuredBuffer<GfxInteropProbe> gfx_interop_probe;
+StructuredBuffer<NxRayInstance> ray_instance_probe;
 
 [shader("compute")][numthreads(1, 1, 1)] void cs_main() {}

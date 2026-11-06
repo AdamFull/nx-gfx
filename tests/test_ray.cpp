@@ -23,6 +23,8 @@ struct Hit {
 struct Push {
   u64 scene = 0;
   u64 out = 0;
+  u32 accept = 0;
+  u32 pad = 0;
 };
 
 /// One triangle at z 0, and the same moved 1 along z.
@@ -84,15 +86,18 @@ struct Scene {
   gfx::top_level_desc top_desc;
   u64 scratch_address = 0;
 
-  Scene(gfx::device &dev, const gfx::acceleration_structure_flags bottom_flags =
-                              gfx::acceleration_structure_flag::PreferFastTrace)
+  Scene(gfx::device &dev,
+        const gfx::acceleration_structure_flags bottom_flags =
+            gfx::acceleration_structure_flag::PreferFastTrace,
+        const gfx::ray_geometry_flags geometry = gfx::ray_geometry_flag::Opaque)
       : device(dev), flags(bottom_flags) {
     vertices = input_buffer(device, "ray vertices", bytes_of(POSITIONS));
     indices = input_buffer(device, "ray indices", bytes_of(INDICES));
     triangle = {.vertex_address = gfx::buffer_address(device, vertices),
                 .vertex_count = 3,
                 .index_address = gfx::buffer_address(device, indices),
-                .triangle_count = 1};
+                .triangle_count = 1,
+                .flags = geometry};
     const gfx::acceleration_structure_sizes bottom_sizes =
         gfx::sizes(device, bottom_desc());
     bottom = gfx::create_acceleration_structure(
@@ -138,7 +143,7 @@ struct Scene {
   instance_buffer(const gfx::acceleration_structure_handle structure) const {
     gfx::ray_instance placed = gfx::make_ray_instance(
         gfx::acceleration_structure_address(device, structure), CUSTOM_INDEX);
-    placed.transform[11] = 2.0f;
+    placed.row2.w = 2.0f;
     return input_buffer(device, "ray instances", bytes_of(placed));
   }
 
@@ -224,11 +229,14 @@ struct Tracer {
 
   [[nodiscard]] bool ready() const { return pipeline.valid() && out.valid(); }
 
+  /// A shade that, where @p accept, counts every triangle not made opaque.
   void record(gfx::command_list &cmd,
-              const gfx::acceleration_structure_handle top) const {
+              const gfx::acceleration_structure_handle top,
+              const bool accept = true) const {
     std::memset(gfx::buffer_mapped(device, out), 0, 2 * sizeof(Hit));
     const Push push{.scene = gfx::acceleration_structure_address(device, top),
-                    .out = gfx::buffer_address(device, out)};
+                    .out = gfx::buffer_address(device, out),
+                    .accept = accept ? 1u : 0u};
     gfx::bind_pipeline(cmd, pipeline);
     gfx::push_constants(cmd, &push, sizeof(push));
     gfx::dispatch(cmd, 1);
@@ -304,6 +312,49 @@ TEST_CASE("gfx ray: a top level over an instanced bottom level is traced "
     const std::array<Hit, 2> got = tracer.hits();
     check_hit(got[0], 3.0f);
     CHECK(got[1].t == -1.0f);
+  }
+  gfx::wait_idle(device);
+  CHECK(fixture.validation_errors() == 0u);
+}
+
+TEST_CASE("gfx ray: a triangle not made opaque counts only where the shade "
+          "accepts it") {
+  RayFixture fixture;
+  if (!fixture.ready)
+    SKIP("no usable device");
+  gfx::device &device = fixture.device;
+  if (!gfx::caps(device).ray_queries)
+    SKIP("the device reports no ray queries");
+  {
+    Tracer tracer(device);
+    if (!tracer.ready())
+      SKIP("test shaders are not built in this configuration");
+    Scene masked(device, gfx::acceleration_structure_flag::PreferFastTrace,
+                 gfx::ray_geometry_flag::None);
+    Scene opaque(device);
+    REQUIRE(masked.made());
+    REQUIRE(opaque.made());
+
+    gfx::command_list *cmd = nullptr;
+    REQUIRE(((cmd = gfx::begin_headless_frame(device)) != nullptr));
+    REQUIRE(masked.build(*cmd));
+    REQUIRE(opaque.build(*cmd));
+    tracer.record(*cmd, masked.top, false);
+    REQUIRE(gfx::end_headless_frame(device));
+    gfx::wait_idle(device);
+    CHECK(tracer.hits()[0].t == -1.0f);
+
+    REQUIRE(((cmd = gfx::begin_headless_frame(device)) != nullptr));
+    tracer.record(*cmd, masked.top, true);
+    REQUIRE(gfx::end_headless_frame(device));
+    gfx::wait_idle(device);
+    check_hit(tracer.hits()[0], 3.0f);
+
+    REQUIRE(((cmd = gfx::begin_headless_frame(device)) != nullptr));
+    tracer.record(*cmd, opaque.top, false);
+    REQUIRE(gfx::end_headless_frame(device));
+    gfx::wait_idle(device);
+    check_hit(tracer.hits()[0], 3.0f);
   }
   gfx::wait_idle(device);
   CHECK(fixture.validation_errors() == 0u);

@@ -99,12 +99,13 @@ textures out until its 3D track and reports them absent.
 
 ## Shaders and the shared types
 
-The Slang library is three modules. `nxg_core` holds the bindless tables and
+The Slang library is four modules. `nxg_core` holds the bindless tables and
 their accessors, the null page and `nx_readable`; `nxg_ptr` holds `NxPtr<T>`;
 `nxg_texture` holds the texture handles: `NxSampler`, `NxTexture2D<T>`,
 `NxRWTexture2D<T>`, and on Vulkan `NxTextureCube<T>`, `NxTexture2DArray<T>`,
 `NxTexture3D<T>`, `NxTexture2DMS<T>`, `NxRWTexture2DArray<T>` and
-`NxRWTexture3D<T>`. Shaders reach textures through these handles, never raw
+`NxRWTexture3D<T>`; `nxg_ray` holds inline ray tracing (see Acceleration
+structures). Shaders reach textures through these handles, never raw
 indices. Each is one word with a C++ half under the same name
 (`nx/gfx/shaders/texture.hpp`) and the same makers and readers:
 `from_indices(texture, sampler, flags)`, `from_packed`, `none()`,
@@ -275,8 +276,17 @@ Where `acceleration_structures` is reported, `nx/gfx/ray.h` builds them, and
 where `ray_queries` is, a shader traces them inline (`RayQuery`) from any
 stage; there are no ray-tracing pipelines. A shader reaches a top level by its
 address (`acceleration_structure_address`), passed as a 64-bit word like any
-device address: `RaytracingAccelerationStructure(address)` in Slang. No
-descriptor is bound.
+device address, and traces it through `nxg_ray`: `NxScene::from_address`,
+an `NxRay`, and `nx_trace<Flags>(scene, ray, mask, shade)`, which calls the
+caller's `IRayShade` back, `any_hit` for each triangle of a geometry not made
+opaque (a cut-out texel answers false), then `closest_hit` with the nearest
+that counted, or `miss`. Consumers write those callbacks rather than a query
+loop, so another implementation behind `nx_trace` changes no consumer. No
+descriptor is bound. `NxRayInstance` (`nx/gfx/shaders/ray_layout.h`, which
+`gfx::ray_instance` names) is the instance record both C++ and shaders
+write, and the `NX_RAY_` constants are a trace's flags. On Metal every trace
+misses until its 3D track: Slang makes no acceleration structure from an
+address there.
 
 A structure owns the buffer it lives in (`acceleration_structure_buffer`).
 Barriers and render-graph imports name that buffer, in three states:

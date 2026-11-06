@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nx/gfx/shaders/ray_layout.h"
 #include "nx/gfx/types.h"
 
 #include <span>
@@ -67,35 +68,28 @@ struct top_level_desc {
       acceleration_structure_flag::PreferFastTrace;
 };
 
-/// Bit for bit what ray_instance::flags holds.
+/// NX_RAY_INSTANCE_ flags (nx/gfx/shaders/ray_layout.h), typed.
 enum class ray_instance_flag : u8 {
   None = 0,
-  TriangleCullDisable = 1 << 0,
-  TriangleFlipFacing = 1 << 1,
-  ForceOpaque = 1 << 2,
-  ForceNoOpaque = 1 << 3,
+  TriangleCullDisable = NX_RAY_INSTANCE_CULL_DISABLE,
+  TriangleFlipFacing = NX_RAY_INSTANCE_FLIP_FACING,
+  ForceOpaque = NX_RAY_INSTANCE_FORCE_OPAQUE,
+  ForceNoOpaque = NX_RAY_INSTANCE_FORCE_NO_OPAQUE,
 };
 NX_ENUM_FLAGS_DEFINE(ray_instance_flag, ray_instance_flags)
 
-/// One instance of a top level, as the GPU reads it: the rows of its 3x4
-/// transform from the bottom level's space, its custom index (the low 24
-/// bits; a shader's CommittedInstanceID) and mask (the top 8; a ray skips an
-/// instance whose mask shares no bit with its own), 24 bits the library
-/// leaves zero and its ray_instance_flags in the top 8, and the address of
-/// its bottom level.
-struct ray_instance {
-  f32 transform[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
-  u32 custom_index_and_mask = 0xFF000000u;
-  u32 flags = 0;
-  u64 bottom_level = 0;
-};
-static_assert(sizeof(ray_instance) == 64);
+/// One instance of a top level, shared with shaders that write them.
+using ray_instance = NxRayInstance;
 
-[[nodiscard]] constexpr ray_instance
+/// An instance of the bottom level at @p bottom_level, untransformed.
+[[nodiscard]] inline ray_instance
 make_ray_instance(const u64 bottom_level, const u32 custom_index,
                   const u8 mask = 0xFF,
                   const ray_instance_flags flags = ray_instance_flag::None) {
   ray_instance out;
+  out.row0 = float4{1.0f, 0.0f, 0.0f, 0.0f};
+  out.row1 = float4{0.0f, 1.0f, 0.0f, 0.0f};
+  out.row2 = float4{0.0f, 0.0f, 1.0f, 0.0f};
   out.custom_index_and_mask =
       (custom_index & 0x00FFFFFFu) | (nx::cast<u32>(mask) << 24);
   out.flags = nx::cast<u32>(flags.value()) << 24;

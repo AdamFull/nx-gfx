@@ -50,6 +50,7 @@ set(NX_GFX_PUBLIC_HEADERS
         include/nx/gfx/shaders/core_layout.h
         include/nx/gfx/shaders/interop.h
         include/nx/gfx/shaders/ptr.hpp
+        include/nx/gfx/shaders/ray_layout.h
         include/nx/gfx/shaders/shared.h
         include/nx/gfx/shaders/texture.hpp
         include/nx/gfx/shaders/texture_layout.h
