@@ -1096,3 +1096,236 @@ TEST_CASE("gfx ray: the software scene meets what the CPU reference and the "
   gfx::wait_idle(device);
   CHECK(fixture.validation_errors() == 0u);
 }
+
+namespace {
+
+struct RefitPush {
+  u64 block = 0;
+  u64 geometries = 0;
+  u32 first = 0;
+  u32 count = 0;
+};
+
+/// @p soup's vertices moved: twisted about y and pushed by a wave, so boxes
+/// grow, shrink and slide.
+[[nodiscard]] nx::gfx::test::Soup moved(const nx::gfx::test::Soup &soup) {
+  nx::gfx::test::Soup out = soup;
+  for (usize v = 0; v * 3 < out.positions.size(); ++v) {
+    const f32 x = soup.positions[v * 3];
+    const f32 y = soup.positions[v * 3 + 1];
+    const f32 z = soup.positions[v * 3 + 2];
+    const f32 turn = 0.05f * y;
+    out.positions[v * 3] =
+        x * std::cos(turn) - z * std::sin(turn) + 0.8f * std::sin(0.7f * y);
+    out.positions[v * 3 + 1] = y + 0.6f * std::cos(0.5f * x);
+    out.positions[v * 3 + 2] = x * std::sin(turn) + z * std::cos(turn);
+  }
+  return out;
+}
+
+/// The refit's kernels and a GPU copy of a block with the geometries it
+/// reads, run once and read back.
+struct Refit {
+  gfx::device &device;
+  gfx::shader_handle shader;
+  gfx::pipeline_handle triangles;
+  gfx::pipeline_handle nodes;
+
+  explicit Refit(gfx::device &dev) : device(dev) {
+    const nx::string base = nx::string(NX_GFX_TEST_SHADER_DIR) + "/bvh_refit";
+    auto code = nx::fs::file_read(nx::fs::path_view(base + ".spv"));
+    auto refl = nx::fs::file_read_text(nx::fs::path_view(base + ".refl.json"));
+    if (!code.has_value() || !refl.has_value())
+      return;
+    shader = nx::gfx::test::create_shader(
+        device,
+        {.name = "bvh refit", .code = code->data(), .code_size = code->size()},
+        refl->view());
+    if (!shader.valid())
+      return;
+    triangles = nx::gfx::test::compile_pipeline(
+        device,
+        gfx::compute_pipeline_desc{
+            .name = "bvh refit triangles",
+            .compute = {.shader = shader, .entry_point = "refit_triangles"}});
+    nodes = nx::gfx::test::compile_pipeline(
+        device,
+        gfx::compute_pipeline_desc{
+            .name = "bvh refit nodes",
+            .compute = {.shader = shader, .entry_point = "refit_nodes"}});
+  }
+  ~Refit() {
+    gfx::destroy_pipeline(device, nodes);
+    gfx::destroy_pipeline(device, triangles);
+    gfx::destroy_shader(device, shader);
+  }
+  [[nodiscard]] bool ready() const {
+    return triangles.valid() && nodes.valid();
+  }
+
+  [[nodiscard]] gfx::buffer_handle
+  upload(const nx::string_view name, const std::span<const u8> bytes,
+         const gfx::buffer_usage_flags extra = gfx::buffer_usage::None) {
+    const gfx::buffer_handle buffer = gfx::create_buffer(
+        device, {.name = name,
+                 .size = bytes.size(),
+                 .usage = gfx::buffer_usage::Storage |
+                          gfx::buffer_usage::DeviceAddress |
+                          gfx::buffer_usage::CopyDst | extra});
+    if (buffer.valid())
+      gfx::wait_upload(device, gfx::upload_buffer(device, buffer, 0, bytes,
+                                                  state::ShaderReadOnly));
+    return buffer;
+  }
+
+  /// @p block refitted on the GPU to @p soups' vertices as they are.
+  [[nodiscard]] nx::blob<u8>
+  run(const nx::blob<u8> &block,
+      const std::span<const nx::gfx::test::Soup> soups) {
+    nx::vector<gfx::buffer_handle> buffers;
+    nx::vector<NxBvhRefitGeometry> table;
+    for (const nx::gfx::test::Soup &soup : soups) {
+      const gfx::buffer_handle positions =
+          upload("refit positions", bytes_of_all(soup.positions));
+      const gfx::buffer_handle indices =
+          upload("refit indices", bytes_of_all(soup.indices));
+      buffers.push_back(positions);
+      buffers.push_back(indices);
+      table.push_back({gfx::buffer_address(device, positions),
+                       gfx::buffer_address(device, indices)});
+    }
+    const gfx::buffer_handle geometries =
+        upload("refit geometries", bytes_of_all(table));
+    const gfx::buffer_handle copy =
+        upload("refit block", {block.data(), block.size()},
+               gfx::buffer_usage::CopySrc);
+    const gfx::buffer_handle read =
+        gfx::create_buffer(device, {.name = "refit read",
+                                    .size = block.size(),
+                                    .usage = gfx::buffer_usage::CopyDst,
+                                    .memory = gfx::memory_usage::Readback,
+                                    .persistently_mapped = true});
+    buffers.push_back(geometries);
+    buffers.push_back(copy);
+    buffers.push_back(read);
+
+    nx::blob<u8> out;
+    const auto *const header =
+        reinterpret_cast<const NxBvhHeader *>(block.data());
+    const auto *const levels =
+        reinterpret_cast<const u32 *>(block.data() + header->levels_offset);
+    gfx::command_list *cmd = gfx::begin_headless_frame(device);
+    if (cmd != nullptr) {
+      transition(*cmd, copy, state::ShaderReadOnly, state::ShaderReadWrite);
+      RefitPush push{.block = gfx::buffer_address(device, copy),
+                     .geometries = gfx::buffer_address(device, geometries),
+                     .first = 0,
+                     .count = header->primitive_count};
+      gfx::bind_pipeline(*cmd, triangles);
+      gfx::push_constants(*cmd, &push, sizeof(push));
+      gfx::dispatch(*cmd, (push.count + 63) / 64);
+      gfx::bind_pipeline(*cmd, nodes);
+      for (u32 level = header->level_count; level-- > 0;) {
+        transition(*cmd, copy, state::ShaderReadWrite, state::ShaderReadWrite);
+        push.first = levels[level];
+        push.count = levels[level + 1] - levels[level];
+        gfx::push_constants(*cmd, &push, sizeof(push));
+        gfx::dispatch(*cmd, (push.count + 63) / 64);
+      }
+      transition(*cmd, copy, state::ShaderReadWrite, state::CopySrc);
+      transition(*cmd, read, state::Undefined, state::CopyDst);
+      if (gfx::copy_buffer(*cmd, copy, 0, read, 0, block.size()) &&
+          gfx::end_headless_frame(device)) {
+        gfx::wait_idle(device);
+        out = nx::blob<u8>(block.size());
+        std::memcpy(out.data(), gfx::buffer_mapped(device, read), block.size());
+      }
+    }
+    for (const gfx::buffer_handle buffer : buffers)
+      gfx::destroy_buffer(device, buffer);
+    return out;
+  }
+};
+
+} // namespace
+
+TEST_CASE("gfx bvh refit: a block refitted on the GPU after its vertices move "
+          "holds and traces the moved triangles") {
+  RayFixture fixture;
+  if (!fixture.ready)
+    SKIP("no usable device");
+  gfx::device &device = fixture.device;
+  {
+    Refit refit(device);
+    if (!refit.ready())
+      SKIP("test shaders are not built in this configuration");
+    const nx::gfx::test::Soup soups[] = {nx::gfx::test::make_soup(2000, 111),
+                                         nx::gfx::test::make_soup(1000, 112)};
+    const gfx::bvh_geometry geometries[] = {
+        nx::gfx::test::geometry_of(soups[0]),
+        nx::gfx::test::geometry_of(soups[1])};
+    auto built = gfx::build_bvh_here(geometries, {.keep_bounds = true});
+    REQUIRE(built.has_value());
+    const nx::blob<u8> &block = built.value().bytes;
+
+    const nx::gfx::test::Soup shifted[] = {moved(soups[0]), moved(soups[1])};
+    const gfx::bvh_geometry moved_geometries[] = {
+        nx::gfx::test::geometry_of(shifted[0]),
+        nx::gfx::test::geometry_of(shifted[1])};
+    const nx::blob<u8> refitted = refit.run(block, shifted);
+    REQUIRE(refitted.size() == block.size());
+    REQUIRE(gfx::validate_bvh(nx::gfx::test::view(refitted)).has_value());
+    const nx::gfx::test::Containment held =
+        nx::gfx::test::containment(refitted, NX_BVH_MAX_LEAF);
+    CHECK(held.escapes == 0u);
+
+    const nx::gfx::test::Agreement fresh = nx::gfx::test::compare(
+        moved_geometries, shifted[0], refitted, 3000, 113);
+    const nx::gfx::test::Agreement stale = nx::gfx::test::compare(
+        moved_geometries, shifted[0], block, 3000, 113, false);
+    std::printf("bvh refit: refitted %u of %u rays hit, %u grazes, %u wrong; "
+                "unrefitted %u wrong\n",
+                fresh.hits, fresh.rays, fresh.grazes, fresh.wrong, stale.wrong);
+    CHECK(fresh.wrong == 0u);
+    CHECK(fresh.grazes * 1000 <= fresh.rays);
+    CHECK(fresh.hits > fresh.rays / 4);
+    CHECK(stale.wrong > fresh.rays / 10);
+
+    const auto *const header =
+        reinterpret_cast<const NxBvhHeader *>(refitted.data());
+    const auto *const bounds = reinterpret_cast<const NxBvhBounds *>(
+        refitted.data() + header->bounds_offset);
+    CHECK(header->lo_x == bounds[0].lo_x);
+    CHECK(header->hi_z == bounds[0].hi_z);
+  }
+  gfx::wait_idle(device);
+  CHECK(fixture.validation_errors() == 0u);
+}
+
+TEST_CASE("gfx bvh refit: a block whose vertices did not move refits to the "
+          "bytes it was built with") {
+  RayFixture fixture;
+  if (!fixture.ready)
+    SKIP("no usable device");
+  gfx::device &device = fixture.device;
+  {
+    Refit refit(device);
+    if (!refit.ready())
+      SKIP("test shaders are not built in this configuration");
+    const nx::gfx::test::Soup soup = nx::gfx::test::make_soup(5000, 121);
+    const gfx::bvh_geometry geometry = nx::gfx::test::geometry_of(soup);
+    auto built = gfx::build_bvh_here({&geometry, 1}, {.keep_bounds = true});
+    REQUIRE(built.has_value());
+    const nx::blob<u8> &block = built.value().bytes;
+    const nx::blob<u8> refitted = refit.run(block, {&soup, 1});
+    REQUIRE(refitted.size() == block.size());
+    usize differ = 0;
+    for (usize i = 0; i < block.size(); ++i)
+      differ += block.data()[i] != refitted.data()[i] ? 1 : 0;
+    std::printf("bvh refit: an unmoved block differs in %zu of %zu bytes\n",
+                differ, block.size());
+    CHECK(differ == 0u);
+  }
+  gfx::wait_idle(device);
+  CHECK(fixture.validation_errors() == 0u);
+}

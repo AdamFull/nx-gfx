@@ -9,7 +9,9 @@
 #include "nx/gfx/shaders/interop.h"
 
 NX_CONST(uint, NX_BVH_MAGIC, 0x4842584Eu);
-NX_CONST(uint, NX_BVH_VERSION, 1u);
+// 2: bounds 32 bytes each from a 16-aligned offset, as shaders read every
+// record with 16-byte loads. No version 1 block was ever stored.
+NX_CONST(uint, NX_BVH_VERSION, 2u);
 NX_CONST(uint, NX_BVH_WIDTH, 4u);
 // What a leaf names at most, and in which bits of a child word.
 NX_CONST(uint, NX_BVH_MAX_LEAF, 8u);
@@ -31,7 +33,8 @@ NX_CONST(uint, NX_BVH_INSTANCE_INDEX_MASK, 0x00FFFFFFu);
 // NxBvhTriangle flags (v2.w): no candidate is reported for it.
 NX_CONST(uint, NX_BVH_TRIANGLE_OPAQUE, 0x1u);
 
-// Byte offsets from the block's start; nodes follow the header directly. The
+// Byte offsets from the block's start, each a multiple of 16; nodes follow the
+// header directly, and the bounds start at the first such past the levels. The
 // primitives are triangles (NxBvhTriangle) or, in a top level, instances
 // (NxBvhInstance). The bounds are those of the whole level, the root's.
 struct NxBvhHeader {
@@ -101,6 +104,15 @@ struct NxBvhInstance {
 };
 NX_SHARED_SIZE(NxBvhInstance, 64);
 
+// Where a refit reads one geometry's moved corners (nxg_bvh): its positions,
+// three floats a vertex, and the indices it was built with, three a triangle.
+struct NxBvhRefitGeometry {
+  uint64_t positions;
+  uint64_t indices;
+};
+NX_SHARED_SIZE(NxBvhRefitGeometry, 16);
+
+// Padded to 32 bytes, so each lies on 16 as the loads that read it need.
 struct NxBvhBounds {
   float lo_x;
   float lo_y;
@@ -108,8 +120,10 @@ struct NxBvhBounds {
   float hi_x;
   float hi_y;
   float hi_z;
+  float pad0;
+  float pad1;
 };
-NX_SHARED_SIZE(NxBvhBounds, 24);
+NX_SHARED_SIZE(NxBvhBounds, 32);
 
 NX_SHARED_FN uint nx_bvh_child_count(uint meta) { return meta >> 24u; }
 // The step of @p axis's grid: 2 to the power its exponent byte less 127.

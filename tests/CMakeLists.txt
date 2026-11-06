@@ -27,6 +27,7 @@ set(NX_GFX_TEST_SHADERS "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 target_compile_definitions(nx_gfx_tests PRIVATE
         NX_GFX_TEST_SHADER_DIR="${NX_GFX_TEST_SHADERS}")
 nx_gfx_compile_slang(nx_gfx_test_shaders "${NX_GFX_TEST_SHADERS}" ""
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bvh_refit.slang"
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gfx_interop_layout.slang"
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_read.slang"
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ray_scene.slang"

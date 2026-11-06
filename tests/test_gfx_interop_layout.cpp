@@ -85,7 +85,8 @@ constexpr Field BVH_INSTANCE_FIELDS[] = {
 constexpr Field BVH_BOUNDS_FIELDS[] = {
     NX_FIELD(NxBvhBounds, lo_x), NX_FIELD(NxBvhBounds, lo_y),
     NX_FIELD(NxBvhBounds, lo_z), NX_FIELD(NxBvhBounds, hi_x),
-    NX_FIELD(NxBvhBounds, hi_y), NX_FIELD(NxBvhBounds, hi_z)};
+    NX_FIELD(NxBvhBounds, hi_y), NX_FIELD(NxBvhBounds, hi_z),
+    NX_FIELD(NxBvhBounds, pad0), NX_FIELD(NxBvhBounds, pad1)};
 
 #undef NX_FIELD
 

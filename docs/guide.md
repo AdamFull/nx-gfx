@@ -360,6 +360,20 @@ one stack of `NX_BVH_STACK` entries for both levels and drops what does not
 fit; its triangle test is watertight in float alone, without the CPU's
 double fallback for an edge function of exactly zero.
 
+A bottom level whose vertices move and whose triangles do not (skinning,
+morphing) is refitted on the GPU rather than rebuilt, through `nxg_bvh`:
+`nx_bvh_refit_triangle` rewrites one triangle record's corners from where
+its geometry's vertices are now (`NxBvhRefitGeometry`: positions and the
+indices it was built with), and `nx_bvh_refit_node` re-boxes one node from
+its children and quantizes them again on the builder's conservative grid,
+the root's box into the header too. The consumer writes the entry points:
+one thread a triangle, then one dispatch a level, deepest first (the level
+table is in the block), a barrier on the block between each. It needs a
+block built with `keep_bounds`, as a quantized box cannot be refitted from
+quantized children. Refitting vertices that did not move gives back the
+bytes the CPU built. Every record lies on 16 bytes, as `NxPtr` reads and
+writes 16 at a time; that is why `NxBvhBounds` is padded to 32.
+
 `validate_bvh` checks a block from anywhere before it is trusted: offsets
 and counts that account for every byte, nodes after their parents and in
 their levels, leaves that cover every triangle exactly once, finite

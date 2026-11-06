@@ -388,6 +388,10 @@ void quantize(const Box &box, const Box *const children, const u32 count,
   out.hi_z = hi_words[2];
 }
 
+[[nodiscard]] constexpr u64 align16(const u64 value) noexcept {
+  return (value + 15) & ~u64{15};
+}
+
 /// The block over @p tree: header, nodes in level order, then a record of
 /// @p record_size bytes per primitive in leaf order, which
 /// write(index in the order, primitive, destination) fills.
@@ -448,9 +452,9 @@ lay_out(Tree &tree, const u32 record_size, const u32 kind_flags,
   const u64 levels_offset = primitives_offset + u64{primitives} * record_size;
   const u64 levels_end = levels_offset + u64{level_starts.size()} * sizeof(u32);
   const bool keep = tree.options.keep_bounds;
-  const u64 bounds_offset = keep ? levels_end : 0;
+  const u64 bounds_offset = keep ? align16(levels_end) : 0;
   const u64 size =
-      keep ? levels_end + u64{out_nodes.size()} * sizeof(NxBvhBounds)
+      keep ? bounds_offset + u64{out_nodes.size()} * sizeof(NxBvhBounds)
            : levels_end;
   if (size > u64{std::numeric_limits<u32>::max()})
     return nx::err(bvh_error::TooLarge);
@@ -489,8 +493,8 @@ lay_out(Tree &tree, const u32 record_size, const u32 kind_flags,
   if (keep) {
     for (usize w = 0; w < wide.size(); ++w) {
       const Box &box = nodes[wide[w].slot].box;
-      const NxBvhBounds bounds{box.lo[0], box.lo[1], box.lo[2],
-                               box.hi[0], box.hi[1], box.hi[2]};
+      const NxBvhBounds bounds{box.lo[0], box.lo[1], box.lo[2], box.hi[0],
+                               box.hi[1], box.hi[2], 0.0f,      0.0f};
       std::memcpy(base + bounds_offset + w * sizeof(NxBvhBounds), &bounds,
                   sizeof(bounds));
     }
@@ -845,11 +849,13 @@ validate_bvh(const std::span<const u8> bytes) noexcept {
   const u64 levels_offset = primitives_offset + primitives * record_size;
   const u64 levels_end = levels_offset + (levels + 1) * sizeof(u32);
   const bool kept = (header->flags & NX_BVH_HAS_BOUNDS) != 0;
-  const u64 end = kept ? levels_end + nodes * sizeof(NxBvhBounds) : levels_end;
+  const u64 bounds_offset = kept ? align16(levels_end) : 0;
+  const u64 end =
+      kept ? bounds_offset + nodes * sizeof(NxBvhBounds) : levels_end;
   if (header->nodes_offset != sizeof(NxBvhHeader) ||
       header->primitives_offset != primitives_offset ||
       header->levels_offset != levels_offset ||
-      header->bounds_offset != (kept ? levels_end : 0))
+      header->bounds_offset != bounds_offset)
     return nx::err(bvh_error::BadLayout);
   if (bytes.size() < end)
     return nx::err(bvh_error::Truncated);
