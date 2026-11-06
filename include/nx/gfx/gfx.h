@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nx/gfx/bindless.h"
+#include "nx/gfx/bvh.h"
 #include "nx/gfx/commands.h"
 #include "nx/gfx/crash.h"
 #include "nx/gfx/device.h"

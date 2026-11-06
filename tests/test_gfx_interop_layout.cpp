@@ -5,6 +5,7 @@
 #include "core/foundation/serialization/json_util.h"
 #include "core/foundation/strings/format.h"
 #include "gfx_interop_probe.h"
+#include "nx/gfx/shaders/bvh_layout.h"
 #include "nx/gfx/shaders/ray_layout.h"
 
 #include <cstddef>
@@ -43,11 +44,50 @@ constexpr Field RAY_INSTANCE_FIELDS[] = {
     NX_FIELD(NxRayInstance, flags),
     NX_FIELD(NxRayInstance, bottom_level)};
 
+constexpr Field BVH_HEADER_FIELDS[] = {NX_FIELD(NxBvhHeader, magic),
+                                       NX_FIELD(NxBvhHeader, version),
+                                       NX_FIELD(NxBvhHeader, node_count),
+                                       NX_FIELD(NxBvhHeader, triangle_count),
+                                       NX_FIELD(NxBvhHeader, level_count),
+                                       NX_FIELD(NxBvhHeader, flags),
+                                       NX_FIELD(NxBvhHeader, nodes_offset),
+                                       NX_FIELD(NxBvhHeader, triangles_offset),
+                                       NX_FIELD(NxBvhHeader, levels_offset),
+                                       NX_FIELD(NxBvhHeader, bounds_offset),
+                                       NX_FIELD(NxBvhHeader, lo_x),
+                                       NX_FIELD(NxBvhHeader, lo_y),
+                                       NX_FIELD(NxBvhHeader, lo_z),
+                                       NX_FIELD(NxBvhHeader, hi_x),
+                                       NX_FIELD(NxBvhHeader, hi_y),
+                                       NX_FIELD(NxBvhHeader, hi_z)};
+
+constexpr Field BVH_NODE_FIELDS[] = {
+    NX_FIELD(NxBvhNode, origin_x), NX_FIELD(NxBvhNode, origin_y),
+    NX_FIELD(NxBvhNode, origin_z), NX_FIELD(NxBvhNode, meta),
+    NX_FIELD(NxBvhNode, lo_x),     NX_FIELD(NxBvhNode, lo_y),
+    NX_FIELD(NxBvhNode, lo_z),     NX_FIELD(NxBvhNode, hi_x),
+    NX_FIELD(NxBvhNode, hi_y),     NX_FIELD(NxBvhNode, hi_z),
+    NX_FIELD(NxBvhNode, parent),   NX_FIELD(NxBvhNode, reserved),
+    NX_FIELD(NxBvhNode, children)};
+
+constexpr Field BVH_TRIANGLE_FIELDS[] = {NX_FIELD(NxBvhTriangle, v0),
+                                         NX_FIELD(NxBvhTriangle, v1),
+                                         NX_FIELD(NxBvhTriangle, v2)};
+
+constexpr Field BVH_BOUNDS_FIELDS[] = {
+    NX_FIELD(NxBvhBounds, lo_x), NX_FIELD(NxBvhBounds, lo_y),
+    NX_FIELD(NxBvhBounds, lo_z), NX_FIELD(NxBvhBounds, hi_x),
+    NX_FIELD(NxBvhBounds, hi_y), NX_FIELD(NxBvhBounds, hi_z)};
+
 #undef NX_FIELD
 
 constexpr Shared SHARED[] = {
     {"GfxInteropProbe", GFX_INTEROP_PROBE_FIELDS},
     {"NxRayInstance", RAY_INSTANCE_FIELDS},
+    {"NxBvhHeader", BVH_HEADER_FIELDS},
+    {"NxBvhNode", BVH_NODE_FIELDS},
+    {"NxBvhTriangle", BVH_TRIANGLE_FIELDS},
+    {"NxBvhBounds", BVH_BOUNDS_FIELDS},
 };
 
 /// The struct a buffer parameter holds, or null.

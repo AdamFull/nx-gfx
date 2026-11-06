@@ -4,9 +4,10 @@ A C++20 graphics library over Vulkan (Metal on Apple platforms) and the Slang
 shader library that goes with it. It is the nx2d engine's GPU layer, usable on
 its own: bindless resources, buffer device addresses, dynamic rendering,
 asynchronous pipeline compilation, presentation, uploads and readbacks,
-acceleration structures for inline ray queries, GPU crash capture and
-timestamps, behind free functions in `nx::gfx` over two
-opaque types, `device` and `command_list`.
+acceleration structures for inline ray queries and a software BVH built on
+fiber jobs where there are none, GPU crash capture and timestamps, behind
+free functions in `nx::gfx` over two opaque types, `device` and
+`command_list`.
 
 It builds on [nx-foundation](https://github.com/AdamFull/nx-foundation), whose
 types (`nx::string_view`, `nx::result`, `nx::future`, `nx::thread_pool`,

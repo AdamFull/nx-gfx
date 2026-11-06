@@ -36,6 +36,7 @@ add_subdirectory(third_party)
 
 set(NX_GFX_PUBLIC_HEADERS
         include/nx/gfx/bindless.h
+        include/nx/gfx/bvh.h
         include/nx/gfx/commands.h
         include/nx/gfx/crash.h
         include/nx/gfx/device.h
@@ -47,6 +48,7 @@ set(NX_GFX_PUBLIC_HEADERS
         include/nx/gfx/ray.h
         include/nx/gfx/reflection.h
         include/nx/gfx/resources.h
+        include/nx/gfx/shaders/bvh_layout.h
         include/nx/gfx/shaders/core_layout.h
         include/nx/gfx/shaders/interop.h
         include/nx/gfx/shaders/ptr.hpp
@@ -62,6 +64,7 @@ set(NX_GFX_PUBLIC_HEADERS
 # tools share, with no backend behind it.
 add_library(nx_gfx_formats STATIC
         ${NX_GFX_PUBLIC_HEADERS}
+        src/bvh.cpp
         src/types.cpp
         src/texture_data.cpp
         src/shader_reflect.cpp

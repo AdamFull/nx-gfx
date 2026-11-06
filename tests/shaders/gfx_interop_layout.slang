@@ -11,5 +11,9 @@ import nxg_texture;
 
 StructuredBuffer<GfxInteropProbe> gfx_interop_probe;
 StructuredBuffer<NxRayInstance> ray_instance_probe;
+StructuredBuffer<NxBvhHeader> bvh_header_probe;
+StructuredBuffer<NxBvhNode> bvh_node_probe;
+StructuredBuffer<NxBvhTriangle> bvh_triangle_probe;
+StructuredBuffer<NxBvhBounds> bvh_bounds_probe;
 
 [shader("compute")][numthreads(1, 1, 1)] void cs_main() {}

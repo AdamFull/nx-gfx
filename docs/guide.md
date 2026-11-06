@@ -320,6 +320,36 @@ past retirement holds, as a buffer's is.
 Metal reports neither feature until its 3D track, and its functions answer
 invalid, zero or false.
 
+## The software BVH
+
+Where a device has no ray queries, a caller's fallback traces a bottom level
+the library builds on the CPU (`nx/gfx/bvh.h`, in `nx::gfx_formats`, so asset
+tools build it too): a 4-wide BVH in one block whose layout C++ and shaders
+share (`nx/gfx/shaders/bvh_layout.h`). The block is a header, nodes in level
+order, the triangles in leaf order with their corners inline, the level
+table, and, with `bvh_options::keep_bounds`, each node's exact box for
+refitting. A node holds four children's boxes quantized to a byte an axis on
+a grid whose steps are powers of two; a decoded box always holds its child,
+checked with the arithmetic a shader decodes with.
+
+`build_bvh_here` builds on the calling thread; `build_bvh` on an
+`nx::thread_pool`, a future the caller continues on, cancelled through a
+token (the future then reports cancelled). Both give the same bytes for the
+same input and options whatever the workers: a binary tree by binned SAH
+whose node slots follow from the triangles they span, so subtrees built at
+once write apart, then a level-order collapse to four children. Past a
+depth limit a node splits at its median, which bounds the levels and so a
+traversal's stack. Input with no triangles, counts not multiples of three,
+an index past the positions, a position not finite or options out of range
+is refused, never built.
+
+`validate_bvh` checks a block from anywhere before it is trusted: offsets
+and counts that account for every byte, nodes after their parents and in
+their levels, leaves that cover every triangle exactly once, finite
+corners. `trace_bvh` is the CPU reference a shader traversal is tested
+against: nearest hit, every triangle opaque, watertight (Woop, Benthin and
+Wald), a box's far distance widened by a few ulps.
+
 ## Native interop
 
 A library that works on the backend's own objects (an upscaler SDK, a video
