@@ -964,7 +964,12 @@ struct Walk {
   for (u32 a = 0; a < 3; ++a) {
     out.origin[a] = origin[a];
     out.direction[a] = direction[a];
-    out.inverse[a] = 1.0f / direction[a];
+    // As nx_ray_space: an infinite inverse makes a slab 0 * infinity where
+    // the origin lies on a box's plane, and the box is lost.
+    const f32 d = std::fabs(direction[a]) < 1e-20f
+                      ? std::copysign(1e-20f, direction[a])
+                      : direction[a];
+    out.inverse[a] = 1.0f / d;
   }
   out.tmin = tmin;
   return out;

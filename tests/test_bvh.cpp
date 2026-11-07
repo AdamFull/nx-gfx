@@ -54,6 +54,50 @@ TEST_CASE("gfx bvh: the nearest hit is the one every triangle tested gives") {
   }
 }
 
+TEST_CASE("gfx bvh: a ray with a zero direction component meets a grid "
+          "from origins on its boxes' planes, as the shader's walk does") {
+  // A flat 8 by 8 grid of quads, x and y in [-1, 1]: its boxes split on the
+  // grid's lines, and a ray along z from a line has 0 * infinity in a slab.
+  constexpr u32 N = 8;
+  nx::vector<f32> positions;
+  nx::vector<u32> indices;
+  for (u32 y = 0; y <= N; ++y)
+    for (u32 x = 0; x <= N; ++x)
+      positions.insert(positions.end(),
+                       {-1.0f + 2.0f * static_cast<f32>(x) / N,
+                        -1.0f + 2.0f * static_cast<f32>(y) / N, 0.0f});
+  for (u32 y = 0; y < N; ++y)
+    for (u32 x = 0; x < N; ++x) {
+      const u32 a = y * (N + 1) + x;
+      indices.insert(indices.end(),
+                     {a, a + 1, a + N + 2, a, a + N + 2, a + N + 1});
+    }
+  const gfx::bvh_geometry geometry{.positions = positions, .indices = indices};
+  auto built = gfx::build_bvh_here({&geometry, 1}, {.max_leaf = 1});
+  REQUIRE(built.has_value());
+  u32 missed = 0;
+  u32 rays = 0;
+  for (u32 y = 0; y <= 2 * N; ++y)
+    for (u32 x = 0; x <= 2 * N; ++x) {
+      // Every grid line and every half way between, inside the grid's edge.
+      const f32 px =
+          std::clamp(-1.0f + static_cast<f32>(x) / N, -0.999f, 0.999f);
+      const f32 py =
+          std::clamp(-1.0f + static_cast<f32>(y) / N, -0.999f, 0.999f);
+      for (const f32 dz : {-1.0f, 1.0f}) {
+        const gfx::bvh_ray ray{.origin = {px, py, -3.0f * dz},
+                               .direction = {0.0f, 0.0f, dz}};
+        gfx::bvh_hit hit;
+        ++rays;
+        if (!gfx::trace_bvh(view(built.value().bytes), ray, hit) ||
+            std::abs(hit.t - 3.0f) > 1e-5f)
+          ++missed;
+      }
+    }
+  std::printf("bvh: %u of %u axis rays from box planes missed\n", missed, rays);
+  CHECK(missed == 0u);
+}
+
 TEST_CASE("gfx bvh: a hit names its geometry and its triangle within it") {
   const Soup first = make_soup(300, 11);
   const Soup second = make_soup(500, 12);
