@@ -1329,3 +1329,126 @@ TEST_CASE("gfx bvh refit: a block whose vertices did not move refits to the "
   gfx::wait_idle(device);
   CHECK(fixture.validation_errors() == 0u);
 }
+
+TEST_CASE("gfx ray: the software walk on the GPU is watertight: a ray through "
+          "an edge two triangles share meets one of them") {
+  RayFixture fixture;
+  if (!fixture.ready)
+    SKIP("no usable device");
+  gfx::device &device = fixture.device;
+  // Read by address alone, as a software scene is.
+  const auto storage = [](gfx::device &d, const nx::string_view name,
+                          const std::span<const u8> bytes) {
+    const gfx::buffer_handle buffer =
+        gfx::create_buffer(d, {.name = name,
+                               .size = bytes.size(),
+                               .usage = gfx::buffer_usage::Storage |
+                                        gfx::buffer_usage::DeviceAddress |
+                                        gfx::buffer_usage::CopyDst});
+    REQUIRE(buffer.valid());
+    gfx::wait_upload(
+        d, gfx::upload_buffer(d, buffer, 0, bytes, state::ShaderReadOnly));
+    return buffer;
+  };
+  ParityShader shader(device, "ray_scene_software");
+  if (!shader.ready())
+    SKIP("test shaders are not built in this configuration");
+
+  // A flat 8 by 8 grid of quads, x and y in [-1, 1], each split along its
+  // diagonal, under one instance where it was built.
+  constexpr u32 N = 8;
+  nx::vector<f32> positions;
+  nx::vector<u32> indices;
+  for (u32 y = 0; y <= N; ++y)
+    for (u32 x = 0; x <= N; ++x)
+      positions.insert(positions.end(),
+                       {-1.0f + 2.0f * static_cast<f32>(x) / N,
+                        -1.0f + 2.0f * static_cast<f32>(y) / N, 0.0f});
+  for (u32 y = 0; y < N; ++y)
+    for (u32 x = 0; x < N; ++x) {
+      const u32 a = y * (N + 1) + x;
+      indices.insert(indices.end(),
+                     {a, a + 1, a + N + 2, a, a + N + 2, a + N + 1});
+    }
+  const gfx::bvh_geometry geometry{.positions = positions, .indices = indices};
+  auto block = gfx::build_bvh_here({&geometry, 1});
+  REQUIRE(block.has_value());
+  const nx::blob<u8> &bytes = block.value().bytes;
+  const gfx::buffer_handle block_buffer =
+      storage(device, "watertight block", {bytes.data(), bytes.size()});
+  const auto *const header =
+      reinterpret_cast<const NxBvhHeader *>(bytes.data());
+  gfx::bvh_instance instance{.bounds = {header->lo_x, header->lo_y,
+                                        header->lo_z, header->hi_x,
+                                        header->hi_y, header->hi_z}};
+  instance.instance.row0 = {1, 0, 0, 0};
+  instance.instance.row1 = {0, 1, 0, 0};
+  instance.instance.row2 = {0, 0, 1, 0};
+  instance.instance.custom_index_and_mask = 0xFFu << 24;
+  instance.instance.bottom_level = gfx::buffer_address(device, block_buffer);
+  auto top = gfx::build_bvh_top_here({&instance, 1});
+  REQUIRE(top.has_value());
+  const gfx::buffer_handle top_buffer =
+      storage(device, "watertight top",
+              {top.value().bytes.data(), top.value().bytes.size()});
+
+  // From a point above the grid, through points along every quad's
+  // diagonal, where its two triangles meet, and through its corners but
+  // those on the grid's edge, which one triangle alone has.
+  nx::vector<float4> rays;
+  const float3 from{0.0f, 0.0f, 3.0f};
+  for (u32 y = 0; y < N; ++y)
+    for (u32 x = 0; x < N; ++x)
+      for (const f32 along : {0.0f, 0.2f, 0.5f, 0.7f}) {
+        if (along == 0.0f && (x == 0 || y == 0))
+          continue;
+        const f32 px = -1.0f + 2.0f * (static_cast<f32>(x) + along) / N;
+        const f32 py = -1.0f + 2.0f * (static_cast<f32>(y) + along) / N;
+        rays.push_back(float4{from.x, from.y, from.z, 0.0f});
+        rays.push_back(float4{px - from.x, py - from.y, -from.z, 1.0e30f});
+      }
+  const u32 count = nx::cast<u32>(rays.size() / 2);
+  const gfx::buffer_handle ray_buffer =
+      storage(device, "watertight rays", bytes_of_all(rays));
+  const gfx::buffer_handle hits =
+      gfx::create_buffer(device, {.name = "watertight hits",
+                                  .size = u64{count} * 2 * sizeof(float4),
+                                  .usage = gfx::buffer_usage::Storage |
+                                           gfx::buffer_usage::DeviceAddress,
+                                  .memory = gfx::memory_usage::Readback,
+                                  .persistently_mapped = true});
+  REQUIRE(hits.valid());
+
+  gfx::command_list *cmd = gfx::begin_headless_frame(device);
+  REQUIRE(cmd != nullptr);
+  const ParityPush push{.scene = gfx::buffer_address(device, top_buffer),
+                        .rays = gfx::buffer_address(device, ray_buffer),
+                        .hits = gfx::buffer_address(device, hits),
+                        .count = count};
+  gfx::bind_pipeline(*cmd, shader.main);
+  gfx::push_constants(*cmd, &push, sizeof(push));
+  gfx::dispatch(*cmd, (count + 63) / 64);
+  REQUIRE(gfx::end_headless_frame(device));
+  gfx::wait_idle(device);
+  const auto *const read =
+      static_cast<const float4 *>(gfx::buffer_mapped(device, hits));
+  u32 missed = 0;
+  u32 cpu_missed = 0;
+  for (u32 r = 0; r < count; ++r) {
+    missed += met_of(read[r * 2], read[r * 2 + 1]).hit ? 0u : 1u;
+    gfx::bvh_ray ray{
+        .origin = {from.x, from.y, from.z},
+        .direction = {rays[r * 2 + 1].x, rays[r * 2 + 1].y, rays[r * 2 + 1].z}};
+    gfx::bvh_hit hit;
+    cpu_missed +=
+        gfx::trace_bvh({bytes.data(), bytes.size()}, ray, hit) ? 0u : 1u;
+  }
+  std::printf("gfx ray: %u of %u rays through shared edges missed on the "
+              "GPU, %u on the CPU\n",
+              missed, count, cpu_missed);
+  CHECK(missed == 0u);
+  CHECK(cpu_missed == 0u);
+  for (const gfx::buffer_handle buffer :
+       {block_buffer, top_buffer, ray_buffer, hits})
+    gfx::destroy_buffer(device, buffer);
+}

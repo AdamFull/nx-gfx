@@ -187,6 +187,19 @@ NxRaySpace nx_ray_space(float3 origin, float3 direction) {
     return space;
 }
 
+/// The edge function p.x * q.y - p.y * q.x, computed from the lesser of
+/// @p p and @p q first whichever way round they come, so the two triangles
+/// sharing an edge get each other's negation exactly even where the products
+/// are fused into a multiply-add; otherwise a ray through the edge can miss
+/// both.
+float nx_bvh_edge(float2 p, float2 q) {
+    const bool swap = p.x > q.x || (p.x == q.x && p.y > q.y);
+    const float2 lo = swap ? q : p;
+    const float2 hi = swap ? p : q;
+    const float e = lo.x * hi.y - lo.y * hi.x;
+    return swap ? -e : e;
+}
+
 /// Woop, Benthin and Wald's watertight test, in float alone: the double
 /// fallback for an edge function of exactly zero is left out, as GPUs may have
 /// no double.
@@ -199,15 +212,15 @@ bool nx_bvh_triangle(NxBvhTriangle triangle, NxRaySpace ray, float tmin,
     const float3 a = triangle.v0.xyz - ray.origin;
     const float3 b = triangle.v1.xyz - ray.origin;
     const float3 c = triangle.v2.xyz - ray.origin;
-    const float ax = a[ray.kx] - ray.sx * a[ray.kz];
-    const float ay = a[ray.ky] - ray.sy * a[ray.kz];
-    const float bx = b[ray.kx] - ray.sx * b[ray.kz];
-    const float by = b[ray.ky] - ray.sy * b[ray.kz];
-    const float cx = c[ray.kx] - ray.sx * c[ray.kz];
-    const float cy = c[ray.ky] - ray.sy * c[ray.kz];
-    const float u = cx * by - cy * bx;
-    const float v = ax * cy - ay * cx;
-    const float w = bx * ay - by * ax;
+    const float2 sa = float2(a[ray.kx] - ray.sx * a[ray.kz],
+                             a[ray.ky] - ray.sy * a[ray.kz]);
+    const float2 sb = float2(b[ray.kx] - ray.sx * b[ray.kz],
+                             b[ray.ky] - ray.sy * b[ray.kz]);
+    const float2 sc = float2(c[ray.kx] - ray.sx * c[ray.kz],
+                             c[ray.ky] - ray.sy * c[ray.kz]);
+    const float u = nx_bvh_edge(sc, sb);
+    const float v = nx_bvh_edge(sa, sc);
+    const float w = nx_bvh_edge(sb, sa);
     if ((u < 0.0 || v < 0.0 || w < 0.0) && (u > 0.0 || v > 0.0 || w > 0.0))
         return false;
     const float det = u + v + w;

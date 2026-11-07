@@ -358,7 +358,11 @@ variant as a file that sets that define and includes the source; that
 variant needs no ray-query capability and compiles for Metal. The walk keeps
 one stack of `NX_BVH_STACK` entries for both levels and drops what does not
 fit; its triangle test is watertight in float alone, without the CPU's
-double fallback for an edge function of exactly zero.
+double fallback for an edge function of exactly zero: each edge function is
+computed from the edge's lesser corner first (`nx_bvh_edge`), so the two
+triangles sharing an edge get each other's negation exactly even where a
+compiler fuses the products into a multiply-add, which Slang's `precise`
+does not stop in SPIR-V.
 
 A bottom level whose vertices move and whose triangles do not (skinning,
 morphing) is refitted on the GPU rather than rebuilt, through `nxg_bvh`:
